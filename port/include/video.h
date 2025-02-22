@@ -21,7 +21,6 @@ void videoStartFrame(void);
 void videoSubmitCommands(Gfx *cmds);
 void videoClearScreen(void);
 void videoEndFrame(void);
-f64 videoGetDiffTime(void);
 
 void *videoGetWindowHandle(void);
 
@@ -47,8 +46,10 @@ s32 videoGetNumDisplayModes(void);
 s32 videoGetVsync(void);
 s32 videoGetFramerateLimit(void);
 s32 videoGetDisplayFPS(void);
-s32 videoGetDisplayFPSDivisor(void);
 s32 videoGetMSAA(void);
+
+f32 videoGetAverageFPS(void);
+f64 videoGetLastRenderTime(void);
 
 void videoSetWindowOffset(s32 x, s32 y);
 void videoSetFullscreen(s32 fs);
@@ -60,7 +61,6 @@ void videoSetDisplayMode(const s32 index);
 void videoSetVsync(const s32 vsync);
 void videoSetFramerateLimit(const s32 limit);
 void videoSetDisplayFPS(const s32 displayfps);
-void videoSetDisplayFPSDivisor(const s32 divisor);
 void videoSetMSAA(const s32 msaa);
 
 s32 videoCreateFramebuffer(u32 w, u32 h, s32 upscale, s32 autoresize);

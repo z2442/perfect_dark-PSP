@@ -957,15 +957,25 @@ void lvFindThreats(void)
 #ifndef PLATFORM_N64
 Gfx *lvRenderFPS(Gfx *gdl)
 {
+	const f32 fps = videoGetAverageFPS();
+	const u8 a = 160;
 	s32 x = 27, y = 13;
-	f32 fps = 1.0f / videoGetDiffTime();
-	s32 ifps = (s32)fps;
-	u8 r = (ifps <= 30) ? 255 : (ifps <= 60) ? roundf(255 * (1.0f - (ifps - 30.0f) / 30.0f)) : 0;
-	u8 g = (ifps <= 30) ? roundf(255 * (ifps - 1.0f) / 29.0f) : 255;
-	u8 b = (ifps > 60 && ifps <= 90) ? roundf(255 * (ifps - 60.0f) / 30.0f) : (ifps > 90) ? 255 : 0;
-	u8 a = 160;
-	u32 color = r << 24 | g << 16 | b << 8 | a;
+	u32 color;
 	char buffer[16];
+
+	if (fps <= 30.f) {
+		// red -> yellow
+		color = 0xff000000 | a | ((u32)((fps / 30.f) * 255.f) << 16);
+	} else if (fps <= 60.f) {
+		// yellow -> green
+		color = 0x00ff0000 | a | ((u32)((1.f - (fps - 30.f) / 30.f) * 255.f) << 24);
+	} else if (fps <= 90.f) {
+		// green -> cyan
+		color = 0x00ff0000 | a | ((u32)(((fps - 60.f) / 30.f) * 255.f) << 8);
+	} else {
+		// cyan
+		color = 0x00ffff00 | a;
+	}
 
 	if (g_CharsNumeric && g_FontNumeric) {
 		snprintf(buffer, sizeof buffer, "%.2f", fps);

@@ -41,20 +41,26 @@ static s32 vidAllowHiDpi = false;
 static s32 vidVsync = 1;
 static s32 vidMSAA = 1;
 static s32 vidFramerateLimit = 0;
+
 static s32 vidDisplayFPS = 0;
-static s32 vidDisplayFPSDivisor = 16;
-static displaymode vidModeDefault;
+static f32 vidDisplayFPSInterval = 1.f;
+static f32 vidAvgFPS = 0;
+static f64 vidLastRenderTime;
+
 static s32 vidNumModes = 1;
+static displaymode vidModeDefault;
 static displaymode *vidModes = &vidModeDefault;
-static f64 vidDiffTime;
 
 static s32 texFilter = FILTER_LINEAR;
 static s32 texFilter2D = true;
-static s32 texDetail = true;
+static s32 texDetail = false;
 
 static u32 dlcount = 0;
 static u32 frames = 0;
 static f64 startTime, endTime;
+static f64 accumDelta = 0.0;
+static f64 fpsTime = 0.0;
+static s32 fpsNumFrames = 0;
 
 static s32 videoInitDisplayModes(void);
 
@@ -121,8 +127,6 @@ void videoSubmitCommands(Gfx *cmds)
 
 void videoEndFrame(void)
 {
-	static f64 accumTime = 0.0;
-
 	if (!initDone) {
 		return;
 	}
@@ -130,22 +134,32 @@ void videoEndFrame(void)
 	gfx_end_frame();
 
 	++frames;
+	++fpsNumFrames;
 
-	endTime = wmAPI->get_time();
-	accumTime += endTime - startTime;
+	const f64 flipTime = wmAPI->get_time();
+	accumDelta += flipTime - endTime;
+	endTime = flipTime;
+	vidLastRenderTime = endTime - startTime;
 
-	if (accumTime >= 1.0 / (f64)vidDisplayFPSDivisor) {
+	if (endTime >= fpsTime) {
 		char tmp[128];
-		vidDiffTime = endTime - startTime;
-		accumTime = 0.0;
-		snprintf(tmp, sizeof(tmp), "fps %3u frt %lf frm %u", (u32)(1.0 / vidDiffTime), vidDiffTime, frames);
+		vidAvgFPS = fpsNumFrames ? ((f64)fpsNumFrames / accumDelta) : 0.f;
+		fpsNumFrames = 0;
+		accumDelta = 0.0;
+		snprintf(tmp, sizeof(tmp), "fps %4.1f frt %lf frm %u", vidAvgFPS, vidLastRenderTime, frames);
 		wmAPI->set_window_title(tmp);
+		fpsTime = endTime + vidDisplayFPSInterval;
 	}
 }
 
-f64 videoGetDiffTime(void)
+f64 videoGetLastRenderTime(void)
 {
-	return vidDiffTime;
+	return vidLastRenderTime;
+}
+
+f32 videoGetAverageFPS(void)
+{
+	return vidAvgFPS;
 }
 
 void videoClearScreen(void)
@@ -251,11 +265,6 @@ s32 videoGetFramerateLimit(void)
 s32 videoGetDisplayFPS(void)
 {
 	return vidDisplayFPS;
-}
-
-s32 videoGetDisplayFPSDivisor(void)
-{
-	return vidDisplayFPSDivisor;
 }
 
 static s32 videoInitDisplayModes(void)
@@ -470,11 +479,6 @@ void videoSetDisplayFPS(const s32 displayfps)
 	vidDisplayFPS = displayfps;
 }
 
-void videoSetDisplayFPSDivisor(const s32 divisor)
-{
-	vidDisplayFPSDivisor = divisor;
-}
-
 void videoSetFramebuffer(s32 target)
 {
 	return gfx_set_framebuffer(target, 1.f);
@@ -529,7 +533,7 @@ PD_CONSTRUCTOR static void videoConfigInit(void)
 	configRegisterInt("Video.FramebufferEffects", &vidFramebuffers, 0, 1);
 	configRegisterInt("Video.FramerateLimit", &vidFramerateLimit, 0, VIDEO_MAX_FPS);
 	configRegisterInt("Video.DisplayFPS", &vidDisplayFPS, 0, 1);
-	configRegisterInt("Video.DisplayFPSDivisor", &vidDisplayFPSDivisor, 1, 32);
+	configRegisterFloat("Video.DisplayFPSInterval", &vidDisplayFPSInterval, 0.01f, 32.f);
 	configRegisterInt("Video.MSAA", &vidMSAA, 1, 16);
 	configRegisterInt("Video.TextureFilter", &texFilter, 0, 2);
 	configRegisterInt("Video.TextureFilter2D", &texFilter2D, 0, 1);
