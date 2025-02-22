@@ -736,27 +736,25 @@ static MenuItemHandlerResult menuhandlerCenterWindow(s32 operation, struct menui
 
 static MenuItemHandlerResult menuhandlerVsync(s32 operation, struct menuitem *item, union handlerdata *data)
 {
-	static const char *opts[] = {
+	static const s32 numOpts = 10;
+	static const char *constOpts[] = {
 		"Adaptive",
 		"Off",
-		"On (Every Frame)",
-		"On (Every 2 Frames)",
-		"On (Every 3 Frames)",
-		"On (Every 4 Frames)",
-		"On (Every 5 Frames)",
-		"On (Every 6 Frames)",
-		"On (Every 7 Frames)",
-		"On (Every 8 Frames)",
-		"On (Every 9 Frames)",
-		"On (Every 10 Frames)"
+		"On"
 	};
+	static char dynOpt[20];
+	s32 vblanks;
 
 	switch (operation) {
 	case MENUOP_GETOPTIONCOUNT:
-		data->dropdown.value = ARRAYCOUNT(opts);
+		data->dropdown.value = numOpts;
 		break;
 	case MENUOP_GETOPTIONTEXT:
-		return (intptr_t)opts[data->dropdown.value];
+		if (data->dropdown.value < ARRAYCOUNT(constOpts))
+			return (intptr_t)constOpts[data->dropdown.value];
+		vblanks = (s32)data->dropdown.value - 1;
+		snprintf(dynOpt, sizeof(dynOpt), "On (%d frames)", vblanks);
+		return (intptr_t)dynOpt;
 	case MENUOP_SET:
 		videoSetVsync(data->dropdown.value - 1);
 	case MENUOP_GETSELECTEDINDEX:
