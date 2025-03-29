@@ -3016,7 +3016,7 @@
 #define MPWEAPON_RCP45            0x2c
 #define MPWEAPON_SHIELD           0x2d
 #define MPWEAPON_DISABLED         0x2e
-#define NUM_MPWEAPONS             0x2f
+#define NUM_MPWEAPONS             0x31
 #endif
 
 #define MUSICEVENTTYPE_PLAY        1
