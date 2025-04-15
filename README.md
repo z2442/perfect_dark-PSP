@@ -1,3 +1,28 @@
+# PSP port 
+
+1)Building place the rom in the data folder as listed below.
+2)Run psp.sh 
+3)run the EBOOT placed in the build-psp directory 
+
+
+- Current Issues -
+- A lot of broken geometry and textures
+- Not running on real hardware yet runs fine within PPSSPP
+
+- Next Steps-
+- Fix renderering
+- Replace psp GL with native pspGU
+- Replace SDL2 audio with psp audio lib
+- Replace SDL2 input with psp native
+
+![Screenshot 2025-04-14 at 8 46 42 PM](https://github.com/user-attachments/assets/d76a4e0e-4d5b-4728-a9e5-5392fa34f826)
+![Screenshot 2025-04-14 at 8 46 50 PM](https://github.com/user-attachments/assets/f1d00605-9d34-45c1-87e0-6b3f8a3c4b4f)
+![Screenshot 2025-04-14 at 8 25 33 PM](https://github.com/user-attachments/assets/f3e17d14-0b4d-4821-a263-e69494926e72)
+![Screenshot 2025-04-14 at 8 47 19 PM](https://github.com/user-attachments/assets/ca8fb16a-5179-45fe-9f19-d688424115e0)
+
+
+
+
 # Perfect Dark port
 
 This repository contains a work-in-progress port of the [Perfect Dark decompilation](https://github.com/n64decomp/perfect_dark) to modern platforms.
