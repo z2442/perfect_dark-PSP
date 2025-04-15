@@ -1,3 +1,29 @@
+
+#include <pspsdk.h>
+#include <pspkernel.h>
+#include <pspdebug.h>
+#include <stdlib.h>
+
+
+#include <pspctrl.h>
+#include <psprtc.h>
+#include <psppower.h>
+#include <pspsdk.h>
+#include <pspdisplay.h>
+#include <pspgu.h>
+#include <pspge.h>
+#include <pspfpu.h>
+#include <pspkernel.h>
+#include <kubridge.h>
+#include <pspsysmem.h>
+
+// --- PSP Module Info ---
+PSP_MODULE_INFO("PD_PSP", 0, 1, 0); // Changed name slightly, version 1.0
+PSP_HEAP_SIZE_KB(-1024); // Example: Request memory leaving 1MB for kernel/drivers. Adjust as needed.
+PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU); // Enable VFPU for the main thread if needed
+PSP_MAIN_THREAD_STACK_SIZE_KB(256); // Increase stack size if needed (default is 64KB)
+
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <PR/ultratypes.h>
@@ -18,8 +44,9 @@
 #include "system.h"
 #include "utils.h"
 
+
 u32 g_OsMemSize = 0;
-s32 g_OsMemSizeMb = 16;
+s32 g_OsMemSizeMb = 4;
 u8 g_Is4Mb = 0;
 s8 g_Resetting = false;
 OSSched g_Sched;
@@ -95,6 +122,7 @@ static void cleanup(void)
 
 int main(int argc, const char **argv)
 {
+	//sceGeEdramSetSize(4*1024*1024);
 	sysInitArgs(argc, argv);
 
 	if (!sysArgCheck("--no-crash-handler")) {

@@ -143,67 +143,34 @@ static void gfx_sdl_init(const struct GfxWindowInitSettings *set) {
     }
 #endif
 
-    // ideally we need 3.0 compat
-    // if that doesn't work, try 3.2 core in case we're on mac, 2.1 compat as a last resort
-    static u32 glver[][3] = {
-        { 0, 0, 0                                    }, // for command line override
-        { 3, 0, SDL_GL_CONTEXT_PROFILE_COMPATIBILITY }, // 3.0: default, has all the features required
-        { 4, 1, SDL_GL_CONTEXT_PROFILE_CORE          }, // 4.1core: macs only have core profile and this is the latest
-        { 3, 2, SDL_GL_CONTEXT_PROFILE_CORE          }, // 3.2core: older macs will only have this at best
-        { 3, 0, SDL_GL_CONTEXT_PROFILE_ES            }, // es3: don't really support ES properly, but we can try
-        { 2, 1, SDL_GL_CONTEXT_PROFILE_COMPATIBILITY }, // 2.1: absolute last resort, will still require GLSL130 as an extension
-    };
+// PSP typically supports only GLES 1.x or PSP-GU (no desktop OpenGL 1.5)
+SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 1);
+SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1); // GLES 1.1
+SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_COMPATIBILITY);
 
-    u32 verstart = 1;
-    const u32 verend = sizeof(glver) / sizeof(*glver);
-    const char *verstr = sysArgGetString("--gl-version");
-    if (verstr && *verstr) {
-        // user override
-        glver[0][2] = strstr(verstr, "core") ? SDL_GL_CONTEXT_PROFILE_CORE :
-            (strstr(verstr, "es") ? SDL_GL_CONTEXT_PROFILE_ES :
-            SDL_GL_CONTEXT_PROFILE_COMPATIBILITY);
-        sscanf(verstr, "%d.%d", &glver[0][0], &glver[0][1]);
-        if (glver[0][0] >= 1 && glver[0][0] <= 4 && glver[0][1] < 9) {
-            verstart = 0;
-        }
-    }
+// PSP-compatible attributes (mandatory!)
+SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 5);
+SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 6);
+SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 5);
+SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 16);
+SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 
-    ctx = NULL;
-    u32 vmin = 0, vmaj = 0, vprof = SDL_GL_CONTEXT_PROFILE_COMPATIBILITY;
-    const char *vprofstr = "";
-    for (u32 i = verstart; i < verend && !ctx; ++i) {
-        vmaj = glver[i][0];
-        vmin = glver[i][1];
-        vprof = glver[i][2];
-        vprofstr = (vprof == SDL_GL_CONTEXT_PROFILE_CORE ? "core" :
-            (vprof == SDL_GL_CONTEXT_PROFILE_ES ? "es" : ""));
+// Create window
+wnd = SDL_CreateWindow(set->title, posX, posY, window_width, window_height,
+                       SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN);
 
-        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, vmaj);
-        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, vmin);
-        SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, vprof);
+if (!wnd) {
+    sysFatalError("SDL: Could not open SDL window:\n%s", SDL_GetError());
+}
 
-        wnd = SDL_CreateWindow(set->title, posX, posY, window_width, window_height, flags);
-        if (!wnd) {
-            sysLogPrintf(LOG_WARNING, "SDL: could not open SDL window for GL%d.%d%s:\n%s", vmaj, vmin, vprofstr, SDL_GetError());
-            continue;
-        }
+// Create GLES context
+ctx = SDL_GL_CreateContext(wnd);
+if (!ctx) {
+    sysFatalError("SDL: Could not create GLES 1.1 context: %s", SDL_GetError());
+}
 
-        ctx = SDL_GL_CreateContext(wnd);
-        if (!ctx) {
-            sysLogPrintf(LOG_WARNING, "SDL: could not create GL%d.%d%s context: %s", vmaj, vmin, vprofstr, SDL_GetError());
-            SDL_DestroyWindow(wnd);
-            wnd = nullptr;
-        }
-    }
-
-    if (!wnd || !ctx) {
-        sysFatalError("Could not open SDL window with an OpenGL context of any supported version:\n%s", SDL_GetError());
-    } else {
-        sysLogPrintf(LOG_NOTE, "SDL: created GL%d.%d%s context", vmaj, vmin, vprofstr);
-    }
-
-    SDL_GL_MakeCurrent(wnd, ctx);
-    SDL_GL_SetSwapInterval(1);
+SDL_GL_MakeCurrent(wnd, ctx);
+SDL_GL_SetSwapInterval(1);
 
     SDL_ShowWindow(wnd);
 
@@ -284,8 +251,15 @@ static void gfx_sdl_set_dimensions(uint32_t width, uint32_t height, int32_t posX
 }
 
 static void gfx_sdl_get_dimensions(uint32_t* width, uint32_t* height, int32_t* posX, int32_t* posY) {
-    SDL_GL_GetDrawableSize(wnd, static_cast<int*>((void*)width), static_cast<int*>((void*)height));
-    SDL_GetWindowPosition(wnd, static_cast<int*>(posX), static_cast<int*>(posY));
+    int drawableWidth, drawableHeight;
+    SDL_GL_GetDrawableSize(wnd, &drawableWidth, &drawableHeight);
+    *width = (uint32_t)drawableWidth;
+    *height = (uint32_t)drawableHeight;
+
+    int windowPosX, windowPosY;
+    SDL_GetWindowPosition(wnd, &windowPosX, &windowPosY);
+    *posX = (int32_t)windowPosX;
+    *posY = (int32_t)windowPosY;
 }
 
 static void gfx_sdl_handle_events(void) {

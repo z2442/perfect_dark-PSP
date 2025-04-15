@@ -397,7 +397,7 @@ s32 osPfsReadWriteFile(OSPfs* pfs, s32 fileNo, u8 flag, int offset, int size, u8
 
 /* Gbpak */
 
-s32 osGbpakInit(OSMesgQueue *queue, OSPfs *pfs, s32 ch)
+s32 osGbpakInit(OSMesgQueue *queue, OSPfs *pfs, signed int ch)
 {
 	return PFS_ERR_NOPACK;
 }
@@ -479,7 +479,7 @@ void bcopy(const void *src, void *dst, size_t n)
 	memcpy(dst, src, n);
 }
 
-s32 bcmp(const void *s1, const void *s2, size_t n)
+signed int bcmp(const void *s1, const void *s2, size_t n)
 {
 	return memcmp(s1, s2, n);
 }

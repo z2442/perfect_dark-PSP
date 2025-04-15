@@ -613,7 +613,7 @@ static void import_texture_rgba16(int tile, const LoadedTexture& loaded_texture,
     const uint32_t height = size_bytes / rdp.texture_tile[tile].line_size_bytes;
 
     gfx_rapi->upload_texture(tex_upload_buffer, width, height);
-    // DumpTexture(loaded_texture.otr_path, rgba32_buf, width, height);
+    
 }
 
 static void import_texture_rgba32(int tile, const LoadedTexture& loaded_texture, bool importReplacement) {
@@ -663,7 +663,7 @@ static void import_texture_ia4(int tile, const LoadedTexture& loaded_texture, bo
     const uint32_t height = size_bytes / rdp.texture_tile[tile].line_size_bytes;
 
     gfx_rapi->upload_texture(tex_upload_buffer, width, height);
-    // DumpTexture(loaded_texture.otr_path, rgba32_buf, width, height);
+    
 }
 
 static void import_texture_ia8(int tile, const LoadedTexture& loaded_texture, bool importReplacement) {
@@ -689,7 +689,7 @@ static void import_texture_ia8(int tile, const LoadedTexture& loaded_texture, bo
     const uint32_t height = size_bytes / rdp.texture_tile[tile].line_size_bytes;
 
     gfx_rapi->upload_texture(tex_upload_buffer, width, height);
-    // DumpTexture(loaded_texture.otr_path, rgba32_buf, width, height);
+    
 }
 
 static void import_texture_ia16(int tile, const LoadedTexture& loaded_texture, bool importReplacement) {
@@ -715,7 +715,7 @@ static void import_texture_ia16(int tile, const LoadedTexture& loaded_texture, b
     const uint32_t height = size_bytes / rdp.texture_tile[tile].line_size_bytes;
 
     gfx_rapi->upload_texture(tex_upload_buffer, width, height);
-    // DumpTexture(loaded_texture.otr_path, rgba32_buf, width, height);
+    
 }
 
 static void import_texture_i4(int tile, const LoadedTexture& loaded_texture, bool importReplacement) {
@@ -742,7 +742,7 @@ static void import_texture_i4(int tile, const LoadedTexture& loaded_texture, boo
     const uint32_t height = size_bytes / rdp.texture_tile[tile].line_size_bytes;
 
     gfx_rapi->upload_texture(tex_upload_buffer, width, height);
-    // DumpTexture(loaded_texture.otr_path, rgba32_buf, width, height);
+    
 }
 
 static void import_texture_i8(int tile, const LoadedTexture& loaded_texture, bool importReplacement) {
@@ -767,7 +767,7 @@ static void import_texture_i8(int tile, const LoadedTexture& loaded_texture, boo
     const uint32_t height = size_bytes / rdp.texture_tile[tile].line_size_bytes;
 
     gfx_rapi->upload_texture(tex_upload_buffer, width, height);
-    // DumpTexture(loaded_texture.otr_path, rgba32_buf, width, height);
+    
 }
 
 static inline void palette_to_rgba32(const uint16_t palentry, uint8_t *rgba32_buf) {
@@ -800,6 +800,7 @@ static void import_texture_ci4(int tile, const LoadedTexture& loaded_texture, bo
     const uint32_t line_size_bytes = loaded_texture.line_size_bytes;
     const uint32_t pal_idx = rdp.texture_tile[tile].palette; // 0-15
     const uint16_t* palette = (const uint16_t *)(rdp.palette + pal_idx * 16); // 16 pixel entries, 16 bits each
+    
     SUPPORT_CHECK(full_image_line_size_bytes == line_size_bytes);
 
     for (uint32_t i = 0; i < size_bytes * 2; i++) {
@@ -843,7 +844,7 @@ static void import_texture_ci8(int tile, const LoadedTexture& loaded_texture, bo
     const uint32_t height = size_bytes / result_line_size;
 
     gfx_rapi->upload_texture(tex_upload_buffer, width, height);
-    // DumpTexture(loaded_texture.otr_path, rgba32_buf, width, height);
+    
 }
 
 static void import_texture(int i, int tile, bool importReplacement) {
@@ -1043,7 +1044,7 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* verti
         float z = v->v[0] * rsp.MP_matrix[0][2] + v->v[1] * rsp.MP_matrix[1][2] + v->v[2] * rsp.MP_matrix[2][2] + rsp.MP_matrix[3][2];
         float w = v->v[0] * rsp.MP_matrix[0][3] + v->v[1] * rsp.MP_matrix[1][3] + v->v[2] * rsp.MP_matrix[2][3] + rsp.MP_matrix[3][3];
 
-        x = gfx_adjust_x_for_aspect_ratio(x, w);
+        //x = gfx_adjust_x_for_aspect_ratio(x, w);
 
         short U = v->s * rsp.texture_scaling_factor.s >> 16;
         short V = v->t * rsp.texture_scaling_factor.t >> 16;
@@ -1417,153 +1418,34 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
     struct GfxClipParameters clip_parameters = gfx_rapi->get_clip_parameters();
 
     for (int i = 0; i < 3; i++) {
-        float z = v_arr[i]->z, w = v_arr[i]->w;
-        if (clip_parameters.z_is_from_0_to_1) {
-            z = (z + w) / 2.0f;
+        float w = v_arr[i]->w;
+        if (fabsf(w) < 0.001f) {
+            w = 0.001f;
         }
+        float inv_w = 1.0f / w;
+        uint32_t tex_w = tex_width2[0] ? tex_width2[0] : tex_width[0];
+        uint32_t tex_h = tex_height2[0] ? tex_height2[0] : tex_height[0];
+        short uls = rdp.texture_tile[rdp.first_tile_index].uls;
+        short ult = rdp.texture_tile[rdp.first_tile_index].ult;
 
-        buf_vbo[buf_vbo_len++] = v_arr[i]->x;
-        buf_vbo[buf_vbo_len++] = clip_parameters.invert_y ? -v_arr[i]->y : v_arr[i]->y;
-        buf_vbo[buf_vbo_len++] = z;
-        buf_vbo[buf_vbo_len++] = w;
-
-        for (int t = 0; t < 2; t++) {
-            if (!used_textures[t]) {
-                continue;
-            }
-
-            // TODO: fix this; for now just ignore smaller mips
-            const uint32_t tile = gfx_lod_tile_offset(t);
-
-            float u = v_arr[i]->u / 32.0f;
-            float v = v_arr[i]->v / 32.0f;
-
-            int shifts = rdp.texture_tile[rdp.first_tile_index + tile].shifts;
-            int shiftt = rdp.texture_tile[rdp.first_tile_index + tile].shiftt;
-            if (shifts != 0) {
-                if (shifts <= 10) {
-                    u /= 1 << shifts;
-                } else {
-                    u *= 1 << (16 - shifts);
-                }
-            }
-            if (shiftt != 0) {
-                if (shiftt <= 10) {
-                    v /= 1 << shiftt;
-                } else {
-                    v *= 1 << (16 - shiftt);
-                }
-            }
-
-            u -= rdp.texture_tile[rdp.first_tile_index + tile].uls / 4.0f;
-            v -= rdp.texture_tile[rdp.first_tile_index + tile].ult / 4.0f;
-
-            if (!is_rect) {
-                if (!(rdp.other_mode_h & G_TP_PERSP)) {
-                    u *= 0.5f;
-                    v *= 0.5f;
-                }
-
-                if ((rdp.other_mode_h & (3U << G_MDSFT_TEXTFILT)) != G_TF_POINT) {
-                    // Linear filter adds 0.5f to the coordinates
-                    u += 0.5f;
-                    v += 0.5f;
-                }
-            }
-
-            buf_vbo[buf_vbo_len++] = u / tex_width[t];
-            buf_vbo[buf_vbo_len++] = v / tex_height[t];
-
-            bool clampS = tm & (1 << 2 * t);
-            bool clampT = tm & (1 << (2 * t + 1));
-
-            if (clampS) {
-                buf_vbo[buf_vbo_len++] = (tex_width2[t] - 0.5f) / tex_width[t];
-            }
-            if (clampT) {
-                buf_vbo[buf_vbo_len++] = (tex_height2[t] - 0.5f) / tex_height[t];
-            }
-        }
-
-        if (use_fog) {
-            buf_vbo[buf_vbo_len++] = rdp.fog_color.r / 255.0f;
-            buf_vbo[buf_vbo_len++] = rdp.fog_color.g / 255.0f;
-            buf_vbo[buf_vbo_len++] = rdp.fog_color.b / 255.0f;
-            buf_vbo[buf_vbo_len++] = v_arr[i]->fog / 255.0f; // fog factor
-        }
-
-        if (use_grayscale) {
-            buf_vbo[buf_vbo_len++] = rdp.grayscale_color.r / 255.0f;
-            buf_vbo[buf_vbo_len++] = rdp.grayscale_color.g / 255.0f;
-            buf_vbo[buf_vbo_len++] = rdp.grayscale_color.b / 255.0f;
-            buf_vbo[buf_vbo_len++] = rdp.grayscale_color.a / 255.0f; // lerp interpolation factor (not alpha)
-        }
-
-        for (int j = 0; j < num_inputs; j++) {
-            struct RGBA* color = 0;
-            struct RGBA tmp = { 0 };
-            for (int k = 0; k < 1 + (use_alpha ? 1 : 0); k++) {
-                switch (comb->shader_input_mapping[k][j]) {
-                        // Note: CCMUX constants and ACMUX constants used here have same value, which is why this works
-                        // (except LOD fraction).
-                    case G_CCMUX_PRIMITIVE:
-                        color = &rdp.prim_color;
-                        break;
-                    case G_CCMUX_SHADE:
-                        color = &v_arr[i]->color;
-                        break;
-                    case G_CCMUX_SHADE_ALPHA:
-                        tmp.r = tmp.g = tmp.b = v_arr[i]->color.a;
-                        color = &tmp;
-                        break;
-                    case G_CCMUX_ENVIRONMENT:
-                        color = &rdp.env_color;
-                        break;
-                    case G_CCMUX_PRIMITIVE_ALPHA: {
-                        tmp.r = tmp.g = tmp.b = rdp.prim_color.a;
-                        color = &tmp;
-                        break;
-                    }
-                    case G_CCMUX_ENV_ALPHA: {
-                        tmp.r = tmp.g = tmp.b = rdp.env_color.a;
-                        color = &tmp;
-                        break;
-                    }
-                    case G_CCMUX_PRIM_LOD_FRAC: {
-                        tmp.r = tmp.g = tmp.b = rdp.prim_lod_fraction;
-                        color = &tmp;
-                        break;
-                    }
-                    case G_CCMUX_LOD_FRACTION: {
-                        if (rdp.other_mode_h & G_TL_LOD) {
-                            // HACK: very roughly eyeballed based on the carpets in Defection
-                            // this is actually supposed to be calculated per pixel
-                            const float distance_frac = std::max(0.f, std::min(w / 1024.f, 1.f));
-                            tmp.r = tmp.g = tmp.b = tmp.a = (0.7f + distance_frac * 0.3f) * 255.f;
-                        } else {
-                            tmp.r = tmp.g = tmp.b = tmp.a = 255;
-                        }
-                        color = &tmp;
-                        break;
-                    }
-                    case G_ACMUX_PRIM_LOD_FRAC:
-                        tmp.a = rdp.prim_lod_fraction;
-                        color = &tmp;
-                        break;
-                    default:
-                        memset(&tmp, 0, sizeof(tmp));
-                        color = &tmp;
-                        break;
-                }
-                if (k == 0) {
-                    buf_vbo[buf_vbo_len++] = color->r / 255.0f;
-                    buf_vbo[buf_vbo_len++] = color->g / 255.0f;
-                    buf_vbo[buf_vbo_len++] = color->b / 255.0f;
-                } else {
-                    buf_vbo[buf_vbo_len++] = color->a / 255.0f;
-                }
-            }
-        }
+        float u = ((float)(v_arr[i]->u - uls) / 32.0f) / (float)(tex_w);
+        float v = ((float)(v_arr[i]->v - ult) / 32.0f) / (float)(tex_h);
+        u = clampf(u, 0.0f, 1.0f);
+        v = clampf(v, 0.0f, 1.0f);
+        float r = v_arr[i]->color.r / 255.0f;
+        float g = v_arr[i]->color.g / 255.0f;
+        float b = v_arr[i]->color.b / 255.0f;
+        float a = v_arr[i]->color.a / 255.0f;
+    
+        buf_vbo[buf_vbo_len++] = v_arr[i]->x * inv_w;
+        buf_vbo[buf_vbo_len++] = v_arr[i]->y * inv_w;
+        buf_vbo[buf_vbo_len++] = v_arr[i]->z * inv_w;
+        buf_vbo[buf_vbo_len++] = u;
+        buf_vbo[buf_vbo_len++] = v;
+        buf_vbo[buf_vbo_len++] = r;
+        buf_vbo[buf_vbo_len++] = g;
+        buf_vbo[buf_vbo_len++] = b;
+        buf_vbo[buf_vbo_len++] = a;
     }
 
     if (++buf_vbo_num_tris == MAX_BUFFERED) {

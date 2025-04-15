@@ -1,6 +1,9 @@
 #ifndef _ULTRATYPES_H_
 #define _ULTRATYPES_H_
 
+#include <psptypes.h>
+#include <stddef.h> // for size_t
+#include <stdint.h>
 
 /**************************************************************************
  *                                                                        *
@@ -14,7 +17,6 @@
  *                                                                        *
  **************************************************************************/
 
-
 /*************************************************************************
  *
  *  File: ultratypes.h
@@ -27,8 +29,6 @@
  *
  **************************************************************************/
 
-
-
 /**********************************************************************
  * General data types for R4300
  */
@@ -36,48 +36,40 @@
 
 typedef unsigned char           u8;  /* unsigned  8-bit */
 typedef unsigned short int      u16; /* unsigned 16-bit */
-typedef unsigned int            u32; /* unsigned 32-bit */
+
+#ifndef u32
+#define u32 uint32_t
+#endif
+
 typedef unsigned long long int  u64; /* unsigned 64-bit */
 
 typedef signed char             s8;  /* signed  8-bit */
 typedef signed short int        s16; /* signed 16-bit */
-typedef signed int              s32; /* signed 32-bit */
-typedef signed long long int    s64; /* signed 64-bit */
 
-typedef volatile unsigned char		vu8;	/* unsigned  8-bit */
-typedef volatile unsigned short		vu16;	/* unsigned 16-bit */
-typedef volatile unsigned long		vu32;	/* unsigned 32-bit */
-typedef volatile unsigned long long	vu64;	/* unsigned 64-bit */
-
-typedef volatile signed char		vs8;	/* signed  8-bit */
-typedef volatile short			vs16;	/* signed 16-bit */
-typedef volatile long			vs32;	/* signed 32-bit */
-typedef volatile long long		vs64;	/* signed 64-bit */
-
-typedef float				f32;	/* single prec floating point */
-typedef double				f64;	/* double prec floating point */
-
-#ifdef PLATFORM_N64
-
-#if !defined(_SIZE_T) && !defined(_SIZE_T_) && !defined(_SIZE_T_DEF)
-#define _SIZE_T
-#define _SIZE_T_DEF			/* exeGCC size_t define label */
-#if (_MIPS_SZLONG == 32)
-typedef unsigned int    size_t;
-#endif
-#if (_MIPS_SZLONG == 64)
-typedef unsigned long   size_t;
-#endif
+#ifndef s32
+#define s32 int32_t
 #endif
 
-#else
-
-#include <stddef.h>
-
+#ifndef vu32
+#define vu32 volatile uint32_t
 #endif
+
+typedef volatile u8             vu8;	/* volatile unsigned  8-bit */
+typedef volatile u16            vu16;	/* volatile unsigned 16-bit */
+
+#ifndef vs32
+#define vs32 volatile int32_t
+#endif
+
+typedef volatile s8             vs8;	/* volatile signed  8-bit */
+typedef volatile s16            vs16;	/* volatile signed 16-bit */
+typedef volatile u64            vu64;	/* volatile unsigned 64-bit */
+typedef volatile s64            vs64;	/* volatile signed 64-bit */
+
+typedef float                   f32;	/* single prec floating point */
+typedef double                  f64;	/* double prec floating point */
 
 #endif  /* _LANGUAGE_C */
-
 
 /*************************************************************************
  * Common definitions
@@ -95,4 +87,3 @@ typedef unsigned long   size_t;
 #endif
 
 #endif  /* _ULTRATYPES_H_ */
-

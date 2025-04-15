@@ -9,7 +9,7 @@
 #include <strings.h>
 #include <time.h>
 #include <sys/time.h>
-#include <SDL.h>
+#include <SDL2/SDL.h>
 #include <PR/ultratypes.h>
 #include "platform.h"
 #include "system.h"

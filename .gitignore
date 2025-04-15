@@ -4,6 +4,7 @@
 *.exe
 pd.*.z64
 build
+build-psp
 .flatpak-builder
 extracted
 src/assets/*/*.bin
@@ -25,3 +26,4 @@ tools/mkrom/mkrom
 /.vs
 CppProperties.json
 .idea
+.DS_Store

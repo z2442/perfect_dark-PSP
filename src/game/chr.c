@@ -56,7 +56,7 @@ void rng2SetSeed(u32 seed);
 #ifdef PLATFORM_N64
 void *var8009ccc0[20];
 #else
-s32 var8009ccc0[20];
+signed int  var8009ccc0[20];
 #endif
 
 s32 g_NumChrs;

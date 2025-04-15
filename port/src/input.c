@@ -1,6 +1,6 @@
 #include <string.h>
 #include <ctype.h>
-#include <SDL.h>
+#include <SDL2/SDL.h>
 #include <PR/ultratypes.h>
 #include <PR/os_thread.h>
 #include <PR/os_cont.h>
@@ -864,6 +864,7 @@ s32 inputReadController(s32 idx, OSContPad *npad)
 
 static inline void inputUpdateMouse(void)
 {
+	/*
 	s32 mx, my;
 	mouseButtons = SDL_GetMouseState(&mx, &my);
 
@@ -891,6 +892,7 @@ static inline void inputUpdateMouse(void)
 
 	// if MLOCK_AUTO is enabled, disable cursor if mouse is unlocked
 	// and we haven't moved it for a few seconds
+	
 	if (mouseLockMode == MLOCK_AUTO && !mouseLocked) {
 		if (abs(mouseDX) > CURSOR_HIDE_THRESHOLD || abs(mouseDY) > CURSOR_HIDE_THRESHOLD) {
 			if (!mouseShowCursor) {
@@ -902,6 +904,7 @@ static inline void inputUpdateMouse(void)
 			}
 		}
 	}
+		*/
 }
 
 void inputUpdate(void)
