@@ -13,7 +13,12 @@
 #define G_TX_MIRROR 0x01
 #endif
 #include "gfx_rendering_api.h"
+#include <pspgu.h>
+#include <pspgum.h>
+#include <pspdisplay.h>
+#include <pspge.h>
 
+static unsigned int __attribute__((aligned(16))) list[262144];
 
 struct ShaderProgram {
     GLuint opengl_program_id;
@@ -56,158 +61,219 @@ static void gfx_opengl_shader_get_info(struct ShaderProgram* prg, uint8_t* num_i
 static void gfx_opengl_clear_shaders(void) {}
 
 static GLuint gfx_opengl_new_texture(void) {
-    GLuint tex;
-    glGenTextures(1, &tex);
-    return tex;
+    // GU does not use texture IDs, return a dummy handle
+    static GLuint dummy_tex_id = 1;
+    return dummy_tex_id++;
 }
 
 static void gfx_opengl_delete_texture(uint32_t texID) {
-    GLuint gl_tex_id = (GLuint)texID;
-    glDeleteTextures(1, &gl_tex_id);
+    // No-op for GU; textures are not reference counted or deleted by ID
+    (void)texID;
 }
 
 static void gfx_opengl_select_texture(int tile, GLuint texture_id, bool linear_filter) {
-    glBindTexture(GL_TEXTURE_2D, texture_id);
+    // No-op for GU; texture is already bound via sceGuTexImage
     current_textures_linear_filter[tile] = linear_filter;
 }
 
 static void gfx_opengl_upload_texture(const uint8_t* rgba32_buf, uint32_t width, uint32_t height) {
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba32_buf);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    // Find next power-of-two width and height
+    uint32_t pot_width = 1;
+    uint32_t pot_height = 1;
+    while (pot_width < width) pot_width <<= 1;
+    while (pot_height < height) pot_height <<= 1;
+
+    // Allocate and convert to ABGR (PSP expects this format)
+    uint32_t* converted = (uint32_t*)sceGuGetMemory(pot_width * pot_height * sizeof(uint32_t));
+    for (uint32_t y = 0; y < pot_height; ++y) {
+        for (uint32_t x = 0; x < pot_width; ++x) {
+            if (x < width && y < height) {
+                uint32_t rgba = ((const uint32_t*)rgba32_buf)[y * width + x];
+                uint8_t r = (rgba >> 0) & 0xFF;
+                uint8_t g = (rgba >> 8) & 0xFF;
+                uint8_t b = (rgba >> 16) & 0xFF;
+                uint8_t a = (rgba >> 24) & 0xFF;
+                converted[y * pot_width + x] = (a << 24) | (b << 16) | (g << 8) | r;
+            } else {
+                converted[y * pot_width + x] = 0;
+            }
+        }
+    }
+
+    sceGuEnable(GU_TEXTURE_2D);
+    sceGuTexMode(GU_PSM_8888, 0, 0, 0);
+    sceGuTexImage(0, pot_width, pot_height, pot_width, converted);
 }
 
 static void gfx_opengl_set_sampler_parameters(int tile, bool linear_filter, uint32_t cms, uint32_t cmt) {
-    GLint filter = linear_filter ? GL_LINEAR : GL_NEAREST;
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
-    GLint wrap_s;
-    if (cms & G_TX_MIRROR) {
-        wrap_s = GL_MIRRORED_REPEAT;
-    } else {
-        wrap_s = (cms & G_TX_CLAMP) ? GL_CLAMP_TO_EDGE : GL_REPEAT;
-    }
+    sceGuTexFilter(linear_filter ? GU_LINEAR : GU_NEAREST, linear_filter ? GU_LINEAR : GU_NEAREST);
 
-    GLint wrap_t;
-    if (cmt & G_TX_MIRROR) {
-        wrap_t = GL_MIRRORED_REPEAT;
-    } else {
-        wrap_t = (cmt & G_TX_CLAMP) ? GL_CLAMP_TO_EDGE : GL_REPEAT;
-    }
+    int wrap_s = (cms & G_TX_CLAMP) ? GU_CLAMP : GU_REPEAT;
+    int wrap_t = (cmt & G_TX_CLAMP) ? GU_CLAMP : GU_REPEAT;
 
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrap_s);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrap_t);
+    sceGuTexWrap(wrap_s, wrap_t);
 }
 
 static void gfx_opengl_set_depth_mode(bool depth_test, bool depth_update, bool depth_compare, bool depth_source_prim, uint16_t zmode) {
     if (depth_test) {
-        glEnable(GL_DEPTH_TEST);
-        glDepthMask(depth_update ? GL_TRUE : GL_FALSE);
-        glDepthFunc(depth_compare ? GL_LEQUAL : GL_ALWAYS);
+        sceGuEnable(GU_DEPTH_TEST);
+        sceGuDepthMask(!depth_update);
+        sceGuDepthFunc(depth_compare ? GU_GEQUAL : GU_ALWAYS);
     } else {
-        glDisable(GL_DEPTH_TEST);
+        sceGuDisable(GU_DEPTH_TEST);
     }
     current_depth_mask = depth_update;
 }
 
 static void gfx_opengl_set_depth_range(float znear, float zfar) {
-    glDepthRange(znear, zfar);
+    uint16_t near_val = (uint16_t)(65535.0f * (1.0f - znear));
+    uint16_t far_val  = (uint16_t)(65535.0f * (1.0f - zfar));
+    sceGuDepthRange(near_val, far_val);
 }
 
 static void gfx_opengl_set_viewport(int x, int y, int width, int height) {
-    glViewport(x, y, width, height);
+    sceGuViewport(2048 + x, 2048 + y, width, height);
 }
 
 static void gfx_opengl_set_scissor(int x, int y, int width, int height) {
-    glEnable(GL_SCISSOR_TEST);
-    glScissor(x, y, width, height);
+    sceGuEnable(GU_SCISSOR_TEST);
+    sceGuScissor(x, y, x + width, y + height);
 }
 
 static void gfx_opengl_set_use_alpha(bool use_alpha, bool modulate) {
     if (use_alpha) {
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        sceGuEnable(GU_BLEND);
+        sceGuBlendFunc(GU_ADD, GU_SRC_ALPHA, GU_ONE_MINUS_SRC_ALPHA, 0, 0);
     } else {
-        glDisable(GL_BLEND);
+        sceGuDisable(GU_BLEND);
     }
 }
 
 static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_vbo_num_tris) {
-    const int stride_floats = 9; // not 8
-    const int stride_bytes = stride_floats * sizeof(float);
-    
     if (!buf_vbo || buf_vbo_num_tris == 0) return;
 
-    glMatrixMode(GL_MODELVIEW);
-    glPushMatrix();
+    typedef struct {
+        float u, v;
+        unsigned int color;
+        float x, y, z;
+    } Vertex;
 
-    glEnableClientState(GL_VERTEX_ARRAY);
-    glEnableClientState(GL_TEXTURE_COORD_ARRAY);
-    glEnableClientState(GL_COLOR_ARRAY);
+    const size_t num_verts = buf_vbo_num_tris * 3;
+    Vertex* verts = (Vertex*)sceGuGetMemory(sizeof(Vertex) * num_verts);
 
-    glVertexPointer(3, GL_FLOAT, stride_bytes, buf_vbo);
-    glTexCoordPointer(2, GL_FLOAT, stride_bytes, buf_vbo + 3);
-    glColorPointer(4, GL_FLOAT, stride_bytes, buf_vbo + 5);
+    for (size_t i = 0; i < num_verts; ++i) {
+        float* src = &buf_vbo[i * 9];
+        verts[i].x = src[0];
+        verts[i].y = src[1];
+        verts[i].z = src[2];
+        verts[i].u = src[3];
+        verts[i].v = src[4];
+        float r = src[5], g = src[6], b = src[7], a = src[8];
+        verts[i].color =
+            ((uint8_t)(a * 255.0f) << 24) |
+            ((uint8_t)(b * 255.0f) << 16) |
+            ((uint8_t)(g * 255.0f) << 8)  |
+            ((uint8_t)(r * 255.0f));
+    }
 
-    glEnable(GL_TEXTURE_2D);
-    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
-    
-    glDrawArrays(GL_TRIANGLES, 0, buf_vbo_num_tris * 3);
+    sceGuEnable(GU_TEXTURE_2D);
+    sceGuShadeModel(GU_SMOOTH);
+    sceGuDisable(GU_LIGHTING);
 
-    glDisableClientState(GL_COLOR_ARRAY);
-    glDisableClientState(GL_TEXTURE_COORD_ARRAY);
-    glDisableClientState(GL_VERTEX_ARRAY);
-    glDisable(GL_TEXTURE_2D);
-
-    glPopMatrix();
+    sceGuDrawArray(GU_TRIANGLES,
+        GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF,
+        num_verts, 0, verts);
 }
 
 static void gfx_opengl_init(void) {
-    
-    glEnable(GL_TEXTURE_2D);
-    glEnable(GL_DEPTH_TEST);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glDepthFunc(GL_LEQUAL);
+    void* fbp0 = guGetStaticVramBuffer(480, 272, GU_PSM_8888);
+    void* fbp1 = guGetStaticVramBuffer(480, 272, GU_PSM_8888);
+    void* zbp  = guGetStaticVramBuffer(480, 272, GU_PSM_4444);
 
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
-    
-    glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
-    //glTranslatef(0.0f, 0.0f, -3.6f);  // Slightly closer camera
+    sceGuInit();
+    sceGuStart(GU_DIRECT, list);
 
-    glClearColor(0.0, 0.0, 0.0, 1.0);
+    sceGuDrawBuffer(GU_PSM_8888, fbp0, 512);
+    sceGuDispBuffer(480, 272, fbp1, 512);
+    sceGuDepthBuffer(zbp, 512);
+    sceGuOffset(2048 - (480 / 2), 2048 - (272 / 2));
+    sceGuViewport(2048, 2048, 480, 272);
+    sceGuDepthRange(65535, 0);
+    sceGuScissor(0, 0, 480, 272);
+    sceGuEnable(GU_SCISSOR_TEST);
+    sceGuFrontFace(GU_CW);
+    sceGuShadeModel(GU_SMOOTH);
+    sceGuDisable(GU_TEXTURE_2D);
+
+    sceGuFinish();
+    sceGuSync(GU_SYNC_FINISH, GU_SYNC_WHAT_DONE);
+    sceDisplayWaitVblankStart();
+    sceGuDisplay(GU_TRUE);
 }
 
-static void gfx_opengl_start_frame(void) {}
-static void gfx_opengl_end_frame(void) { glFlush(); }
-static void gfx_opengl_finish_render(void) {}
+static void gfx_opengl_start_frame(void) {
+    sceGuStart(GU_DIRECT, list);
 
-static void gfx_opengl_on_resize(void) {}
+    float fov = 70.0f;
+    float aspect = 480.0f / 272.0f;
+    float znear = 0.1f;
+    float zfar = 100.0f;
+    float f = 1.0f / tanf(fov * (3.1415926f / 360.0f));
 
-static const char* gfx_opengl_get_name(void) { return "OpenGL 1.1"; }
+    ScePspFMatrix4 projection = {
+        {f / aspect, 0.0f, 0.0f, 0.0f},
+        {0.0f, f, 0.0f, 0.0f},
+        {0.0f, 0.0f, zfar / (zfar - znear), 1.0f},
+        {0.0f, 0.0f, (-znear * zfar) / (zfar - znear), 0.0f}
+    };
+
+    ScePspFMatrix4 identity = {
+        {1.0f, 0.0f, 0.0f, 0.0f},
+        {0.0f, 1.0f, 0.0f, 0.0f},
+        {0.0f, 0.0f, 1.0f, 0.0f},
+        {0.0f, 0.0f, 0.0f, 1.0f}
+    };
+
+    // Use sceGuSetMatrix for setting GU matrices (sceGuLoadMatrix is not allowed for inline matrix setup)
+    sceGuSetMatrix(GU_PROJECTION, &projection);
+    sceGuSetMatrix(GU_VIEW, &identity);
+    sceGuSetMatrix(GU_MODEL, &identity);
+}
+static void gfx_opengl_end_frame(void) {
+    sceGuFinish();
+    sceGuSync(0, 0);
+    sceDisplayWaitVblankStart();
+    sceGuSwapBuffers();
+}
+static void gfx_opengl_finish_render(void) {
+    // No-op for GU
+}
+
+static void gfx_opengl_on_resize(void) {
+    // Not applicable for PSP GU
+}
+
+static const char* gfx_opengl_get_name(void) {
+    return "PSP GU";
+}
 
 static int gfx_opengl_get_max_texture_size(void) {
-    GLint size = 0;
-    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &size);
-    return size;
+    return 512;
 }
 
 static struct GfxClipParameters gfx_opengl_get_clip_parameters(void) {
     return (struct GfxClipParameters){ false, false };
 }
 
-void* gfx_opengl_get_framebuffer_texture_id(int fb_id) { return NULL; }
+void* gfx_opengl_get_framebuffer_texture_id(int fb_id) {
+    return NULL;
+}
 
 void gfx_opengl_clear_framebuffer(bool c, bool d) {
-    GLbitfield mask = 0;
-    if (c) mask |= GL_COLOR_BUFFER_BIT;
-    if (d) { glDepthMask(GL_TRUE); mask |= GL_DEPTH_BUFFER_BIT; }
-    glClear(mask);
-    glDepthMask(current_depth_mask);
+    unsigned int flags = 0;
+    if (c) flags |= GU_COLOR_BUFFER_BIT;
+    if (d) flags |= GU_DEPTH_BUFFER_BIT;
+    sceGuClear(flags);
 }
 
 void gfx_opengl_copy_framebuffer(int fb_dst, int fb_src, int l, int t, bool flip_y, bool use_back) {}

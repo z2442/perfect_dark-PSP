@@ -439,7 +439,7 @@ add_dependencies(${PD_TARGET_NAME} pd_headers) # Depend on generated headers
 target_link_libraries(${PD_TARGET_NAME} PRIVATE ${LIBS}) # Use PRIVATE for libraries
 set_target_properties(${PD_TARGET_NAME} PROPERTIES OUTPUT_NAME "${BIN_NAME_ELF}")
 
-list(APPEND LIBS pspgu pspgum pspge pspmath psppower pspdebug pspctrl pspdisplay pspaudiolib pspaudio pspgl )
+list(APPEND LIBS pspgu pspge pspgum pspmath psppower pspdebug pspctrl pspdisplay pspaudiolib pspaudio )
 
 
 # --- Post-Build Steps ---

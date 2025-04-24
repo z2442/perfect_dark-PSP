@@ -8,10 +8,10 @@
 #include "config.h"
 #include "system.h"
 #include "video.h"
+
 #include "../fast3d/gfx_api.h"
 #include "../fast3d/gfx_sdl.h"
 #include "../fast3d/gfx_opengl.h"
-
 
 #ifdef PLATFORM_NSWITCH
 #define DEFAULT_VID_WIDTH 1280
@@ -19,9 +19,9 @@
 #define DEFAULT_VID_FULLSCREEN true
 #define DEFAULT_VID_FULLSCREEN_EXCLUSIVE true
 #else
-#define DEFAULT_VID_WIDTH 480
+#define DEFAULT_VID_WIDTH 480 
 #define DEFAULT_VID_HEIGHT 272
-#define DEFAULT_VID_FULLSCREEN true
+#define DEFAULT_VID_FULLSCREEN false
 #define DEFAULT_VID_FULLSCREEN_EXCLUSIVE true
 #endif
 
@@ -64,59 +64,45 @@ static s32 fpsNumFrames = 0;
 
 static s32 videoInitDisplayModes(void);
 
-// Inside videoInit function in video.c:
 s32 videoInit(void)
 {
-    wmAPI = &gfx_sdl;
-    renderingAPI = &gfx_opengl_api;
+	wmAPI = &gfx_sdl;
+	renderingAPI = &gfx_opengl_api;
 
-    // ... (setting gfx_current_native_viewport, etc.) ...
-    gfx_current_native_viewport.width = 320;
-    gfx_current_native_viewport.height = 220;
-    gfx_current_native_aspect = 320.f / 220.f;
-    gfx_framebuffers_enabled = (bool)vidFramebuffers;
-    gfx_detail_textures_enabled = (bool)texDetail;
-    gfx_msaa_level = vidMSAA;
+	gfx_current_native_viewport.width = 320;
+	gfx_current_native_viewport.height = 220;
+	gfx_current_native_aspect = 320.f / 220.f;
+	gfx_framebuffers_enabled = (bool)vidFramebuffers;
+	gfx_detail_textures_enabled = (bool)texDetail;
+	gfx_msaa_level = vidMSAA;
 
+	struct GfxInitSettings set = {
+		.wapi = wmAPI,
+		.rapi = renderingAPI,
+		.window_settings = {
+			.title = "Perfect Dark",
+			.width = vidWidth,
+			.height = vidHeight,
+			.x = 100,
+			.y = 100,
+			.fullscreen = vidFullscreen,
+			.fullscreen_is_exclusive = vidFullscreenExclusive,
+			.maximized = vidMaximize,
+			.centered = vidCenter,
+			.allow_hidpi = vidAllowHiDpi
+		}
+	};
 
-    // CORRECT Initializer list for GfxInitSettings
-    struct GfxInitSettings set = {
-        .wapi = wmAPI,
-        .rapi = renderingAPI,
-        .window_settings = {
-            .title = "Perfect Dark",
-            .width = vidWidth,
-            .height = vidHeight,
-            .x = 100, // Or calculated position
-            .y = 100, // Or calculated position
-            .fullscreen = vidFullscreen,
-            .fullscreen_is_exclusive = vidFullscreenExclusive,
-            .maximized = vidMaximize,
-            .centered = vidCenter,
-            .allow_hidpi = vidAllowHiDpi
-        }
-        // THE INVALID LINE 'void gfx_set_texture_filter' SHOULD BE REMOVED FROM HERE
-    }; // End of struct initializer
+	gfx_init(&set);
 
-    // Call gfx_init with the properly initialized struct
-    gfx_init(&set); // Assumes gfx_init exists and takes this struct
+	videoInitDisplayModes();
+	videoSetVsync(vidVsync);
+	videoSetFramerateLimit(vidFramerateLimit);
 
-    // Initialize other video settings *after* gfx_init
-    videoInitDisplayModes();
-    videoSetVsync(vidVsync);
-    videoSetFramerateLimit(vidFramerateLimit);
+	gfx_set_texture_filter((enum FilteringMode)texFilter);
 
-    /*// Set initial texture filter using the rendering API pointer
-    if (renderingAPI && renderingAPI->set_texture_filter) {
-         renderingAPI->set_texture_filter((FilteringMode)texFilter);
-    } else {
-        sysLogPrintf(LOG_ERROR, "Rendering API not initialized, cannot set texture filter.");
-        // Potentially return an error code here
-        // return -1;
-    }*/
-
-    initDone = true;
-    return 0;
+	initDone = true;
+	return 0;
 }
 
 void videoStartFrame(void)
@@ -160,7 +146,7 @@ void videoEndFrame(void)
 		vidAvgFPS = fpsNumFrames ? ((f64)fpsNumFrames / accumDelta) : 0.f;
 		fpsNumFrames = 0;
 		accumDelta = 0.0;
-		snprintf(tmp, sizeof(tmp), "fps %4.1f frt %lf frm %u", vidAvgFPS, vidLastRenderTime, (unsigned int)frames);
+		snprintf(tmp, sizeof(tmp), "fps %4.1f frt %lf frm %lu", vidAvgFPS, vidLastRenderTime, (unsigned long)frames);
 		wmAPI->set_window_title(tmp);
 		fpsTime = endTime + vidDisplayFPSInterval;
 	}
@@ -283,7 +269,7 @@ s32 videoGetDisplayFPS(void)
 
 static s32 videoInitDisplayModes(void)
 {
-	if (!wmAPI->get_current_display_mode((signed int*)&vidModeDefault.width, (signed int*)&vidModeDefault.height)) {
+	if (!wmAPI->get_current_display_mode((int *)&vidModeDefault.width, (int *)&vidModeDefault.height)) {
 		vidModeDefault.width = 640;
 		vidModeDefault.height = 480;
 		return false;
@@ -308,7 +294,7 @@ static s32 videoInitDisplayModes(void)
 
 	// SDL modes are guaranteed to be sorted high to low
 	for (s32 i = 0; i < numBaseModes; ++i) {
-		wmAPI->get_display_mode(i, (signed int*)&neww, (signed int*)&newh);
+		wmAPI->get_display_mode(i, (int *)&neww, (int *)&newh);
 
 		if (neww != w || newh != h) {
 			w = neww;
@@ -447,7 +433,7 @@ void videoSetTextureFilter(u32 filter)
 	if (filter > FILTER_THREE_POINT) filter = FILTER_THREE_POINT;
 	if (texFilter == filter) return;
 	texFilter = filter;
-	//gfx_set_texture_filter(filter);
+	gfx_set_texture_filter((enum FilteringMode)filter);
 }
 
 void videoSetTextureFilter2D(s32 filter)

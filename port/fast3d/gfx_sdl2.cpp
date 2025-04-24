@@ -126,11 +126,9 @@ static void gfx_sdl_init(const struct GfxWindowInitSettings *set) {
     // we will unhide the window once the GL context is successfully created
     Uint32 flags = SDL_WINDOW_HIDDEN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL;
 
-    // if fullscreen was requested, start the window in fullscreen right away
-    if (set->fullscreen) {
-        flags |= fullscreen_flag;
-        fullscreen_state = true;
-    }
+    // always start the window in fullscreen mode by default
+    flags |= fullscreen_flag;
+    fullscreen_state = true;
 
     if (set->maximized) {
         flags |= SDL_WINDOW_MAXIMIZED;
