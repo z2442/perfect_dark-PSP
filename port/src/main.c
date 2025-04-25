@@ -46,7 +46,7 @@ PSP_MAIN_THREAD_STACK_SIZE_KB(256); // Increase stack size if needed (default is
 
 
 u32 g_OsMemSize = 0;
-s32 g_OsMemSizeMb = 12;
+s32 g_OsMemSizeMb = 4;
 u8 g_Is4Mb = 0;
 s8 g_Resetting = false;
 OSSched g_Sched;
