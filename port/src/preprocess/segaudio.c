@@ -68,24 +68,20 @@ struct n64_bankfile {
 	u32 bankArray[1]; // ptr to struct n64_bank
 };
 
-/* --- helpers ----------------------------------------------------------- */
-#ifndef ALIGN4
-#define ALIGN4(v)   (((v) + 3) & ~3u)
-#endif
-
-// only proceeds to convert the next item if it's not already converted, and aligns to 4 bytes
-#define AL_NEXT_ITEM(field, func)            \
-    do {                                     \
-        struct ptrmarker *marker = ptrFind(srcpos);      \
-        if (marker == NULL) {                \
-            dstpos = ALIGN4(dstpos);         /* keep structures word‑aligned */ \
-            field  = (void *)(uintptr_t)dstpos;           \
-            ptrAdd(srcpos, (uintptr_t)field);             \
-            dstpos = func(dst, dstpos, src, srcpos);      \
-        } else {                             \
-            field = (void *)marker->ptr_host;            \
-        }                                    \
-    } while (0)
+// Convert the next item only if it hasn't been processed yet.
+// Ensures dstpos is 16‑byte aligned before writing, because the PSP (MIPS)
+// raises a data bus error on unaligned 32‑bit word access.
+#define AL_NEXT_ITEM(field, func) do {                          \
+    struct ptrmarker *marker = ptrFind(srcpos);                 \
+    if (marker == NULL) {                                       \
+        dstpos = ALIGN16(dstpos);                               \
+        field   = (void *)(uintptr_t)(dstpos);                  \
+        ptrAdd(srcpos, (uintptr_t)(field));                     \
+        dstpos  = func(dst, dstpos, src, srcpos);               \
+    } else {                                                    \
+        field = (void *)marker->ptr_host;                       \
+    }                                                           \
+} while (0)
 
 static u32 convertAudioEnvelope(u8 *dst, u32 dstpos, u8 *src, u32 srcpos)
 {
