@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <vector>
 #include <SDL.h>
 #include <GL/gl.h>
 #include <PR/gbi.h>
@@ -30,7 +31,12 @@ struct ShaderProgram {
 
 static FilteringMode current_filter_mode = FILTER_LINEAR;
 static bool current_textures_linear_filter[2] = {false, false};
+
 static bool current_depth_mask = true;
+
+/* -- GLES 1.1 depth‑state shadow ---------------------------------------- */
+static bool es_depth_test  = false; /* GL_DEPTH_TEST currently enabled? */
+static bool es_depth_write = true;  /* TRUE if glDepthMask(GL_TRUE)      */
 
 static void gfx_opengl_unload_shader(struct ShaderProgram* old_prg) {}
 
@@ -72,11 +78,33 @@ static void gfx_opengl_select_texture(int tile, GLuint texture_id, bool linear_f
 }
 
 static void gfx_opengl_upload_texture(const uint8_t* rgba32_buf, uint32_t width, uint32_t height) {
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba32_buf);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    /* OpenGL 1.1 / OpenGL ES 1.1 require POT textures. */
+    uint32_t pot_w = 1, pot_h = 1;
+    while (pot_w < width)  pot_w <<= 1;
+    while (pot_h < height) pot_h <<= 1;
+
+    const bool needs_resize = (pot_w != width) || (pot_h != height);
+
+    /* Prepare a POT‑sized temporary buffer if necessary. */
+    const uint8_t* src = rgba32_buf;
+    std::vector<uint8_t> temp;              /* RAII helper */
+    if (needs_resize) {
+        temp.resize(pot_w * pot_h * 4, 0);  /* zero‑fill padding */
+
+        for (uint32_t y = 0; y < height; ++y) {
+            memcpy(&temp[(y * pot_w) * 4],
+                   &rgba32_buf[(y * width) * 4],
+                   width * 4);
+        }
+        src = temp.data();
+    }
+
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);          /* allow arbitrary row‑length */
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
+                 pot_w, pot_h, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, src);
+
+    /* Default filters/wrap will be overridden by set_sampler_parameters(). */
 }
 
 static void gfx_opengl_set_sampler_parameters(int tile, bool linear_filter, uint32_t cms, uint32_t cmt) {
@@ -85,31 +113,73 @@ static void gfx_opengl_set_sampler_parameters(int tile, bool linear_filter, uint
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
     GLint wrap_s;
     if (cms & G_TX_MIRROR) {
-        wrap_s = GL_MIRRORED_REPEAT;
+        wrap_s = GL_REPEAT;                /* MIRRORED_REPEAT not in GL 1.1 */
     } else {
-        wrap_s = (cms & G_TX_CLAMP) ? GL_CLAMP_TO_EDGE : GL_REPEAT;
+        wrap_s = (cms & G_TX_CLAMP) ? GL_CLAMP : GL_REPEAT;
     }
 
     GLint wrap_t;
     if (cmt & G_TX_MIRROR) {
-        wrap_t = GL_MIRRORED_REPEAT;
+        wrap_t = GL_REPEAT;
     } else {
-        wrap_t = (cmt & G_TX_CLAMP) ? GL_CLAMP_TO_EDGE : GL_REPEAT;
+        wrap_t = (cmt & G_TX_CLAMP) ? GL_CLAMP : GL_REPEAT;
     }
 
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrap_s);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrap_t);
 }
 
-static void gfx_opengl_set_depth_mode(bool depth_test, bool depth_update, bool depth_compare, bool depth_source_prim, uint16_t zmode) {
-    if (depth_test) {
-        glEnable(GL_DEPTH_TEST);
-        glDepthMask(depth_update ? GL_TRUE : GL_FALSE);
-        glDepthFunc(depth_compare ? GL_LEQUAL : GL_ALWAYS);
-    } else {
-        glDisable(GL_DEPTH_TEST);
-    }
-    current_depth_mask = depth_update;
+/* N64  ➜  GLES 1.1 depth-state conversion
+ *  enable  == “run the depth test?”
+ *  write   == “update the depth buffer?”
+ *  compare == “reject/accept based on depth?” (else always pass)
+ *  zmode   : 0 Opaque, 1 InterPen, 2 Translucent, 3 Decal
+ */
+static void gfx_opengl_set_depth_mode(bool   enable,
+    bool   write,
+    bool   compare,
+    bool   /*depth_source_prim*/,
+    uint16_t zmode)
+{
+/* ------------------------------------------------------------------ */
+/* Enable / disable GL_DEPTH_TEST                                     */
+/* ------------------------------------------------------------------ */
+if (enable != es_depth_test) {
+if (enable) glEnable(GL_DEPTH_TEST);
+else        glDisable(GL_DEPTH_TEST);
+es_depth_test = enable;
+}
+
+/* ------------------------------------------------------------------ */
+/* Depth-buffer writes (glDepthMask)                                   */
+/* Core flag ‘write’ is TRUE when we *want* to write.                  */
+/* ------------------------------------------------------------------ */
+if (write != es_depth_write) {
+glDepthMask(write ? GL_TRUE : GL_FALSE);
+es_depth_write = write;
+}
+
+/* If the test is disabled we’re done. */
+if (!enable)
+return;
+
+/* ------------------------------------------------------------------ */
+/* Choose a depth-compare function                                     */
+/* N64 works in 1/w screen-space; “<” ≈ GL_GEQUAL/GL_LEQUAL.           */
+/* ------------------------------------------------------------------ */
+GLenum func = GL_ALWAYS;            /* default when ‘compare’ == false */
+
+if (compare) {
+switch (zmode & 3) {
+case 0:  /* ZMODE_OPA   */ func = GL_LEQUAL;  break;
+case 1:  /* ZMODE_INTER */ func = GL_LESS;    break;
+case 2:  /* ZMODE_XLU   */ func = GL_LEQUAL;  break;
+case 3:  /* ZMODE_DECAL */ func = GL_ALWAYS;  break; /* disable compare */
+default:                 func = GL_LEQUAL;  break;
+}
+}
+
+glDepthFunc(func);
 }
 
 static void gfx_opengl_set_depth_range(float znear, float zfar) {
@@ -146,10 +216,10 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
     glEnableClientState(GL_VERTEX_ARRAY);
     glEnableClientState(GL_TEXTURE_COORD_ARRAY);
     glEnableClientState(GL_COLOR_ARRAY);
+    glColorPointer(4, GL_FLOAT, stride_bytes, buf_vbo + 5);
 
     glVertexPointer(3, GL_FLOAT, stride_bytes, buf_vbo);
     glTexCoordPointer(2, GL_FLOAT, stride_bytes, buf_vbo + 3);
-    glColorPointer(4, GL_FLOAT, stride_bytes, buf_vbo + 5);
 
     glEnable(GL_TEXTURE_2D);
     glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
