@@ -15,6 +15,16 @@
 #endif
 #include "gfx_rendering_api.h"
 
+#define SCREEN_WIDTH  480  // Set the screen width (example value)
+#define SCREEN_HEIGHT 272  // Set the screen height (example value)
+
+struct LoadedVertex {
+    float x, y, z, w;   // Position
+    float u, v;          // Texture coordinates
+    uint8_t r, g, b, a;  // Color (RGBA)
+};
+
+static float P_matrix[4][4]; // Global matrix for projection
 
 struct ShaderProgram {
     GLuint opengl_program_id;
@@ -182,6 +192,54 @@ default:                 func = GL_LEQUAL;  break;
 glDepthFunc(func);
 }
 
+
+/* Add perspective projection for 3D content */
+static void gfx_opengl_set_perspective_projection(float fov, float aspect_ratio, float near_clip, float far_clip) {
+    float top = tanf(fov * 0.5f) * near_clip;
+    float right = top * aspect_ratio;
+
+    P_matrix[0][0] = near_clip / right;
+    P_matrix[1][1] = near_clip / top;
+    P_matrix[2][2] = -(far_clip + near_clip) / (far_clip - near_clip);
+    P_matrix[2][3] = -(2 * far_clip * near_clip) / (far_clip - near_clip);
+    P_matrix[3][2] = -1.0f;
+    P_matrix[3][3] = 0.0f;
+}
+
+/* Add orthographic projection for 2D content */
+static void gfx_opengl_set_orthographic_projection(float left, float right, float bottom, float top, float near_clip, float far_clip) {
+    P_matrix[0][0] = 2.0f / (right - left);
+    P_matrix[1][1] = 2.0f / (top - bottom);
+    P_matrix[2][2] = -2.0f / (far_clip - near_clip);
+    P_matrix[3][0] = -(right + left) / (right - left);
+    P_matrix[3][1] = -(top + bottom) / (top - bottom);
+    P_matrix[3][2] = -(far_clip + near_clip) / (far_clip - near_clip);
+    P_matrix[3][3] = 1.0f;
+}
+
+static float gfx_adjust_x_for_aspect_ratio(float x) {
+    // This function can be modified to adjust x based on your aspect ratio needs
+    float aspect_ratio = (float)SCREEN_WIDTH / (float)SCREEN_HEIGHT;
+    return x * aspect_ratio;
+}
+
+static void gfx_opengl_set_projection_for_2d() {
+    gfx_opengl_set_orthographic_projection(0, SCREEN_WIDTH, 0, SCREEN_HEIGHT, -1.0f, 1.0f);
+    glDisable(GL_DEPTH_TEST);  // Disable depth testing for 2D rendering
+
+    glViewport(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);  // Set the viewport to the entire screen for 2D rendering
+    glScissor(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);   // Ensure 2D content is clipped to the screen boundaries
+    glEnable(GL_SCISSOR_TEST);
+}
+
+static void gfx_opengl_set_projection_for_3d() {
+    gfx_opengl_set_perspective_projection(60.0f, (float)SCREEN_WIDTH / (float)SCREEN_HEIGHT, 0.1f, 1000.0f);
+    glEnable(GL_DEPTH_TEST);  // Enable depth testing for 3D rendering
+
+    glViewport(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);  // Set the viewport to the entire screen for 3D rendering
+    glDisable(GL_SCISSOR_TEST);  // Disable scissor test for 3D content, usually not necessary
+}
+
 static void gfx_opengl_set_depth_range(float znear, float zfar) {
     glDepthRange(znear, zfar);
 }
@@ -204,11 +262,39 @@ static void gfx_opengl_set_use_alpha(bool use_alpha, bool modulate) {
     }
 }
 
+static bool is_2d_mode = false;
+
 static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_vbo_num_tris) {
     const int stride_floats = 9; // not 8
     const int stride_bytes = stride_floats * sizeof(float);
-    
+
     if (!buf_vbo || buf_vbo_num_tris == 0) return;
+
+    bool is_2d = true;
+
+    // Loop through the vertex buffer and inspect each vertex
+    for (size_t i = 0; i < buf_vbo_len; i += stride_bytes) {  // 9 floats per vertex (3 for position, 2 for texture, 4 for color)
+        struct LoadedVertex* vertex = reinterpret_cast<LoadedVertex*>(&buf_vbo[i]);
+
+        // Check if the vertex has a Z value (typically used for 3D objects)
+        if (vertex->z == 0.0f && vertex->w == 1.0f) {
+            is_2d = true;  // If z == 0, it's likely a 2D object
+            break;
+        }
+    }
+
+    // Set projection based on whether it's 2D or 3D
+    if (is_2d) {
+        if (!is_2d_mode) {
+            is_2d_mode = true;
+            gfx_opengl_set_projection_for_2d();  // Switch to 2D projection matrix
+        }
+    } else {
+        if (is_2d_mode) {
+            is_2d_mode = false;
+            gfx_opengl_set_projection_for_3d();  // Switch to 3D projection matrix
+        }
+    }
 
     glMatrixMode(GL_MODELVIEW);
     glPushMatrix();
@@ -223,7 +309,7 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
 
     glEnable(GL_TEXTURE_2D);
     glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
-    
+
     glDrawArrays(GL_TRIANGLES, 0, buf_vbo_num_tris * 3);
 
     glDisableClientState(GL_COLOR_ARRAY);
@@ -247,10 +333,26 @@ static void gfx_opengl_init(void) {
     
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
-    //glTranslatef(0.0f, 0.0f, -3.6f);  // Slightly closer camera
 
     glClearColor(0.0, 0.0, 0.0, 1.0);
 }
+
+
+/* Update texture coordinate adjustments */
+static void gfx_apply_texture_coordinates(LoadedVertex* vertex, const float tex_scaling[2], const int16_t uls, const int16_t ult, const int16_t width, const int16_t height) {
+    // Apply texture scaling
+    float u = vertex->u / width;
+    float v = vertex->v / height;
+
+    // Adjust for aspect ratio if necessary
+    u = gfx_adjust_x_for_aspect_ratio(u);
+
+    // Map the texels to the appropriate space based on the texture parameters
+    vertex->u = (uls + u * tex_scaling[0]);
+    vertex->v = (ult + v * tex_scaling[1]);
+}
+
+
 
 static void gfx_opengl_start_frame(void) {}
 static void gfx_opengl_end_frame(void) { glFlush(); }

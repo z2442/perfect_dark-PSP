@@ -120,9 +120,36 @@ static void cleanup(void)
 	// TODO: actually shut down all subsystems
 }
 
+//barrowed from the PSPSDK - 
+//Failed to link for some reason 
+//TODO: CLEAN UP later when we find a fix in cmakelists.txt.
+void pspFpuSetEnableStandalone(uint32_t enable)
+{
+    uint32_t fcr;
+
+    enable &= 0x1F;
+
+    // Read FCR31 register directly
+    __asm__ volatile (
+        "cfc1 %0, $31\n"
+        : "=r"(fcr)
+    );
+
+    // Mask and update enable bits
+    fcr &= ~(0x1F << 7); // Clear bits 7-11 (PSP_FPU_ENABLE_MASK)
+    fcr |= (enable << 7);
+
+    // Write back to FCR31
+    __asm__ volatile (
+        "ctc1 %0, $31\n"
+        :
+        : "r"(fcr)
+    );
+}
+
 int main(int argc, const char **argv)
 {
-	//sceGeEdramSetSize(4*1024*1024);
+	pspFpuSetEnableStandalone(0);
 	sysInitArgs(argc, argv);
 
 	if (!sysArgCheck("--no-crash-handler")) {
