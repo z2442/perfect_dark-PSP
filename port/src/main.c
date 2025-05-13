@@ -44,9 +44,68 @@ PSP_MAIN_THREAD_STACK_SIZE_KB(256); // Increase stack size if needed (default is
 #include "system.h"
 #include "utils.h"
 
+#include <malloc.h>
+#include <stdio.h>
+
+#include <pspkernel.h>
+#include <psppower.h>
+#include <pspsuspend.h>
+
+//Volatile Memory code Barrowed from DaedalusX64 
+bool bVolatileMem  = false;
+//*************************************************************************************
+//
+//*************************************************************************************
+void VolatileMemInit()
+{
+	// Unlock memory partition 5
+	void* pointer = NULL;
+	int size = 0;
+	int result = sceKernelVolatileMemLock(0, &pointer, &size);
+
+	if (result == 0)
+	{
+		scePowerLock(0);	// This used to avoid suspending while we are using the volatile memory
+		printf("Successfully Unlocked Volatile Mem: %d KB\n",size / 1024);
+		bVolatileMem = true;
+	}
+	else
+	{
+		printf( "Failed to unlock volatile mem: %08x\n", result );
+		bVolatileMem = false;
+	}
+
+}
+
+void* malloc_volatile_PSP(size_t size)
+{
+	//If volatile mem couldn't be unlocked, use normal memory
+	// Dangerous! There's not enough memory for this!
+	if (!bVolatileMem)	 return malloc(size);
+
+//	struct mallinfo info = _mallinfo_r(NULL);
+//	printf("used memory %d of %d - %d\n", info.usmblks + info.uordblks, info.arena, malloc_p5_memory_used);
+
+
+	SceUID uid = sceKernelAllocPartitionMemory(5, "", PSP_SMEM_Low, size + 8, NULL);
+	if (uid >= 0)
+	{
+
+//		printf("getting memory from p5 %d KBS\n", size / 1024);
+//		malloc_p5_memory_used += size;
+
+		u32* pointer = (u32*)sceKernelGetBlockHeadAddr(uid);
+		*pointer = uid;
+		*(pointer + 4) = size;
+		return (void*)(pointer + 8);
+	}
+
+
+}
+
 
 u32 g_OsMemSize = 0;
-s32 g_OsMemSizeMb = 4;
+s32 g_OsMemSizeMb = 12;
 u8 g_Is4Mb = 1;
 s8 g_Resetting = false;
 OSSched g_Sched;
@@ -150,6 +209,7 @@ void pspFpuSetEnableStandalone(uint32_t enable)
 int main(int argc, const char **argv)
 {
 	pspFpuSetEnableStandalone(0);
+	VolatileMemInit();
 	sysInitArgs(argc, argv);
 
 	if (!sysArgCheck("--no-crash-handler")) {
@@ -179,13 +239,20 @@ int main(int argc, const char **argv)
 	g_OsMemSize = osGetMemSize();
 
 	g_MempHeapSize = g_OsMemSize;
+
+	//PSP Phat 
+	//g_MempHeap = malloc_volatile_PSP(g_MempHeapSize);
+	
+	//PSP SLIM
 	g_MempHeap = sysMemZeroAlloc(g_MempHeapSize);
+
+
 	if (!g_MempHeap) {
 		sysFatalError("Could not alloc %u bytes for memp heap.", g_MempHeapSize);
 	}
 
 	sysLogPrintf(LOG_NOTE, "memp heap at %p - %p", g_MempHeap, g_MempHeap + g_MempHeapSize);
-	sysLogPrintf(LOG_NOTE, "rom  file at %p - %p", g_RomFile, g_RomFile + g_RomFileSize);
+	//sysLogPrintf(LOG_NOTE, "rom  file at %p - %p", g_RomFile, g_RomFile + g_RomFileSize);
 
 	g_SndDisabled = sysArgCheck("--no-sound");
 
