@@ -5,7 +5,7 @@
 #include <string.h>
 #include <vector>
 #include <SDL.h>
-#include <GL/gl.h>
+#include <GLES/gl.h>
 #include <PR/gbi.h>
 #ifndef G_TX_CLAMP
 #define G_TX_CLAMP 0x02
@@ -125,14 +125,14 @@ static void gfx_opengl_set_sampler_parameters(int tile, bool linear_filter, uint
     if (cms & G_TX_MIRROR) {
         wrap_s = GL_REPEAT;                /* MIRRORED_REPEAT not in GL 1.1 */
     } else {
-        wrap_s = (cms & G_TX_CLAMP) ? GL_CLAMP : GL_REPEAT;
+        wrap_s = (cms & G_TX_CLAMP) ? GL_CLAMP_TO_EDGE : GL_REPEAT;
     }
 
     GLint wrap_t;
     if (cmt & G_TX_MIRROR) {
         wrap_t = GL_REPEAT;
     } else {
-        wrap_t = (cmt & G_TX_CLAMP) ? GL_CLAMP : GL_REPEAT;
+        wrap_t = (cmt & G_TX_CLAMP) ? GL_CLAMP_TO_EDGE : GL_REPEAT;
     }
 
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrap_s);
@@ -241,7 +241,7 @@ static void gfx_opengl_set_projection_for_3d() {
 }
 
 static void gfx_opengl_set_depth_range(float znear, float zfar) {
-    glDepthRange(znear, zfar);
+    glDepthRangef(znear, zfar);
 }
 
 static void gfx_opengl_set_viewport(int x, int y, int width, int height) {

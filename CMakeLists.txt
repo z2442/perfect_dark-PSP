@@ -185,18 +185,15 @@ if(BUILD_PSP)
     -Wall # Keep warnings enabled
     # Add other PSP specific flags as needed, e.g., -fno-builtin-printf for smaller code size if using pspDebugScreenPrintf
   )
-  # Optimization: -Os (optimize for size) is often preferred on PSP for release builds
+  # Optimization: -O3 (optimize for speed) for PSP release builds
   # CMake sets optimization flags per build type, adjust if needed:
   if(CMAKE_BUILD_TYPE MATCHES "Release|RelWithDebInfo")
-      message(STATUS "Using -Os optimization for PSP ${CMAKE_BUILD_TYPE} build")
-      set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -Os")
-      set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -Os")
-      set(CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} -Os")
-      set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -Os")
+      message(STATUS "Using -O3 optimization for PSP ${CMAKE_BUILD_TYPE} build")
+      set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -O3")
+      set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3")
+      set(CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} -O3")
+      set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -O3")
       # Remove potentially problematic desktop optimizations if they were added elsewhere
-      string(REPLACE "-O3" "" CMAKE_C_FLAGS_RELEASE ${CMAKE_C_FLAGS_RELEASE})
-      string(REPLACE "-O2" "" CMAKE_C_FLAGS_RELEASE ${CMAKE_C_FLAGS_RELEASE})
-      string(REPLACE "-Og" "" CMAKE_C_FLAGS_RELEASE ${CMAKE_C_FLAGS_RELEASE})
       # Repeat for CXX and RelWithDebInfo flags...
   endif()
 
