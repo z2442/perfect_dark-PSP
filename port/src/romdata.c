@@ -186,8 +186,9 @@ static inline void romdataWrongRomError(const char *fmt, ...)
 
 static inline void romdataLoadRom(void)
 {
+    #ifdef PDDEBUG
 	sysLogPrintf(LOG_NOTE, "ROM file: %s", romName);
-
+    #endif
     // Get ROM file size first
     s32 rom_size_check = fsFileSize(romName);
     if (rom_size_check < 0) {
@@ -320,7 +321,9 @@ static inline void romdataInitSegment(struct romfile *seg)
 	if (seg->rom_offset == 0 && seg->source == SRC_ROM_IN_FILE) { // rom_offset is used as initial offset storage
 		// unused in this ROM, or not ROM sourced initially. Mark as unloaded.
         seg->source = SRC_UNLOADED; 
+        #ifdef PDDEBUG
 		sysLogPrintf(LOG_NOTE, "Skipping segment %s (zero offset)", seg->name);
+        #endif
         // Clear data and size to be safe, ensure segstart/end are NULL if not used
         seg->data = NULL;
         seg->size = 0;
@@ -336,7 +339,9 @@ static inline void romdataInitSegment(struct romfile *seg)
 			seg->size = g_RomFileSize - seg->rom_offset;
 		}
         if ((s32)seg->size < 0) { // Check for logic error or bad offset
+            #ifdef PDDEBUG
             sysLogPrintf(LOG_ERROR, "Segment %s calculated negative size. ROM Offset: 0x%X", seg->name, seg->rom_offset);
+            #endif
             seg->size = 0; // Prevent further issues
             seg->source = SRC_UNLOADED;
             return;
@@ -356,22 +361,30 @@ static inline void romdataInitSegment(struct romfile *seg)
             seg->data = newData;
             seg->size = extFileSize; // fsFileLoad updates this
             seg->source = SRC_EXTERNAL;
+            #ifdef PDDEBUG
             sysLogPrintf(LOG_NOTE, "Loading segment %s from external file (size %u, pointer %p)", seg->name, seg->size, seg->data);
+            #endif
         } else {
+            #ifdef PDDEBUG
              sysLogPrintf(LOG_WARNING, "Segment %s: external file %s found but failed to load. Falling back to ROM.", seg->name, tmp);
-        }
+            #endif
+            }
 	}
 
 	if (seg->source == SRC_ROM_IN_FILE) { // Not loaded from external, try ROM
 		if (g_RomFp) {
             if (seg->size == 0) { // Should have been calculated, but double check
+                #ifdef PDDEBUG
                  sysLogPrintf(LOG_ERROR, "Segment %s from ROM has zero size. ROM Offset: 0x%X", seg->name, seg->rom_offset);
+                 #endif
                  seg->source = SRC_UNLOADED; // Cannot load
                  return;
             }
             if (seg->rom_offset + seg->size > g_RomFileSize) {
+                #ifdef PDDEBUG
                 sysLogPrintf(LOG_ERROR, "Segment %s from ROM (offset 0x%X, size %u) exceeds ROM size %u.", 
                              seg->name, seg->rom_offset, seg->size, g_RomFileSize);
+                #endif
                 seg->source = SRC_UNLOADED;
                 return;
             }
@@ -386,8 +399,10 @@ static inline void romdataInitSegment(struct romfile *seg)
                 sysFatalError("Could not read %u bytes for ROM segment %s from offset 0x%X.", seg->size, seg->name, seg->rom_offset);
             }
 			seg->source = SRC_ROM_LOADED;
+            #ifdef PDDEBUG
 			sysLogPrintf(LOG_NOTE, "Loading segment %s from ROM (offset %08x, size %u, pointer %p)", seg->name, seg->rom_offset, seg->size, seg->data);
-		} else if (seg->source != SRC_EXTERNAL) { // No ROM and not external
+            #endif
+        } else if (seg->source != SRC_EXTERNAL) { // No ROM and not external
 			sysFatalError("No ROM or external file for segment:\n%s", seg->name);
             return; // Should not reach here due to sysFatalError
 		}
@@ -412,7 +427,9 @@ static inline void romdataInitSegment(struct romfile *seg)
 			seg->data = processedData;
 			romdataUpdateSegStartEnd(seg);
 		} else if (!processedData) { // Preprocessing failed or nulled out data
+            #ifdef PDDEBUG
             sysLogPrintf(LOG_WARNING, "Preprocessing segment %s returned NULL. Segment might be unusable.", seg->name);
+            #endif
             // Keep seg->data as is, or handle error more strictly
         }
 		seg->preprocessed = 1;
@@ -483,11 +500,15 @@ static inline void romdataInitFiles(void)
 			fileSlots[current_file_idx].preprocessed = 0;
 			// .name will be set later
             if (fileSlots[current_file_idx].size == 0) {
+                #ifdef PDDEBUG
                  sysLogPrintf(LOG_WARNING, "File %d from ROM has zero size. ROM Offset: 0x%X", current_file_idx, offset_entry1);
-            }
+                #endif
+                }
             if (offset_entry1 + fileSlots[current_file_idx].size > g_RomFileSize) {
+                #ifdef PDDEBUG
                 sysLogPrintf(LOG_ERROR, "File %d from ROM (offset 0x%X, size %u) exceeds ROM size %u.", 
                              current_file_idx, offset_entry1, fileSlots[current_file_idx].size, g_RomFileSize);
+                #endif
                 fileSlots[current_file_idx].source = SRC_UNLOADED; // Mark as invalid
             }
 			actual_num_files = current_file_idx;
@@ -498,7 +519,9 @@ static inline void romdataInitFiles(void)
 		current_file_idx++;
 	}
     if (current_file_idx >= ROMDATA_MAX_FILES && rom_disk_offsets[current_file_idx] != 0) {
+        #ifdef PDDEBUG
         sysLogPrintf(LOG_WARNING, "File table in ROM exceeds ROMDATA_MAX_FILES. Some files may be ignored.");
+        #endif
     }
 
 
@@ -566,17 +589,25 @@ static inline void romdataInitFiles(void)
                     }
                 } else {
                     // fileSlots[name_assign_idx].name = NULL; // Or some default error string
+                    #ifdef PDDEBUG
                     sysLogPrintf(LOG_WARNING, "File %d has invalid name offset %u in name block.", name_assign_idx, rel_offset);
+                    #endif
                 }
             }
         } else {
+            #ifdef PDDEBUG
             sysLogPrintf(LOG_WARNING, "Name table block size calculated as zero. No file names loaded from ROM.");
+            #endif
         }
 	} else if (g_RomFp) { // ROM is open, but no name table found or no files.
+        #ifdef PDDEBUG
         sysLogPrintf(LOG_WARNING, "No file name table processed from ROM. File names will be unavailable unless from filenames.lst.");
+        #endif
         // Attempt to load external file list as a fallback
         if (!romdataLoadExternalFileList()) {
+            #ifdef PDDEBUG
 			sysLogPrintf(LOG_WARNING, "Fallback to filenames.lst also failed or file not found.");
+            #endif
 		}
     }
 }
@@ -589,7 +620,9 @@ static inline struct romfile *romdataGetSeg(const char *name)
 		++seg;
 	}
     if (!seg->name) { // Not found
+        #ifdef PDDEBUG
         sysLogPrintf(LOG_ERROR, "Segment '%s' not found in romSegs table.", name);
+        #endif
         // Return a dummy or handle error, for now, return the terminator
         return &romSegs[ARRAYCOUNT(romSegs)-1]; 
     }
@@ -624,16 +657,18 @@ s32 romdataInit(void)
 
 	// Initialize file metadata (offsets, sizes, names) from romDataSeg and g_RomFp
 	romdataInitFiles();
-
+    #ifdef PDDEBUG
 	sysLogPrintf(LOG_NOTE, "romdataInit: ROM processing complete. ROM Size: %u", g_RomFileSize);
+    #endif
 
 	return 0;
 }
 
 // NEW: Shutdown function
 void romdataShutdown(void) {
+    #ifdef PDDEBUG
     sysLogPrintf(LOG_NOTE, "romdataShutdown: Cleaning up ROM data.");
-
+    #endif
     // Free data for segments
     for (struct romfile *seg = romSegs; seg->name; ++seg) {
         if ((seg->source == SRC_ROM_LOADED || seg->source == SRC_EXTERNAL) && seg->data) {
@@ -668,7 +703,9 @@ void romdataShutdown(void) {
         fclose(g_RomFp);
         g_RomFp = NULL;
     }
+    #ifdef PDDEBUG
     sysLogPrintf(LOG_NOTE, "romdataShutdown: Cleanup complete.");
+    #endif
 }
 
 
@@ -693,14 +730,18 @@ s32 romdataCheckGbcRom(void)
 	if (!gbcRomFile) return false;
 	const bool ret = romdataCheckGbcRomContents(gbcRomFile, gbcRomSize);
 	sysMemFree(gbcRomFile);
+    #ifdef PDDEBUG
 	if (ret) sysLogPrintf(LOG_NOTE, "romdataCheckGbcRom: valid GBC rom found");
+    #endif
 	return ret;
 }
 
 s32 romdataFileGetSize(s32 fileNum)
 {
 	if (fileNum < 1 || fileNum >= ROMDATA_MAX_FILES) {
+        #ifdef PDDEBUG
 		sysLogPrintf(LOG_ERROR, "romdataFileGetSize: invalid file num %d", fileNum);
+        #endif
 		return -1;
 	}
     // If data is already loaded, size is known.
@@ -714,9 +755,10 @@ s32 romdataFileGetSize(s32 fileNum)
     if (fileSlots[fileNum].source == SRC_ROM_IN_FILE && fileSlots[fileNum].size > 0) {
         return fileSlots[fileNum].size;
     }
-
+    #ifdef PDDEBUG
 	sysLogPrintf(LOG_ERROR, "romdataFileGetSize: could not determine size for file num %d (name: %s, source: %d)", 
                  fileNum, fileSlots[fileNum].name ? fileSlots[fileNum].name : "N/A", fileSlots[fileNum].source);
+    #endif
 	return -1;
 }
 
@@ -730,7 +772,9 @@ u8 *romdataFileGetData(s32 fileNum)
 u8 *romdataFileLoad(s32 fileNum, u32 *outSize)
 {
 	if (fileNum < 1 || fileNum >= ROMDATA_MAX_FILES) {
+        #ifdef PDDEBUG
 		sysLogPrintf(LOG_ERROR, "romdataFileLoad: invalid file num %d", fileNum);
+        #endif
 		return NULL;
 	}
 
@@ -753,7 +797,9 @@ u8 *romdataFileLoad(s32 fileNum, u32 *outSize)
                 u32 loaded_size = (u32)ext_fs_size;
                 u8* ext_data = fsFileLoad(tmp, &loaded_size);
                 if (ext_data && loaded_size > 0) {
+                    #ifdef PDDEBUG
                     sysLogPrintf(LOG_NOTE, "File %d (%s) loaded externally (size %u)", fileNum, file->name, loaded_size);
+                    #endif
                     if (file->data) sysMemFree(file->data); // Should be NULL if not loaded
                     file->data = ext_data;
                     file->size = loaded_size;
@@ -770,21 +816,27 @@ u8 *romdataFileLoad(s32 fileNum, u32 *outSize)
     if (file->source == SRC_ROM_IN_FILE) {
         if (g_RomFp && file->rom_offset > 0 && file->size > 0) {
             if (file->rom_offset + file->size > g_RomFileSize) {
+                #ifdef PDDEBUG
                  sysLogPrintf(LOG_ERROR, "File %d (%s) (offset 0x%X, size %u) exceeds ROM size %u. Cannot load from ROM.", 
                              fileNum, file->name ? file->name : "N/A", file->rom_offset, file->size, g_RomFileSize);
+                #endif
                 file->source = SRC_UNLOADED; // Mark as invalid for ROM loading
                 if (outSize) *outSize = 0;
                 return NULL;
             }
             u8* rom_read_data = sysMemAlloc(file->size);
             if (!rom_read_data) {
+                #ifdef PDDEBUG
                 sysLogPrintf(LOG_ERROR, "Failed to allocate %u bytes for file %d (%s) from ROM.", file->size, fileNum, file->name);
+                #endif
                 if (outSize) *outSize = 0;
                 return NULL;
             }
             fseek(g_RomFp, file->rom_offset, SEEK_SET);
             if (fread(rom_read_data, 1, file->size, g_RomFp) == file->size) {
+                #ifdef PDDEBUG
                 sysLogPrintf(LOG_NOTE, "File %d (%s) loaded from ROM into RAM (offset 0x%X, size %u)", fileNum, file->name, file->rom_offset, file->size);
+                #endif
                 if (file->data) sysMemFree(file->data); // Should be NULL
                 file->data = rom_read_data;
                 file->source = SRC_ROM_LOADED;
@@ -792,13 +844,17 @@ u8 *romdataFileLoad(s32 fileNum, u32 *outSize)
                 if (outSize) *outSize = file->size;
                 return file->data;
             } else {
+                #ifdef PDDEBUG
                 sysLogPrintf(LOG_ERROR, "Failed to read %u bytes for file %d (%s) from ROM offset 0x%X.", file->size, fileNum, file->name, file->rom_offset);
+                #endif
                 sysMemFree(rom_read_data);
                 // Keep source as SRC_ROM_IN_FILE, but it's essentially unloadable
             }
         } else {
+            #ifdef PDDEBUG
              sysLogPrintf(LOG_WARNING, "File %d (%s) marked SRC_ROM_IN_FILE but cannot be loaded (No ROM/Invalid offset/size. ROM Offset: 0x%X, Size: %u)",
                          fileNum, file->name ? file->name : "N/A", file->rom_offset, file->size);
+            #endif
         }
     }
 
@@ -813,7 +869,9 @@ u8 *romdataFileLoad(s32 fileNum, u32 *outSize)
 void romdataFilePreprocess(s32 fileNum, s32 loadType, u8 *data, u32 size, u32 *outSize)
 {
 	if (fileNum < 1 || fileNum >= ROMDATA_MAX_FILES) {
+        #ifdef PDDEBUG
 		sysLogPrintf(LOG_ERROR, "romdataFilePreprocess: invalid file num %d", fileNum);
+        #endif
 		return;
 	}
 
@@ -829,11 +887,15 @@ void romdataFilePreprocess(s32 fileNum, s32 loadType, u8 *data, u32 size, u32 *o
                 if (p->ofs + p->len <= size) { // Bounds check
                     if (!memcmp(data + p->ofs, p->src, p->len)) {
                         memcpy(data + p->ofs, p->dst, p->len);
+                        #ifdef PDDEBUG
                         sysLogPrintf(LOG_NOTE, "File %d (%s) patched at offset 0x%x", fileNum, file->name, p->ofs);
+                        #endif
                     }
                 } else {
+                    #ifdef PDDEBUG
                      sysLogPrintf(LOG_WARNING, "File %d (%s) patch at offset 0x%x out of bounds (size %u).", fileNum, file->name, p->ofs, size);
-                }
+                    #endif
+                    }
 			}
 			// Then preprocess. Preprocessing function might update the size via outSize.
             // It operates on the 'data' buffer passed in.
@@ -851,7 +913,9 @@ void romdataFilePreprocess(s32 fileNum, s32 loadType, u8 *data, u32 size, u32 *o
 void romdataFileFree(s32 fileNum)
 {
 	if (fileNum < 1 || fileNum >= ROMDATA_MAX_FILES) {
+        #ifdef PDDEBUG
 		sysLogPrintf(LOG_ERROR, "romdataFileFree: invalid file num %d", fileNum); // Corrected log from fsFileFree
+        #endif
 		return;
 	}
 
@@ -897,21 +961,27 @@ s32 romdataFileGetNumForName(const char *name)
 u8 *romdataSegGetData(const char *segName) {
     struct romfile *seg = romdataGetSeg(segName);
     if (seg && seg->data) return seg->data;
+    #ifdef PDDEBUG
     sysLogPrintf(LOG_WARNING, "romdataSegGetData: Segment '%s' has no data.", segName);
+    #endif
     return NULL;
 }
 
 u8 *romdataSegGetDataEnd(const char *segName) {
     struct romfile *seg = romdataGetSeg(segName);
     if (seg && seg->data) return seg->data + seg->size;
+    #ifdef PDDEBUG
     sysLogPrintf(LOG_WARNING, "romdataSegGetDataEnd: Segment '%s' has no data/size.", segName);
+    #endif
     return NULL;
 }
 
 u32 romdataSegGetSize(const char *segName) {
     struct romfile *seg = romdataGetSeg(segName);
     if (seg) return seg->size;
+    #ifdef PDDEBUG
     sysLogPrintf(LOG_WARNING, "romdataSegGetSize: Segment '%s' not found or has no size.", segName);
+    #endif
     return 0;
 }
 
@@ -928,7 +998,9 @@ u32 romdataFileGetEstimatedSize(const u32 size, const u32 loadtype)
 	case LOADTYPE_MODEL: return (u32)(size * 1.7f);
 	case LOADTYPE_GUN: return (u32)(size * 1.7f);
 	default:
+    #ifdef PDDEBUG
 		sysLogPrintf(LOG_WARNING, "romdataFileGetEstimatedSize: wrong loadtype %d", loadtype);
+    #endif
 	}
 #endif
 	return size;
