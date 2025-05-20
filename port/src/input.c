@@ -236,6 +236,13 @@ static inline s32 inputAxisScale(s32 x, const s32 deadzone, const f32 scale)
 	}
 }
 
+// Added helper function for deadzone application
+static inline s32 apply_deadzone(s32 value, s32 deadzone) {
+    if (value > -deadzone && value < deadzone)
+        return 0;
+    return value;
+}
+
 // PSP: Replace inputReadController with direct SceCtrlData reading.
 s32 inputReadController(s32 idx, OSContPad *npad)
 {
@@ -245,8 +252,10 @@ s32 inputReadController(s32 idx, OSContPad *npad)
     sceCtrlPeekBufferPositive(&pad, 1);
 
     npad->button = 0;
-    npad->stick_x = pad.Lx - 128;
-    npad->stick_y = pad.Ly - 128;
+    s32 raw_x = pad.Lx - 128;
+    s32 raw_y = pad.Ly - 128;
+    npad->stick_x = apply_deadzone(raw_x, 10);
+    npad->stick_y = apply_deadzone(raw_y, 10);
     npad->rstick_x = 0;
     npad->rstick_y = 0;
 
@@ -254,10 +263,10 @@ s32 inputReadController(s32 idx, OSContPad *npad)
     if (pad.Buttons & PSP_CTRL_CROSS)    npad->button |= D_CBUTTONS;
     if (pad.Buttons & PSP_CTRL_SQUARE)   npad->button |= L_CBUTTONS;
     if (pad.Buttons & PSP_CTRL_CIRCLE)   npad->button |= R_CBUTTONS;
-    if (pad.Buttons & PSP_CTRL_RTRIGGER) npad->button |= R_TRIG;
+    if (pad.Buttons & PSP_CTRL_RTRIGGER) npad->button |= Z_TRIG;
     if (pad.Buttons & PSP_CTRL_LTRIGGER) npad->button |= L_TRIG;
     if (pad.Buttons & PSP_CTRL_START)    npad->button |= START_BUTTON;
-    if (pad.Buttons & PSP_CTRL_SELECT)   npad->button |= Z_TRIG;
+    if (pad.Buttons & PSP_CTRL_SELECT)   npad->button |= R_TRIG;
     if (pad.Buttons & PSP_CTRL_UP)       npad->button |= U_JPAD;
     if (pad.Buttons & PSP_CTRL_DOWN)     npad->button |= D_JPAD;
     if (pad.Buttons & PSP_CTRL_LEFT)     npad->button |= B_BUTTON;

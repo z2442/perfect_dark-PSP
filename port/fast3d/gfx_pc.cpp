@@ -1144,10 +1144,8 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* verti
         if (y > w) {
             d->clip_rej |= 8; // CLIP_TOP
         }
-        // if (z < -w) d->clip_rej |= 16; // CLIP_NEAR
-        if (z > w) {
-            d->clip_rej |= 32; // CLIP_FAR
-        }
+        if (z < -w) d->clip_rej |= 16; // CLIP_NEAR
+        if (z > w)  d->clip_rej |= 32; // CLIP_FAR
 
         d->x = x;
         d->y = y;
@@ -1201,6 +1199,12 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
     if ((rsp.extra_geometry_mode & G_NO_CLIPPING_EXT) == 0) {
         if (v1->clip_rej & v2->clip_rej & v3->clip_rej) {
             // The whole triangle lies outside the visible area
+            return;
+        }
+    }
+    // Enforce NDC clipping: GLES 1.1 cannot rasterize triangles with w <= 0
+    for (int i = 0; i < 3; i++) {
+        if (v_arr[i]->w <= 0.0f) {
             return;
         }
     }

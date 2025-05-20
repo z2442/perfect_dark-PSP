@@ -18,6 +18,11 @@
 #define SCREEN_WIDTH  480  // Set the screen width (example value)
 #define SCREEN_HEIGHT 272  // Set the screen height (example value)
 
+static uint32_t cms = 0;
+static uint32_t cmt = 0;
+
+static uint16_t g_es_zmode = 0;
+
 struct LoadedVertex {
     float x, y, z, w;   // Position
     float u, v;          // Texture coordinates
@@ -117,24 +122,41 @@ static void gfx_opengl_upload_texture(const uint8_t* rgba32_buf, uint32_t width,
     /* Default filters/wrap will be overridden by set_sampler_parameters(). */
 }
 
-static void gfx_opengl_set_sampler_parameters(int tile, bool linear_filter, uint32_t cms, uint32_t cmt) {
-    GLint filter = linear_filter ? GL_LINEAR : GL_NEAREST;
+static uint32_t gfx_cm_to_opengl(uint32_t val) {
+    // Only GL_REPEAT and GL_CLAMP_TO_EDGE are supported in GLES 1.1.
+    if (val & G_TX_CLAMP)
+        return GL_CLAMP_TO_EDGE;
+    // MIRROR is NOT supported; we'll emulate it in software.
+    return GL_REPEAT;
+}
+
+static float mirror_coord(float uv) {
+    // uv: input texture coordinate (0..N)
+    int ipart = (int)floorf(uv);
+    float fpart = uv - ipart;
+    // Flip on every odd tile
+    if (ipart & 1)
+        return 1.0f - fpart;
+    else
+        return fpart;
+}
+
+static uint32_t current_cms = 0;
+static uint32_t current_cmt = 0;
+
+static void gfx_opengl_set_sampler_parameters(int tile, bool linear_filter, uint32_t cms_in, uint32_t cmt_in) {
+    // Save for later (software mirroring)
+    current_cms = cms_in;
+    current_cmt = cmt_in;
+
+    const GLint filter = linear_filter && (current_filter_mode == FILTER_LINEAR) ? GL_LINEAR : GL_NEAREST;
+
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
-    GLint wrap_s;
-    if (cms & G_TX_MIRROR) {
-        wrap_s = GL_REPEAT;                /* MIRRORED_REPEAT not in GL 1.1 */
-    } else {
-        wrap_s = (cms & G_TX_CLAMP) ? GL_CLAMP_TO_EDGE : GL_REPEAT;
-    }
 
-    GLint wrap_t;
-    if (cmt & G_TX_MIRROR) {
-        wrap_t = GL_REPEAT;
-    } else {
-        wrap_t = (cmt & G_TX_CLAMP) ? GL_CLAMP_TO_EDGE : GL_REPEAT;
-    }
-
+    // GLES 1.1 supports only GL_REPEAT and GL_CLAMP_TO_EDGE
+    GLint wrap_s = (cms_in & G_TX_CLAMP) ? GL_CLAMP_TO_EDGE : GL_REPEAT;
+    GLint wrap_t = (cmt_in & G_TX_CLAMP) ? GL_CLAMP_TO_EDGE : GL_REPEAT;
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrap_s);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrap_t);
 }
@@ -145,67 +167,55 @@ static void gfx_opengl_set_sampler_parameters(int tile, bool linear_filter, uint
  *  compare == “reject/accept based on depth?” (else always pass)
  *  zmode   : 0 Opaque, 1 InterPen, 2 Translucent, 3 Decal
  */
-static void gfx_opengl_set_depth_mode(bool   enable,
-    bool   write,
-    bool   compare,
-    bool   /*depth_source_prim*/,
-    uint16_t zmode)
-{
-/* ------------------------------------------------------------------ */
-/* Enable / disable GL_DEPTH_TEST                                     */
-/* ------------------------------------------------------------------ */
-if (enable != es_depth_test) {
-if (enable) glEnable(GL_DEPTH_TEST);
-else        glDisable(GL_DEPTH_TEST);
-es_depth_test = enable;
+static float g_polygon_offset_z = 0.0f;
+static void gfx_opengl_set_depth_mode(
+    bool enable,
+    bool write,
+    bool compare,
+    bool /*depth_source_prim*/,
+    uint16_t zmode
+) {
+    // Enable/disable depth test
+    if (enable != es_depth_test) {
+        if (enable) glEnable(GL_DEPTH_TEST);
+        else        glDisable(GL_DEPTH_TEST);
+        es_depth_test = enable;
+    }
+
+    // Enable/disable depth buffer writes
+    if (write != es_depth_write) {
+        glDepthMask(write ? GL_TRUE : GL_FALSE);
+        es_depth_write = write;
+    }
+
+    if (!enable) {
+        g_es_zmode = zmode;
+        return;
+    }
+
+    // Set depth comparison function
+    GLenum func = GL_ALWAYS;
+    if (compare) {
+        func = GL_LEQUAL; // N64 mostly uses LEQUAL for everything
+    }
+    glDepthFunc(func);
+
+    // GLES 1.1 cannot do polygon offset for triangles—skip or fudge in software if necessary
+
+    g_es_zmode = zmode;
 }
-
-/* ------------------------------------------------------------------ */
-/* Depth-buffer writes (glDepthMask)                                   */
-/* Core flag ‘write’ is TRUE when we *want* to write.                  */
-/* ------------------------------------------------------------------ */
-if (write != es_depth_write) {
-glDepthMask(write ? GL_TRUE : GL_FALSE);
-es_depth_write = write;
-}
-
-/* If the test is disabled we’re done. */
-if (!enable)
-return;
-
-/* ------------------------------------------------------------------ */
-/* Choose a depth-compare function                                     */
-/* N64 works in 1/w screen-space; “<” ≈ GL_GEQUAL/GL_LEQUAL.           */
-/* ------------------------------------------------------------------ */
-GLenum func = GL_ALWAYS;            /* default when ‘compare’ == false */
-
-if (compare) {
-switch (zmode & 3) {
-case 0:  /* ZMODE_OPA   */ func = GL_LEQUAL;  break;
-case 1:  /* ZMODE_INTER */ func = GL_LESS;    break;
-case 2:  /* ZMODE_XLU   */ func = GL_LEQUAL;  break;
-case 3:  /* ZMODE_DECAL */ func = GL_ALWAYS;  break; /* disable compare */
-default:                 func = GL_LEQUAL;  break;
-}
-}
-
-glDepthFunc(func);
-}
-
 
 /* Add perspective projection for 3D content */
-static void gfx_opengl_set_perspective_projection(float fov, float aspect_ratio, float near_clip, float far_clip) {
-    float top = tanf(fov * 0.5f) * near_clip;
-    float right = top * aspect_ratio;
+static void gfx_opengl_set_perspective_projection(float fov, float aspect, float zNear, float zFar) {
+    float f = 1.0f / tanf(fov * 0.5f * (3.1415926f / 180.0f));
 
-    P_matrix[0][0] = near_clip / right;
-    P_matrix[1][1] = near_clip / top;
-    P_matrix[2][2] = -(far_clip + near_clip) / (far_clip - near_clip);
-    P_matrix[2][3] = -(2 * far_clip * near_clip) / (far_clip - near_clip);
-    P_matrix[3][2] = -1.0f;
-    P_matrix[3][3] = 0.0f;
+    memset(P_matrix, 0, sizeof(P_matrix));
+    P_matrix[0][0] = f / aspect;
+    P_matrix[1][1] = f;
+    P_matrix[2][2] = zFar / (zFar - zNear);  // Map depth to [0,1]
+    P_matrix[2][3] = 1.0f;
+    P_matrix[3][2] = (-zNear * zFar) / (zFar - zNear);
 }
-
 /* Add orthographic projection for 2D content */
 static void gfx_opengl_set_orthographic_projection(float left, float right, float bottom, float top, float near_clip, float far_clip) {
     P_matrix[0][0] = 2.0f / (right - left);
@@ -256,9 +266,13 @@ static void gfx_opengl_set_scissor(int x, int y, int width, int height) {
 static void gfx_opengl_set_use_alpha(bool use_alpha, bool modulate) {
     if (use_alpha) {
         glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     } else {
         glDisable(GL_BLEND);
+    }
+    if (modulate) {
+        glBlendFunc(GL_DST_COLOR, GL_ZERO);
+    } else {
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     }
 }
 
@@ -269,6 +283,21 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
     const int stride_bytes = stride_floats * sizeof(float);
 
     if (!buf_vbo || buf_vbo_num_tris == 0) return;
+
+    // Figure out fudge factor for Z, only for decal/interpen
+    float z_fudge = 0.0f;
+    int zmode = g_es_zmode;
+    switch (zmode & 3) {
+        case 1: // InterPen
+            z_fudge = +0.0005f;
+            break;
+        case 3: // Decal
+            z_fudge = -0.0005f;
+            break;
+        default:
+            z_fudge = 0.0f;
+            break;
+    }
 
     bool is_2d = true;
 
@@ -281,6 +310,9 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
             is_2d = true;  // If z == 0, it's likely a 2D object
             break;
         }
+
+        if (cms & G_TX_MIRROR) vertex->u = mirror_coord(vertex->u);
+        if (cmt & G_TX_MIRROR) vertex->v = mirror_coord(vertex->v);
     }
 
     // Set projection based on whether it's 2D or 3D
@@ -298,6 +330,7 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
 
     glMatrixMode(GL_MODELVIEW);
     glPushMatrix();
+    glLoadIdentity();
 
     glEnableClientState(GL_VERTEX_ARRAY);
     glEnableClientState(GL_TEXTURE_COORD_ARRAY);
@@ -327,7 +360,6 @@ static void gfx_opengl_init(void) {
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDepthFunc(GL_LEQUAL);
-
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
     
