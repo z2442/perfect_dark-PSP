@@ -7,12 +7,6 @@
 #include <SDL.h>
 #include <GLES/gl.h>
 #include <PR/gbi.h>
-#ifndef G_TX_CLAMP
-#define G_TX_CLAMP 0x02
-#endif
-#ifndef G_TX_MIRROR
-#define G_TX_MIRROR 0x01
-#endif
 #include "gfx_rendering_api.h"
 
 #define SCREEN_WIDTH  480  // Set the screen width (example value)
@@ -367,21 +361,6 @@ static void gfx_opengl_init(void) {
     glLoadIdentity();
 
     glClearColor(0.0, 0.0, 0.0, 1.0);
-}
-
-
-/* Update texture coordinate adjustments */
-static void gfx_apply_texture_coordinates(LoadedVertex* vertex, const float tex_scaling[2], const int16_t uls, const int16_t ult, const int16_t width, const int16_t height) {
-    // Apply texture scaling
-    float u = vertex->u / width;
-    float v = vertex->v / height;
-
-    // Adjust for aspect ratio if necessary
-    u = gfx_adjust_x_for_aspect_ratio(u);
-
-    // Map the texels to the appropriate space based on the texture parameters
-    vertex->u = (uls + u * tex_scaling[0]);
-    vertex->v = (ult + v * tex_scaling[1]);
 }
 
 

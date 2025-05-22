@@ -193,8 +193,6 @@ if(BUILD_PSP)
       set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3")
       set(CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} -O3")
       set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -O3")
-      # Remove potentially problematic desktop optimizations if they were added elsewhere
-      # Repeat for CXX and RelWithDebInfo flags...
   endif()
 
 else() # Non-PSP builds
