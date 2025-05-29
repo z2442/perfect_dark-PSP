@@ -17,13 +17,6 @@
 #include <kubridge.h>
 #include <pspsysmem.h>
 
-// --- PSP Module Info ---
-PSP_MODULE_INFO("PD_PSP", 0, 1, 0); // Changed name slightly, version 1.0
-PSP_HEAP_SIZE_KB(-1024); // Example: Request memory leaving 1MB for kernel/drivers. Adjust as needed.
-PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU); // Enable VFPU for the main thread if needed
-PSP_MAIN_THREAD_STACK_SIZE_KB(256); // Increase stack size if needed (default is 64KB)
-
-
 #include <stdlib.h>
 #include <stdio.h>
 #include <PR/ultratypes.h>
@@ -50,6 +43,12 @@ PSP_MAIN_THREAD_STACK_SIZE_KB(256); // Increase stack size if needed (default is
 #include <pspkernel.h>
 #include <psppower.h>
 #include <pspsuspend.h>
+
+// --- PSP Module Info ---
+PSP_MODULE_INFO("PD_PSP", 0, 1, 0); // Changed name slightly, version 1.0
+PSP_HEAP_SIZE_KB(-1024); // Example: Request memory leaving 1MB for kernel/drivers. Adjust as needed.
+PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU); // Enable VFPU for the main thread if needed
+PSP_MAIN_THREAD_STACK_SIZE_KB(256); // Increase stack size if needed (default is 64KB)
 
 //Volatile Memory code Barrowed from DaedalusX64 
 bool bVolatileMem  = false;
@@ -209,7 +208,7 @@ void pspFpuSetEnableStandalone(uint32_t enable)
 int main(int argc, const char **argv)
 {
 	pspFpuSetEnableStandalone(0);
-	VolatileMemInit();
+	//VolatileMemInit();
 	sysInitArgs(argc, argv);
 
 	if (!sysArgCheck("--no-crash-handler")) {

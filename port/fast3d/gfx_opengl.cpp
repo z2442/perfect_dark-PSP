@@ -87,33 +87,10 @@ static void gfx_opengl_select_texture(int tile, GLuint texture_id, bool linear_f
 }
 
 static void gfx_opengl_upload_texture(const uint8_t* rgba32_buf, uint32_t width, uint32_t height) {
-    /* OpenGL 1.1 / OpenGL ES 1.1 require POT textures. */
-    uint32_t pot_w = 1, pot_h = 1;
-    while (pot_w < width)  pot_w <<= 1;
-    while (pot_h < height) pot_h <<= 1;
-
-    const bool needs_resize = (pot_w != width) || (pot_h != height);
-
-    /* Prepare a POT‑sized temporary buffer if necessary. */
-    const uint8_t* src = rgba32_buf;
-    std::vector<uint8_t> temp;              /* RAII helper */
-    if (needs_resize) {
-        temp.resize(pot_w * pot_h * 4, 0);  /* zero‑fill padding */
-
-        for (uint32_t y = 0; y < height; ++y) {
-            memcpy(&temp[(y * pot_w) * 4],
-                   &rgba32_buf[(y * width) * 4],
-                   width * 4);
-        }
-        src = temp.data();
-    }
-
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);          /* allow arbitrary row‑length */
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
-                 pot_w, pot_h, 0,
-                 GL_RGBA, GL_UNSIGNED_BYTE, src);
-
-    /* Default filters/wrap will be overridden by set_sampler_parameters(). */
+                 width, height, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, rgba32_buf);
 }
 
 static uint32_t gfx_cm_to_opengl(uint32_t val) {
@@ -166,7 +143,7 @@ static void gfx_opengl_set_depth_mode(
     bool enable,
     bool write,
     bool compare,
-    bool /*depth_source_prim*/,
+    bool depth_source_prim,
     uint16_t zmode
 ) {
     // Enable/disable depth test
@@ -194,32 +171,22 @@ static void gfx_opengl_set_depth_mode(
     }
     glDepthFunc(func);
 
-    // GLES 1.1 cannot do polygon offset for triangles—skip or fudge in software if necessary
+    // GLES 1.1 cannot do polygon offset for triangles—fudge Z in software
+    switch (zmode & 3) {
+        case 1: // InterPen
+            g_polygon_offset_z = +0.0005f;
+            break;
+        case 3: // Decal
+            g_polygon_offset_z = -0.0005f;
+            break;
+        default:
+            g_polygon_offset_z = 0.0f;
+            break;
+    }
 
     g_es_zmode = zmode;
 }
 
-/* Add perspective projection for 3D content */
-static void gfx_opengl_set_perspective_projection(float fov, float aspect, float zNear, float zFar) {
-    float f = 1.0f / tanf(fov * 0.5f * (3.1415926f / 180.0f));
-
-    memset(P_matrix, 0, sizeof(P_matrix));
-    P_matrix[0][0] = f / aspect;
-    P_matrix[1][1] = f;
-    P_matrix[2][2] = zFar / (zFar - zNear);  // Map depth to [0,1]
-    P_matrix[2][3] = 1.0f;
-    P_matrix[3][2] = (-zNear * zFar) / (zFar - zNear);
-}
-/* Add orthographic projection for 2D content */
-static void gfx_opengl_set_orthographic_projection(float left, float right, float bottom, float top, float near_clip, float far_clip) {
-    P_matrix[0][0] = 2.0f / (right - left);
-    P_matrix[1][1] = 2.0f / (top - bottom);
-    P_matrix[2][2] = -2.0f / (far_clip - near_clip);
-    P_matrix[3][0] = -(right + left) / (right - left);
-    P_matrix[3][1] = -(top + bottom) / (top - bottom);
-    P_matrix[3][2] = -(far_clip + near_clip) / (far_clip - near_clip);
-    P_matrix[3][3] = 1.0f;
-}
 
 static float gfx_adjust_x_for_aspect_ratio(float x) {
     // This function can be modified to adjust x based on your aspect ratio needs
@@ -227,22 +194,6 @@ static float gfx_adjust_x_for_aspect_ratio(float x) {
     return x * aspect_ratio;
 }
 
-static void gfx_opengl_set_projection_for_2d() {
-    gfx_opengl_set_orthographic_projection(0, SCREEN_WIDTH, 0, SCREEN_HEIGHT, -1.0f, 1.0f);
-    glDisable(GL_DEPTH_TEST);  // Disable depth testing for 2D rendering
-
-    glViewport(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);  // Set the viewport to the entire screen for 2D rendering
-    glScissor(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);   // Ensure 2D content is clipped to the screen boundaries
-    glEnable(GL_SCISSOR_TEST);
-}
-
-static void gfx_opengl_set_projection_for_3d() {
-    gfx_opengl_set_perspective_projection(60.0f, (float)SCREEN_WIDTH / (float)SCREEN_HEIGHT, 0.1f, 1000.0f);
-    glEnable(GL_DEPTH_TEST);  // Enable depth testing for 3D rendering
-
-    glViewport(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);  // Set the viewport to the entire screen for 3D rendering
-    glDisable(GL_SCISSOR_TEST);  // Disable scissor test for 3D content, usually not necessary
-}
 
 static void gfx_opengl_set_depth_range(float znear, float zfar) {
     glDepthRangef(znear, zfar);
@@ -270,7 +221,6 @@ static void gfx_opengl_set_use_alpha(bool use_alpha, bool modulate) {
     }
 }
 
-static bool is_2d_mode = false;
 
 static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_vbo_num_tris) {
     const int stride_floats = 9; // not 8
@@ -307,23 +257,14 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
 
         if (cms & G_TX_MIRROR) vertex->u = mirror_coord(vertex->u);
         if (cmt & G_TX_MIRROR) vertex->v = mirror_coord(vertex->v);
+
+        vertex->z += g_polygon_offset_z;
     }
 
     // Set projection based on whether it's 2D or 3D
-    if (is_2d) {
-        if (!is_2d_mode) {
-            is_2d_mode = true;
-            gfx_opengl_set_projection_for_2d();  // Switch to 2D projection matrix
-        }
-    } else {
-        if (is_2d_mode) {
-            is_2d_mode = false;
-            gfx_opengl_set_projection_for_3d();  // Switch to 3D projection matrix
-        }
-    }
+    
 
     glMatrixMode(GL_MODELVIEW);
-    glPushMatrix();
     glLoadIdentity();
 
     glEnableClientState(GL_VERTEX_ARRAY);
@@ -344,7 +285,6 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
     glDisableClientState(GL_VERTEX_ARRAY);
     glDisable(GL_TEXTURE_2D);
 
-    glPopMatrix();
 }
 
 static void gfx_opengl_init(void) {

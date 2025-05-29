@@ -11,7 +11,6 @@
 #include "preprocess.h"
 #include "platform.h"
 
-// ... (ROMDATA_FILEDIR, ROMDATA_SEGDIR, ROM specific defines remain the same) ...
 #define ROMDATA_FILEDIR "files"
 #define ROMDATA_SEGDIR "segs"
 
@@ -56,6 +55,17 @@ static const char *romName = ROMDATA_ROM_NAME;
 // NEW: Buffer for file names loaded from ROM
 static char *g_RomFileNameBlockBuffer = NULL;
 static u32 g_RomFileNameBlockSize = 0;
+
+// --- Streamed segment LRU cache ---
+#define MAX_STREAMED_SEGMENTS 4
+typedef struct {
+    const char *name;
+    u8 *data;
+    u32 size;
+} StreamedSegmentEntry;
+
+static StreamedSegmentEntry g_StreamedSegmentCache[MAX_STREAMED_SEGMENTS];
+static u32 g_StreamedSegmentLRU = 0;
 
 
 enum loadsource {
@@ -666,9 +676,9 @@ s32 romdataInit(void)
 
 // NEW: Shutdown function
 void romdataShutdown(void) {
-    #ifdef PDDEBUG
+#ifdef PDDEBUG
     sysLogPrintf(LOG_NOTE, "romdataShutdown: Cleaning up ROM data.");
-    #endif
+#endif
     // Free data for segments
     for (struct romfile *seg = romSegs; seg->name; ++seg) {
         if ((seg->source == SRC_ROM_LOADED || seg->source == SRC_EXTERNAL) && seg->data) {
@@ -687,6 +697,16 @@ void romdataShutdown(void) {
         // It does not need separate freeing per slot if those main buffers are freed.
     }
 
+    // Free streamed segment LRU cache
+    for (u32 i = 0; i < MAX_STREAMED_SEGMENTS; ++i) {
+        if (g_StreamedSegmentCache[i].data) {
+            sysMemFree(g_StreamedSegmentCache[i].data);
+            g_StreamedSegmentCache[i].data = NULL;
+            g_StreamedSegmentCache[i].name = NULL;
+            g_StreamedSegmentCache[i].size = 0;
+        }
+    }
+
     if (g_RomFileNameBlockBuffer) {
         sysMemFree(g_RomFileNameBlockBuffer);
         g_RomFileNameBlockBuffer = NULL;
@@ -703,9 +723,9 @@ void romdataShutdown(void) {
         fclose(g_RomFp);
         g_RomFp = NULL;
     }
-    #ifdef PDDEBUG
+#ifdef PDDEBUG
     sysLogPrintf(LOG_NOTE, "romdataShutdown: Cleanup complete.");
-    #endif
+#endif
 }
 
 
@@ -961,10 +981,33 @@ s32 romdataFileGetNumForName(const char *name)
 u8 *romdataSegGetData(const char *segName) {
     struct romfile *seg = romdataGetSeg(segName);
     if (seg && seg->data) return seg->data;
-    #ifdef PDDEBUG
+#ifdef PDDEBUG
     sysLogPrintf(LOG_WARNING, "romdataSegGetData: Segment '%s' has no data.", segName);
-    #endif
+#endif
     return NULL;
+}
+
+u8 *romdataSegGetPersistent(const char *segName) {
+    struct romfile *seg = romdataGetSeg(segName);
+    if (!seg || seg->source != SRC_ROM_IN_FILE || seg->size == 0) return seg ? seg->data : NULL;
+
+    for (u32 i = 0; i < MAX_STREAMED_SEGMENTS; ++i) {
+        if (g_StreamedSegmentCache[i].name && strcmp(g_StreamedSegmentCache[i].name, segName) == 0) {
+            return g_StreamedSegmentCache[i].data;
+        }
+    }
+
+    u8 *raw = romdataSegGetData(segName);
+    if (!raw) sysFatalError("Failed to stream %s", segName);
+
+    u32 idx = g_StreamedSegmentLRU++ % MAX_STREAMED_SEGMENTS;
+    if (g_StreamedSegmentCache[idx].data) sysMemFree(g_StreamedSegmentCache[idx].data);
+
+    g_StreamedSegmentCache[idx].data = raw;
+    g_StreamedSegmentCache[idx].name = segName;
+    g_StreamedSegmentCache[idx].size = seg->size;
+
+    return raw;
 }
 
 u8 *romdataSegGetDataEnd(const char *segName) {

@@ -491,6 +491,25 @@ static void gfx_generate_cc(struct ColorCombiner* comb, const ColorCombinerKey& 
     memcpy(comb->shader_input_mapping, shader_input_mapping, sizeof(shader_input_mapping));
 }
 
+
+// Resize buffer if NPOT. Returns pointer to new buffer and sets POT size.
+static const uint8_t* fix_npot_texture(const uint8_t* rgba32_buf, uint32_t width, uint32_t height, uint32_t& out_pot_w, uint32_t& out_pot_h, std::vector<uint8_t>& temp) {
+    out_pot_w = 1; out_pot_h = 1;
+    while (out_pot_w < width)  out_pot_w <<= 1;
+    while (out_pot_h < height) out_pot_h <<= 1;
+
+    if (out_pot_w == width && out_pot_h == height) {
+        // Already POT
+        temp.clear();
+        return rgba32_buf;
+    }
+    temp.resize(out_pot_w * out_pot_h * 4, 0);
+    for (uint32_t y = 0; y < height; ++y) {
+        memcpy(&temp[(y * out_pot_w) * 4], &rgba32_buf[(y * width) * 4], width * 4);
+    }
+    return temp.data();
+}
+
 static struct ColorCombiner* gfx_lookup_or_create_color_combiner(const ColorCombinerKey& key) {
     if (prev_combiner != color_combiner_pool.end() && prev_combiner->first == key) {
         return &prev_combiner->second;
@@ -612,8 +631,14 @@ static void import_texture_rgba16(int tile, const LoadedTexture& loaded_texture,
     const uint32_t width = rdp.texture_tile[tile].line_size_bytes / 2;
     const uint32_t height = size_bytes / rdp.texture_tile[tile].line_size_bytes;
 
-    gfx_rapi->upload_texture(tex_upload_buffer, width, height);
-    
+    std::vector<uint8_t> temp_pot_buf;
+    uint32_t pot_w, pot_h;
+    const uint8_t* src = fix_npot_texture((const uint8_t*)tex_upload_buffer, width, height, pot_w, pot_h, temp_pot_buf);
+    gfx_rapi->upload_texture(src, pot_w, pot_h);
+    if (rendering_state.textures[0]) {
+        rendering_state.textures[0]->second.pot_w = pot_w;
+        rendering_state.textures[0]->second.pot_h = pot_h;
+    }
 }
 
 static void import_texture_rgba32(int tile, const LoadedTexture& loaded_texture, bool importReplacement) {
@@ -633,8 +658,14 @@ static void import_texture_rgba32(int tile, const LoadedTexture& loaded_texture,
 
     const uint32_t width = rdp.texture_tile[tile].line_size_bytes / 2;
     const uint32_t height = (size_bytes / 2) / rdp.texture_tile[tile].line_size_bytes;
-    gfx_rapi->upload_texture(tex_upload_buffer, width, height);
-    // DumpTexture(loaded_texture.otr_path, addr, width, height);
+    std::vector<uint8_t> temp_pot_buf;
+    uint32_t pot_w, pot_h;
+    const uint8_t* src8 = fix_npot_texture((const uint8_t*)tex_upload_buffer, width, height, pot_w, pot_h, temp_pot_buf);
+    gfx_rapi->upload_texture(src8, pot_w, pot_h);
+    if (rendering_state.textures[0]) {
+        rendering_state.textures[0]->second.pot_w = pot_w;
+        rendering_state.textures[0]->second.pot_h = pot_h;
+    }
 }
 
 static void import_texture_ia4(int tile, const LoadedTexture& loaded_texture, bool importReplacement) {
@@ -662,8 +693,14 @@ static void import_texture_ia4(int tile, const LoadedTexture& loaded_texture, bo
     const uint32_t width = rdp.texture_tile[tile].line_size_bytes * 2;
     const uint32_t height = size_bytes / rdp.texture_tile[tile].line_size_bytes;
 
-    gfx_rapi->upload_texture(tex_upload_buffer, width, height);
-    
+    std::vector<uint8_t> temp_pot_buf;
+    uint32_t pot_w, pot_h;
+    const uint8_t* src = fix_npot_texture((const uint8_t*)tex_upload_buffer, width, height, pot_w, pot_h, temp_pot_buf);
+    gfx_rapi->upload_texture(src, pot_w, pot_h);
+    if (rendering_state.textures[0]) {
+        rendering_state.textures[0]->second.pot_w = pot_w;
+        rendering_state.textures[0]->second.pot_h = pot_h;
+    }
 }
 
 static void import_texture_ia8(int tile, const LoadedTexture& loaded_texture, bool importReplacement) {
@@ -688,8 +725,14 @@ static void import_texture_ia8(int tile, const LoadedTexture& loaded_texture, bo
     const uint32_t width = rdp.texture_tile[tile].line_size_bytes;
     const uint32_t height = size_bytes / rdp.texture_tile[tile].line_size_bytes;
 
-    gfx_rapi->upload_texture(tex_upload_buffer, width, height);
-    
+    std::vector<uint8_t> temp_pot_buf;
+    uint32_t pot_w, pot_h;
+    const uint8_t* src = fix_npot_texture((const uint8_t*)tex_upload_buffer, width, height, pot_w, pot_h, temp_pot_buf);
+    gfx_rapi->upload_texture(src, pot_w, pot_h);
+    if (rendering_state.textures[0]) {
+        rendering_state.textures[0]->second.pot_w = pot_w;
+        rendering_state.textures[0]->second.pot_h = pot_h;
+    }
 }
 
 static void import_texture_ia16(int tile, const LoadedTexture& loaded_texture, bool importReplacement) {
@@ -714,8 +757,14 @@ static void import_texture_ia16(int tile, const LoadedTexture& loaded_texture, b
     const uint32_t width = rdp.texture_tile[tile].line_size_bytes / 2;
     const uint32_t height = size_bytes / rdp.texture_tile[tile].line_size_bytes;
 
-    gfx_rapi->upload_texture(tex_upload_buffer, width, height);
-    
+    std::vector<uint8_t> temp_pot_buf;
+    uint32_t pot_w, pot_h;
+    const uint8_t* src = fix_npot_texture((const uint8_t*)tex_upload_buffer, width, height, pot_w, pot_h, temp_pot_buf);
+    gfx_rapi->upload_texture(src, pot_w, pot_h);
+    if (rendering_state.textures[0]) {
+        rendering_state.textures[0]->second.pot_w = pot_w;
+        rendering_state.textures[0]->second.pot_h = pot_h;
+    }
 }
 
 static void import_texture_i4(int tile, const LoadedTexture& loaded_texture, bool importReplacement) {
@@ -741,8 +790,14 @@ static void import_texture_i4(int tile, const LoadedTexture& loaded_texture, boo
     const uint32_t width = rdp.texture_tile[tile].line_size_bytes * 2;
     const uint32_t height = size_bytes / rdp.texture_tile[tile].line_size_bytes;
 
-    gfx_rapi->upload_texture(tex_upload_buffer, width, height);
-    
+    std::vector<uint8_t> temp_pot_buf;
+    uint32_t pot_w, pot_h;
+    const uint8_t* src = fix_npot_texture((const uint8_t*)tex_upload_buffer, width, height, pot_w, pot_h, temp_pot_buf);
+    gfx_rapi->upload_texture(src, pot_w, pot_h);
+    if (rendering_state.textures[0]) {
+        rendering_state.textures[0]->second.pot_w = pot_w;
+        rendering_state.textures[0]->second.pot_h = pot_h;
+    }
 }
 
 static void import_texture_i8(int tile, const LoadedTexture& loaded_texture, bool importReplacement) {
@@ -766,8 +821,14 @@ static void import_texture_i8(int tile, const LoadedTexture& loaded_texture, boo
     const uint32_t width = rdp.texture_tile[tile].line_size_bytes;
     const uint32_t height = size_bytes / rdp.texture_tile[tile].line_size_bytes;
 
-    gfx_rapi->upload_texture(tex_upload_buffer, width, height);
-    
+    std::vector<uint8_t> temp_pot_buf;
+    uint32_t pot_w, pot_h;
+    const uint8_t* src = fix_npot_texture((const uint8_t*)tex_upload_buffer, width, height, pot_w, pot_h, temp_pot_buf);
+    gfx_rapi->upload_texture(src, pot_w, pot_h);
+    if (rendering_state.textures[0]) {
+        rendering_state.textures[0]->second.pot_w = pot_w;
+        rendering_state.textures[0]->second.pot_h = pot_h;
+    }
 }
 
 static inline void palette_to_rgba32(const uint16_t palentry, uint8_t *rgba32_buf) {
@@ -817,7 +878,14 @@ static void import_texture_ci4(int tile, const LoadedTexture& loaded_texture, bo
     const uint32_t width = result_line_size * 2;
     const uint32_t height = size_bytes / result_line_size;
 
-    gfx_rapi->upload_texture(tex_upload_buffer, width, height);
+    std::vector<uint8_t> temp_pot_buf;
+    uint32_t pot_w, pot_h;
+    const uint8_t* src = fix_npot_texture((const uint8_t*)tex_upload_buffer, width, height, pot_w, pot_h, temp_pot_buf);
+    gfx_rapi->upload_texture(src, pot_w, pot_h);
+    if (rendering_state.textures[0]) {
+        rendering_state.textures[0]->second.pot_w = pot_w;
+        rendering_state.textures[0]->second.pot_h = pot_h;
+    }
 }
 
 static void import_texture_ci8(int tile, const LoadedTexture& loaded_texture, bool importReplacement) {
@@ -843,8 +911,14 @@ static void import_texture_ci8(int tile, const LoadedTexture& loaded_texture, bo
     const uint32_t width = result_line_size;
     const uint32_t height = size_bytes / result_line_size;
 
-    gfx_rapi->upload_texture(tex_upload_buffer, width, height);
-    
+    std::vector<uint8_t> temp_pot_buf;
+    uint32_t pot_w, pot_h;
+    const uint8_t* src = fix_npot_texture((const uint8_t*)tex_upload_buffer, width, height, pot_w, pot_h, temp_pot_buf);
+    gfx_rapi->upload_texture(src, pot_w, pot_h);
+    if (rendering_state.textures[0]) {
+        rendering_state.textures[0]->second.pot_w = pot_w;
+        rendering_state.textures[0]->second.pot_h = pot_h;
+    }
 }
 
 static void import_texture(int i, int tile, bool importReplacement) {
@@ -853,6 +927,8 @@ static void import_texture(int i, int tile, bool importReplacement) {
     const uint8_t siz = rdp.texture_tile[tile].siz;
     const uint32_t tex_flags = loaded_texture.tex_flags;
     const uint8_t palette_index = rdp.texture_tile[tile].palette;
+
+    const auto& tileinfo = rdp.texture_tile[tile];
 
     if ((rdp.tex_lod && tile >= rdp.first_tile_index + rdp.tex_detail) || !loaded_texture.addr) {
         // set up miplevel 0; also acts as a catch-all for when .addr is NULL because my texture loader sucks
@@ -875,11 +951,14 @@ static void import_texture(int i, int tile, bool importReplacement) {
 
     TextureCacheKey key;
     if (fmt == G_IM_FMT_CI) {
-        key = { orig_addr, { rdp.palette_addrs[0], rdp.palette_addrs[1] }, fmt, siz, palette_index };
+    key = TextureCacheKey{ orig_addr, { rdp.palette_addrs[0], rdp.palette_addrs[1] }, fmt, siz, palette_index,
+        tileinfo.uls, tileinfo.ult, tileinfo.lrs, tileinfo.lrt,
+        tileinfo.cms, tileinfo.cmt, tileinfo.width, tileinfo.height };
     } else {
-        key = { orig_addr, {}, fmt, siz, palette_index };
-    }
-
+    key = TextureCacheKey{ orig_addr, { nullptr, nullptr }, fmt, siz, palette_index,
+        tileinfo.uls, tileinfo.ult, tileinfo.lrs, tileinfo.lrt,
+        tileinfo.cms, tileinfo.cmt, tileinfo.width, tileinfo.height };
+}
     if (gfx_texture_cache_lookup(i, key)) {
         return;
     }
@@ -1196,17 +1275,35 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
     struct LoadedVertex* v3 = &rsp.loaded_vertices[vtx3_idx];
     struct LoadedVertex* v_arr[3] = { v1, v2, v3 };
 
+    // VFPU-style NDC clipping: z + w < 0, using PSP inline assembly
+    static const float clip_plane[4] __attribute__((aligned(16))) = { 0.0f, 0.0f, -1.0f, -1.0f };
+
     if ((rsp.extra_geometry_mode & G_NO_CLIPPING_EXT) == 0) {
         if (v1->clip_rej & v2->clip_rej & v3->clip_rej) {
             // The whole triangle lies outside the visible area
             return;
         }
-    }
-    // Enforce NDC clipping: GLES 1.1 cannot rasterize triangles with w <= 0
-    for (int i = 0; i < 3; i++) {
-        if (v_arr[i]->w <= 0.0f) {
-            return;
+
+        // Corrected VFPU-style NDC clipping: z + w < 0
+        bool clipped = false;
+        for (int i = 0; i < 3; i++) {
+            float z = v_arr[i]->z;
+            float w = v_arr[i]->w;
+            float dot;
+            __asm__ volatile (
+                "mtv    %1, S000\n"             // z
+                "mtv    %2, S001\n"             // w
+                "vadd.s S002, S000, S001\n"     // z + w
+                "mfv    %0, S002\n"
+                : "=r"(dot)
+                : "r"(z), "r"(w)
+            );
+            if (dot < 0.0f) {
+                clipped = true;
+                break;
+            }
         }
+        if (clipped) return;
     }
 
     if ((rsp.geometry_mode & G_CULL_BOTH) != 0) {
@@ -1244,13 +1341,15 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
         }
     }
 
+    // Extract and decode depth-related state flags from other_mode
     bool depth_test = ((rsp.geometry_mode & G_ZBUFFER) == G_ZBUFFER || (rdp.other_mode_l & G_ZS_PRIM) == G_ZS_PRIM) &&
                       ((rdp.other_mode_h & G_CYC_1CYCLE) == G_CYC_1CYCLE || (rdp.other_mode_h & G_CYC_2CYCLE) == G_CYC_2CYCLE);
-    bool depth_update = (rdp.other_mode_l & Z_UPD) == Z_UPD;
-    bool depth_compare = (rdp.other_mode_l & Z_CMP) == Z_CMP;
-    bool depth_source_prim = (rdp.other_mode_l & G_ZS_PRIM) == G_ZS_PRIM /* && gDP.primDepth.z == 1.0f */;
-    uint16_t zmode = rdp.other_mode_l & ZMODE_DEC;
-    uint8_t depth_mode = (depth_test ? 1 : 0) | (depth_update ? 2 : 0) | (depth_compare ? 4 : 0) | (depth_source_prim ? 8 : 0) | (zmode >> 6);
+    bool depth_update = (rdp.other_mode_l & Z_UPD) != 0;
+    bool depth_compare = (rdp.other_mode_l & Z_CMP) != 0;
+    bool depth_source_prim = (rdp.other_mode_l & G_ZS_PRIM) != 0;
+    uint16_t zmode = (rdp.other_mode_l & ZMODE_DEC) >> 6; // extract zmode bits properly
+    // Compose depth mode bitfield used to avoid redundant state changes
+    uint8_t depth_mode = (depth_test ? 1 : 0) | (depth_update ? 2 : 0) | (depth_compare ? 4 : 0) | (depth_source_prim ? 8 : 0) | (zmode << 4);
 
     if (depth_mode != rendering_state.depth_mode) {
         gfx_flush();
@@ -1397,17 +1496,6 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
         }
     }
 
-    struct ShaderProgram* prg = comb->prg[tm];
-    if (prg == NULL) {
-        comb->prg[tm] = prg =
-            gfx_lookup_or_create_shader_program(comb->shader_id0, comb->shader_id1 | (tm * SHADER_OPT_TEXEL0_CLAMP_S));
-    }
-    if (prg != rendering_state.shader_program) {
-        gfx_flush();
-        gfx_rapi->unload_shader(rendering_state.shader_program);
-        gfx_rapi->load_shader(prg);
-        rendering_state.shader_program = prg;
-    }
     if (use_alpha != rendering_state.alpha_blend || use_modulate != rendering_state.modulate) {
         gfx_flush();
         gfx_rapi->set_use_alpha(use_alpha, use_modulate);
@@ -1417,10 +1505,19 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
     uint8_t num_inputs;
     bool used_textures[2];
 
-    gfx_rapi->shader_get_info(prg, &num_inputs, used_textures);
-
     struct GfxClipParameters clip_parameters = gfx_rapi->get_clip_parameters();
 
+    // Manual polygon offset in software
+    float polygon_offset_bias = 0.001f; // Tweak this value if needed
+    for (int i = 0; i < 3; i++) {
+        v_arr[i]->z += polygon_offset_bias * v_arr[i]->w;
+    }
+
+    uint32_t pot_w = 1, pot_h = 1;
+    if (rendering_state.textures[0]) {
+        pot_w = rendering_state.textures[0]->second.pot_w;
+        pot_h = rendering_state.textures[0]->second.pot_h;
+    }
     for (int i = 0; i < 3; i++) {
         float w = v_arr[i]->w;
         if (fabsf(w) < 0.001f) {
@@ -1432,10 +1529,13 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
         short uls = rdp.texture_tile[rdp.first_tile_index].uls;
         short ult = rdp.texture_tile[rdp.first_tile_index].ult;
 
-        float u = ((float)(v_arr[i]->u - uls) / 32.0f) / (float)(tex_w);
-        float v = ((float)(v_arr[i]->v - ult) / 32.0f) / (float)(tex_h);
-        u = clampf(u, 0.0f, 1.0f);
-        v = clampf(v, 0.0f, 1.0f);
+        uint32_t orig_w = tex_width2[0] ? tex_width2[0] : pot_w;
+        uint32_t orig_h = tex_height2[0] ? tex_height2[0] : pot_h;
+        float u = ((float)(v_arr[i]->u - uls) / 32.0f) / (float)(orig_w);
+        u *= (float)orig_w / (float)pot_w;
+        float v = ((float)(v_arr[i]->v - ult) / 32.0f) / (float)(orig_h);
+        v *= (float)orig_h / (float)pot_h;
+
         float r = v_arr[i]->color.r / 255.0f;
         float g = v_arr[i]->color.g / 255.0f;
         float b = v_arr[i]->color.b / 255.0f;
