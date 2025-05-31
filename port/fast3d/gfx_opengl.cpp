@@ -77,32 +77,34 @@ static void gfx_opengl_select_texture(int tile, GLuint texture_id, bool linear_f
 }
 
 static void gfx_opengl_upload_texture(const uint8_t* rgba32_buf, uint32_t width, uint32_t height) {
-    // Find next power-of-two width and height
-    uint32_t pot_width = 1;
-    uint32_t pot_height = 1;
-    while (pot_width < width) pot_width <<= 1;
-    while (pot_height < height) pot_height <<= 1;
+    int pot_width = 1, pot_height = 1;
+    while (pot_width < (int)width)   pot_width <<= 1;
+    while (pot_height < (int)height) pot_height <<= 1;
 
-    // Allocate and convert to ABGR (PSP expects this format)
-    uint32_t* converted = (uint32_t*)sceGuGetMemory(pot_width * pot_height * sizeof(uint32_t));
-    for (uint32_t y = 0; y < pot_height; ++y) {
-        for (uint32_t x = 0; x < pot_width; ++x) {
-            if (x < width && y < height) {
-                uint32_t rgba = ((const uint32_t*)rgba32_buf)[y * width + x];
-                uint8_t r = (rgba >> 0) & 0xFF;
-                uint8_t g = (rgba >> 8) & 0xFF;
-                uint8_t b = (rgba >> 16) & 0xFF;
-                uint8_t a = (rgba >> 24) & 0xFF;
-                converted[y * pot_width + x] = (a << 24) | (b << 16) | (g << 8) | r;
-            } else {
-                converted[y * pot_width + x] = 0;
-            }
+    // Allocate RAM buffer for converted texture
+    uint8_t* converted = (uint8_t*)malloc(pot_width * pot_height * 4);
+    if (!converted) return; // Out of RAM
+
+    // BGRA to RGBA swizzle, plus zero-padding as before
+    for (uint32_t y = 0; y < height; ++y) {
+        for (uint32_t x = 0; x < width; ++x) {
+            uint8_t* dst = converted + (y * pot_width + x) * 4;
+            const uint8_t* src = rgba32_buf + (y * width + x) * 4;
+            dst[0] = src[2];
+            dst[1] = src[1];
+            dst[2] = src[0];
+            dst[3] = src[3];
         }
+        memset(converted + (y * pot_width + width) * 4, 0, (pot_width - width) * 4);
     }
 
+    // Flush cache if needed (for RAM, usually not needed unless you memcpy directly to VRAM)
+    // Upload to GU (copies from RAM to VRAM as needed)
     sceGuEnable(GU_TEXTURE_2D);
     sceGuTexMode(GU_PSM_8888, 0, 0, 0);
     sceGuTexImage(0, pot_width, pot_height, pot_width, converted);
+
+    free(converted);
 }
 
 static void gfx_opengl_set_sampler_parameters(int tile, bool linear_filter, uint32_t cms, uint32_t cmt) {
@@ -186,24 +188,43 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
 }
 
 static void gfx_opengl_init(void) {
-    void* fbp0 = guGetStaticVramBuffer(480, 272, GU_PSM_8888);
-    void* fbp1 = guGetStaticVramBuffer(480, 272, GU_PSM_8888);
-    void* zbp  = guGetStaticVramBuffer(480, 272, GU_PSM_4444);
+    // Allocate framebuffers in VRAM (align width to 512 for PSP)
+    void* fbp0 = guGetStaticVramBuffer(512, 272, GU_PSM_8888);
+    void* fbp1 = guGetStaticVramBuffer(512, 272, GU_PSM_8888);
+    void* zbp  = guGetStaticVramBuffer(512, 272, GU_PSM_4444);
 
     sceGuInit();
     sceGuStart(GU_DIRECT, list);
 
+    // Set up double buffering
     sceGuDrawBuffer(GU_PSM_8888, fbp0, 512);
     sceGuDispBuffer(480, 272, fbp1, 512);
     sceGuDepthBuffer(zbp, 512);
+
+    // Set screen offset and viewport to center
     sceGuOffset(2048 - (480 / 2), 2048 - (272 / 2));
     sceGuViewport(2048, 2048, 480, 272);
+
+    // Set depth range (1.0 near, 0.0 far in GU, which is 65535 to 0)
     sceGuDepthRange(65535, 0);
+
+    // Enable scissor test to restrict drawing to visible region
     sceGuScissor(0, 0, 480, 272);
     sceGuEnable(GU_SCISSOR_TEST);
+
+    // Set correct face winding (clockwise for GU, matching OpenGL default)
     sceGuFrontFace(GU_CW);
+
+    // Enable smooth shading
     sceGuShadeModel(GU_SMOOTH);
+
+    // Start with textures disabled; will be enabled by draw routines as needed
     sceGuDisable(GU_TEXTURE_2D);
+
+    // Clear color and depth buffers on first frame
+    sceGuClearColor(0); // Black background
+    sceGuClearDepth(0);
+    sceGuClear(GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT);
 
     sceGuFinish();
     sceGuSync(GU_SYNC_FINISH, GU_SYNC_WHAT_DONE);
