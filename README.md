@@ -4,16 +4,22 @@
 2)Run psp.sh 
 3)run the EBOOT placed in the build-psp directory 
 
+- Current Status-
+- Runs on real PSP SLIM and PS Vita Addrenaline 
 
 - Current Issues -
-- A lot of broken geometry and textures
-- Not running on real hardware yet runs fine within PPSSPP
+-Texture bugs
+-Camera perspective issue
 
 - Next Steps-
 - Fix renderering
-- Replace psp GL with native pspGU
-- Replace SDL2 audio with psp audio lib
-- Replace SDL2 input with psp native
+- 
+- Replace psp GL with native pspGU -> Started!
+- Both rendering methods are being developed side by side. The PSPGL version that uses GL ES 1.1 is much more developed and playable. 
+
+- 
+- Replace SDL2 audio with psp audio lib -> Not Started.
+- Replace SDL2 input with psp native -> Done!
 
 ![Screenshot 2025-04-14 at 8 46 42 PM](https://github.com/user-attachments/assets/d76a4e0e-4d5b-4728-a9e5-5392fa34f826)
 ![Screenshot 2025-04-14 at 8 46 50 PM](https://github.com/user-attachments/assets/f1d00605-9d34-45c1-87e0-6b3f8a3c4b4f)
