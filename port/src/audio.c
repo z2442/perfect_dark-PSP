@@ -22,7 +22,8 @@ s32 audioInit(void)
 
 	SDL_AudioSpec want, have;
 	SDL_zero(want);
-	want.freq = 22020; // TODO: this might cause trouble for some platforms
+	//ORIGINAL This provides a big speed up on PSP. want.freq = 22020; 
+	want.freq = 22050; // TODO: this might cause trouble for some platforms
 	want.format = AUDIO_S16SYS;
 	want.channels = 2;
 	want.samples = bufferSize;

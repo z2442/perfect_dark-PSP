@@ -149,7 +149,7 @@ void dmaWait(void)
 void dmaExec(void *memaddr, romptr_t romaddr, u32 len)
 {
 	dmaStart(memaddr, romaddr, len, false);
-	dmaWait();
+	//dmaWait();
 #if VERSION >= VERSION_NTSC_1_0
 	dmaCheckPiracy(memaddr, len);
 #endif
@@ -158,7 +158,7 @@ void dmaExec(void *memaddr, romptr_t romaddr, u32 len)
 void dmaExecHighPriority(void *memaddr, romptr_t romaddr, u32 len)
 {
 	dmaStart(memaddr, romaddr, len, true);
-	dmaWait();
+	//dmaWait();
 #if VERSION >= VERSION_NTSC_1_0
 	dmaCheckPiracy(memaddr, len);
 #endif
