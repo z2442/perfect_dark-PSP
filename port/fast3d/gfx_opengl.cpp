@@ -43,8 +43,7 @@ static bool current_textures_linear_filter[2] = {false, false};
 
 static bool current_depth_mask = true;
 
-/* -- GLES 1.1 depth‑state shadow ---------------------------------------- */
-static bool es_depth_test  = false; /* GL_DEPTH_TEST currently enabled? */
+static bool es_depth_test  = true; /* GL_DEPTH_TEST currently enabled? */
 static bool es_depth_write = true;  /* TRUE if glDepthMask(GL_TRUE)      */
 
 static void gfx_opengl_unload_shader(struct ShaderProgram* old_prg) {}
@@ -93,32 +92,8 @@ static void gfx_opengl_upload_texture(const uint8_t* rgba32_buf, uint32_t width,
                  GL_RGBA, GL_UNSIGNED_BYTE, rgba32_buf);
 }
 
-static uint32_t gfx_cm_to_opengl(uint32_t val) {
-    // Only GL_REPEAT and GL_CLAMP_TO_EDGE are supported in GLES 1.1.
-    if (val & G_TX_CLAMP)
-        return GL_CLAMP_TO_EDGE;
-    // MIRROR is NOT supported; we'll emulate it in software.
-    return GL_REPEAT;
-}
-
-static float mirror_coord(float uv) {
-    // uv: input texture coordinate (0..N)
-    int ipart = (int)floorf(uv);
-    float fpart = uv - ipart;
-    // Flip on every odd tile
-    if (ipart & 1)
-        return 1.0f - fpart;
-    else
-        return fpart;
-}
-
-static uint32_t current_cms = 0;
-static uint32_t current_cmt = 0;
 
 static void gfx_opengl_set_sampler_parameters(int tile, bool linear_filter, uint32_t cms_in, uint32_t cmt_in) {
-    // Save for later (software mirroring)
-    current_cms = cms_in;
-    current_cmt = cmt_in;
 
     const GLint filter = linear_filter && (current_filter_mode == FILTER_LINEAR) ? GL_LINEAR : GL_NEAREST;
 
@@ -132,61 +107,37 @@ static void gfx_opengl_set_sampler_parameters(int tile, bool linear_filter, uint
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrap_t);
 }
 
-/* N64  ➜  GLES 1.1 depth-state conversion
- *  enable  == “run the depth test?”
- *  write   == “update the depth buffer?”
- *  compare == “reject/accept based on depth?” (else always pass)
- *  zmode   : 0 Opaque, 1 InterPen, 2 Translucent, 3 Decal
- */
-static float g_polygon_offset_z = 0.0f;
-static void gfx_opengl_set_depth_mode(
-    bool enable,
-    bool write,
-    bool compare,
-    bool depth_source_prim,
-    uint16_t zmode
-) {
-    // Enable/disable depth test
-    if (enable != es_depth_test) {
-        if (enable) glEnable(GL_DEPTH_TEST);
-        else        glDisable(GL_DEPTH_TEST);
-        es_depth_test = enable;
-    }
+static void gfx_opengl_set_depth_mode(bool depth_test, bool depth_update, bool depth_compare, bool depth_source_prim, uint16_t zmode) {
+    if (depth_test) {
+        glEnable(GL_DEPTH_TEST);
+        glDepthMask(depth_update ? GL_TRUE : GL_FALSE);
+        current_depth_mask = depth_update;
 
-    // Enable/disable depth buffer writes
-    if (write != es_depth_write) {
-        glDepthMask(write ? GL_TRUE : GL_FALSE);
-        es_depth_write = write;
+        if (depth_compare) {
+            switch (zmode) {
+                case ZMODE_INTER:
+                    glDepthFunc(GL_LEQUAL);
+                    break;
+                case ZMODE_OPA:
+                case ZMODE_XLU:
+                    if (depth_source_prim) {
+                        glDepthFunc(GL_LEQUAL);
+                    } else {
+                        glDepthFunc(GL_LESS);
+                    }
+                    break;
+                case ZMODE_DEC:
+                    glDepthFunc(GL_LEQUAL);
+                    // Polygon offset is not available in GLES 1.1; can't mimic exactly.
+                    break;
+            }
+        } else {
+            glDepthFunc(GL_ALWAYS);
+        }
+    } else {
+        glDisable(GL_DEPTH_TEST);
     }
-
-    if (!enable) {
-        g_es_zmode = zmode;
-        return;
-    }
-
-    // Set depth comparison function
-    GLenum func = GL_ALWAYS;
-    if (compare) {
-        func = GL_LEQUAL; // N64 mostly uses LEQUAL for everything
-    }
-    glDepthFunc(func);
-
-    // GLES 1.1 cannot do polygon offset for triangles—fudge Z in software
-    switch (zmode & 3) {
-        case 1: // InterPen
-            g_polygon_offset_z = +0.0005f;
-            break;
-        case 3: // Decal
-            g_polygon_offset_z = -0.0005f;
-            break;
-        default:
-            g_polygon_offset_z = 0.0f;
-            break;
-    }
-
-    g_es_zmode = zmode;
 }
-
 
 static float gfx_adjust_x_for_aspect_ratio(float x) {
     // This function can be modified to adjust x based on your aspect ratio needs
@@ -228,41 +179,6 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
 
     if (!buf_vbo || buf_vbo_num_tris == 0) return;
 
-    // Figure out fudge factor for Z, only for decal/interpen
-    float z_fudge = 0.0f;
-    int zmode = g_es_zmode;
-    switch (zmode & 3) {
-        case 1: // InterPen
-            z_fudge = +0.0005f;
-            break;
-        case 3: // Decal
-            z_fudge = -0.0005f;
-            break;
-        default:
-            z_fudge = 0.0f;
-            break;
-    }
-
-    bool is_2d = true;
-
-    // Loop through the vertex buffer and inspect each vertex
-    for (size_t i = 0; i < buf_vbo_len; i += stride_bytes) {  // 9 floats per vertex (3 for position, 2 for texture, 4 for color)
-        struct LoadedVertex* vertex = reinterpret_cast<LoadedVertex*>(&buf_vbo[i]);
-
-        // Check if the vertex has a Z value (typically used for 3D objects)
-        if (vertex->z == 0.0f && vertex->w == 1.0f) {
-            is_2d = true;  // If z == 0, it's likely a 2D object
-            break;
-        }
-
-        if (cms & G_TX_MIRROR) vertex->u = mirror_coord(vertex->u);
-        if (cmt & G_TX_MIRROR) vertex->v = mirror_coord(vertex->v);
-
-        vertex->z += g_polygon_offset_z;
-    }
-
-    // Set projection based on whether it's 2D or 3D
-    
 
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
