@@ -192,8 +192,7 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
     glTexCoordPointer(2, GL_FLOAT, stride_bytes, buf_vbo + 3);
 
     glEnable(GL_TEXTURE_2D);
-    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
-
+    
     glDrawArrays(GL_TRIANGLES, 0, buf_vbo_num_tris * 3);
 
     glDisableClientState(GL_COLOR_ARRAY);
