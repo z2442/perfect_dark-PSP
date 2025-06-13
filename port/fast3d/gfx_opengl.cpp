@@ -92,19 +92,46 @@ static void gfx_opengl_upload_texture(const uint8_t* rgba32_buf, uint32_t width,
                  GL_RGBA, GL_UNSIGNED_BYTE, rgba32_buf);
 }
 
+static uint32_t gfx_cm_to_opengl(uint32_t val) {
+    switch (val) {
+        case G_TX_NOMIRROR | G_TX_CLAMP:
+            return GL_CLAMP_TO_EDGE;
 
-static void gfx_opengl_set_sampler_parameters(int tile, bool linear_filter, uint32_t cms_in, uint32_t cmt_in) {
+        case G_TX_NOMIRROR | G_TX_WRAP:
+            return GL_REPEAT;
 
-    const GLint filter = linear_filter && (current_filter_mode == FILTER_LINEAR) ? GL_LINEAR : GL_NEAREST;
+        case G_TX_MIRROR | G_TX_WRAP:
+#ifdef GL_MIRRORED_REPEAT
+            return GL_MIRRORED_REPEAT;
+#else
+            return GL_REPEAT; // Fallback or emulate mirror in software
+#endif
+
+        case G_TX_MIRROR | G_TX_CLAMP:
+#ifdef GL_MIRROR_CLAMP_TO_EDGE_ATI
+            return GL_MIRROR_CLAMP_TO_EDGE_ATI;
+#elif defined(GL_MIRROR_CLAMP_ATI)
+            return GL_MIRROR_CLAMP_ATI;
+#else
+            return GL_CLAMP_TO_EDGE; // Fallback
+#endif
+    }
+    return GL_REPEAT; // Default fallback
+}
+
+static void gfx_opengl_set_sampler_parameters(int tile, bool linear_filter, uint32_t cms, uint32_t cmt) {
+
+    const GLint filter = (linear_filter && current_filter_mode == FILTER_LINEAR) ? GL_LINEAR : GL_NEAREST;
 
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
 
-    // GLES 1.1 supports only GL_REPEAT and GL_CLAMP_TO_EDGE
-    GLint wrap_s = (cms_in & G_TX_CLAMP) ? GL_CLAMP_TO_EDGE : GL_REPEAT;
-    GLint wrap_t = (cmt_in & G_TX_CLAMP) ? GL_CLAMP_TO_EDGE : GL_REPEAT;
+    GLenum wrap_s = gfx_cm_to_opengl(cms);
+    GLenum wrap_t = gfx_cm_to_opengl(cmt);
+
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrap_s);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrap_t);
+    
 }
 
 static void gfx_opengl_set_depth_mode(bool depth_test, bool depth_update, bool depth_compare, bool depth_source_prim, uint16_t zmode) {
