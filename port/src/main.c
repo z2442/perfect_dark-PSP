@@ -181,20 +181,30 @@ static void cleanup(void)
 
 int main(int argc, const char **argv)
 {
+	pspDebugScreenInit();
+	pspDebugScreenPrintf("Loading Bits \n");
+	pspDebugScreenPrintf("Disabling FPU Exceptions \n");
 	pspFpuSetEnable(0);
 	//VolatileMemInit();
 	sysInitArgs(argc, argv);
 
 	if (!sysArgCheck("--no-crash-handler")) {
-		crashInit();
+		//crashInit();
 	}
 
+	pspDebugScreenPrintf("sysInit \n");
 	sysInit();
+	pspDebugScreenPrintf("fs Init \n");
 	fsInit();
+	pspDebugScreenPrintf("Config Init \n");
 	configInit();
+	pspDebugScreenPrintf("Video Init \n");
 	videoInit();
+	pspDebugScreenPrintf("Input Init \n");
 	inputInit();
+	pspDebugScreenPrintf("Audio Init \n");
 	audioInit();
+	pspDebugScreenPrintf("Rom Data Init Please Wait... \n");
 	romdataInit();
 
 	g_ValidGbcRomFound = romdataCheckGbcRom();
