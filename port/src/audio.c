@@ -71,6 +71,6 @@ void audioEndFrame(void)
 
 PD_CONSTRUCTOR static void audioConfigInit(void)
 {
-	configRegisterInt("Audio.BufferSize", &bufferSize, 0, 1 * 1024 * 1024);
-	configRegisterInt("Audio.QueueLimit", &queueLimit, 0, 1 * 1024 * 1024);
+	configRegisterInt("Audio.BufferSize", &bufferSize, 0, 512 * 1024);
+	configRegisterInt("Audio.QueueLimit", &queueLimit, 0, 512 * 1024);
 }

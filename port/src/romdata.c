@@ -11,6 +11,8 @@
 #include "preprocess.h"
 #include "platform.h"
 
+#define PDDEBUG
+
 #define ROMDATA_FILEDIR "files"
 #define ROMDATA_SEGDIR "segs"
 
@@ -430,19 +432,23 @@ static inline void romdataInitSegment(struct romfile *seg)
 	if (seg->preprocess && !seg->preprocessed && seg->data) {
 		u8* processedData = seg->preprocess(seg->data, seg->size, &seg->size); // seg->size can be updated
 
-		if (processedData && processedData != seg->data) { // Preprocessor allocated a new buffer
-			if (seg->source == SRC_EXTERNAL || seg->source == SRC_ROM_LOADED) {
-				sysMemFree(seg->data); // Free original loaded buffer
-            }
-			seg->data = processedData;
+		if (processedData) {
+			if (processedData != seg->data) { // New buffer returned
+				if (seg->source == SRC_EXTERNAL || seg->source == SRC_ROM_LOADED) {
+					sysMemFree(seg->data); // Free original buffer
+#ifdef PDDEBUG
+					sysLogPrintf(LOG_NOTE, "Freed original buffer for segment %s after preprocessing", seg->name);
+#endif
+				}
+				seg->data = processedData;
+			}
 			romdataUpdateSegStartEnd(seg);
-		} else if (!processedData) { // Preprocessing failed or nulled out data
-            #ifdef PDDEBUG
-            sysLogPrintf(LOG_WARNING, "Preprocessing segment %s returned NULL. Segment might be unusable.", seg->name);
-            #endif
-            // Keep seg->data as is, or handle error more strictly
-        }
-		seg->preprocessed = 1;
+			seg->preprocessed = 1;
+		} else {
+			#ifdef PDDEBUG
+			sysLogPrintf(LOG_WARNING, "Preprocessing segment %s returned NULL. Segment might be unusable.", seg->name);
+			#endif
+		}
 	}
 }
 

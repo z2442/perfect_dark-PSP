@@ -6,6 +6,18 @@
 #include <vector>
 #include <SDL.h>
 #include <GLES/gl.h>
+
+
+/* GLES 1.1 headers may not define GL_MIRRORED_REPEAT.
+   Map it to the OES value or define the constant ourselves so
+   the compile-time check in gfx_opengl_set_sampler_parameters works. */
+#ifndef GL_MIRRORED_REPEAT
+#  ifdef GL_MIRRORED_REPEAT_OES
+#    define GL_MIRRORED_REPEAT GL_MIRRORED_REPEAT_OES
+#  else
+#    define GL_MIRRORED_REPEAT 0x8370
+#  endif
+#endif
 #include <PR/gbi.h>
 #include "gfx_rendering_api.h"
 
@@ -86,10 +98,32 @@ static void gfx_opengl_select_texture(int tile, GLuint texture_id, bool linear_f
 }
 
 static void gfx_opengl_upload_texture(const uint8_t* rgba32_buf, uint32_t width, uint32_t height) {
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);          /* allow arbitrary row‑length */
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
+    /* Convert incoming 32‑bit RGBA8888 to 16‑bit RGBA4444 to cut texture memory
+       footprint in half.  GLES 1.x will store the texture exactly as supplied
+       when we pass type = GL_UNSIGNED_SHORT_4_4_4_4. */
+
+    const size_t num_pixels = static_cast<size_t>(width) * static_cast<size_t>(height);
+    static std::vector<uint16_t> rgba16;
+    rgba16.resize(num_pixels);
+
+    for (size_t i = 0; i < num_pixels; ++i) {
+        const uint8_t r = rgba32_buf[i * 4 + 0];
+        const uint8_t g = rgba32_buf[i * 4 + 1];
+        const uint8_t b = rgba32_buf[i * 4 + 2];
+        const uint8_t a = rgba32_buf[i * 4 + 3];
+
+        /* Pack to 4‑bits each channel: RRRR GGGG BBBB AAAA */
+        rgba16[i] = static_cast<uint16_t>(((r >> 4) << 12) |
+                                          ((g >> 4) << 8)  |
+                                          ((b >> 4) << 4)  |
+                                          (a >> 4));
+    }
+
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);  /* allow arbitrary row‑length */
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,          /* internalformat */
                  width, height, 0,
-                 GL_RGBA, GL_UNSIGNED_BYTE, rgba32_buf);
+                 GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4, /* format/type */
+                 rgba16.data());
 }
 
 static uint32_t gfx_cm_to_opengl(uint32_t val) {
@@ -101,11 +135,8 @@ static uint32_t gfx_cm_to_opengl(uint32_t val) {
             return GL_REPEAT;
 
         case G_TX_MIRROR | G_TX_WRAP:
-#ifdef GL_MIRRORED_REPEAT
-            return GL_MIRRORED_REPEAT;
-#else
-            return GL_REPEAT; // Fallback or emulate mirror in software
-#endif
+            return GL_REPEAT;
+
 
         case G_TX_MIRROR | G_TX_CLAMP:
 #ifdef GL_MIRROR_CLAMP_TO_EDGE_ATI
@@ -128,6 +159,8 @@ static void gfx_opengl_set_sampler_parameters(int tile, bool linear_filter, uint
 
     GLenum wrap_s = gfx_cm_to_opengl(cms);
     GLenum wrap_t = gfx_cm_to_opengl(cmt);
+    if (wrap_s == GL_MIRRORED_REPEAT) wrap_s = GL_REPEAT;
+    if (wrap_t == GL_MIRRORED_REPEAT) wrap_t = GL_REPEAT;
 
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrap_s);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrap_t);
@@ -208,7 +241,6 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
 
 
     glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
 
     glEnableClientState(GL_VERTEX_ARRAY);
     glEnableClientState(GL_TEXTURE_COORD_ARRAY);
@@ -235,12 +267,10 @@ static void gfx_opengl_init(void) {
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glDepthFunc(GL_LEQUAL);
+
     glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
-    
+
     glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
 
     glClearColor(0.0, 0.0, 0.0, 1.0);
 }

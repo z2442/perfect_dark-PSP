@@ -510,6 +510,59 @@ static const uint8_t* fix_npot_texture(const uint8_t* rgba32_buf, uint32_t width
     return temp.data();
 }
 
+// ------------------------------------------------------------------
+// Build a CPU‑side “mirrored” copy of a POT RGBA8888 texture.
+// dst_w / dst_h are returned via reference.
+// ------------------------------------------------------------------
+static const uint8_t* mirror_texture_rgba32(const uint8_t* src,
+                                            uint32_t  src_w,
+                                            uint32_t  src_h,
+                                            bool mirror_s,
+                                            bool mirror_t,
+                                            std::vector<uint8_t>& temp_out,
+                                            uint32_t& dst_w,
+                                            uint32_t& dst_h)
+{
+    dst_w = mirror_s ? src_w * 2 : src_w;
+    dst_h = mirror_t ? src_h * 2 : src_h;
+
+    if (!mirror_s && !mirror_t) {
+        temp_out.clear();
+        return src;                             // no change
+    }
+
+    temp_out.resize(dst_w * dst_h * 4);
+
+    // Copy / mirror rows
+    for (uint32_t y = 0; y < src_h; ++y) {
+        const uint8_t* src_row = src + (y * src_w) * 4;
+        uint8_t* dst_row       = &temp_out[(y) * dst_w * 4];
+
+        // 1) left half = original row
+        memcpy(dst_row, src_row, src_w * 4);
+
+        // 2) mirror horizontally if requested
+        if (mirror_s) {
+            for (uint32_t x = 0; x < src_w; ++x) {
+                const uint8_t* p = src_row + (src_w - 1 - x) * 4;
+                uint8_t*       q = dst_row + (src_w + x) * 4;
+                q[0] = p[0]; q[1] = p[1]; q[2] = p[2]; q[3] = p[3];
+            }
+        }
+    }
+
+    // 3) mirror vertically if requested
+    if (mirror_t) {
+        for (uint32_t y = 0; y < src_h; ++y) {
+            const uint8_t* src_row = &temp_out[(src_h - 1 - y) * dst_w * 4];
+            uint8_t*       dst_row = &temp_out[(src_h + y)     * dst_w * 4];
+            memcpy(dst_row, src_row, dst_w * 4);
+        }
+    }
+
+    return temp_out.data();
+}
+
 static struct ColorCombiner* gfx_lookup_or_create_color_combiner(const ColorCombinerKey& key) {
     if (prev_combiner != color_combiner_pool.end() && prev_combiner->first == key) {
         return &prev_combiner->second;
@@ -634,6 +687,21 @@ static void import_texture_rgba16(int tile, const LoadedTexture& loaded_texture,
     std::vector<uint8_t> temp_pot_buf;
     uint32_t pot_w, pot_h;
     const uint8_t* src = fix_npot_texture((const uint8_t*)tex_upload_buffer, width, height, pot_w, pot_h, temp_pot_buf);
+    // ------------------------------------------------------------------
+    // Software fallback for MIRRORED_REPEAT on GLES 1.1 / PSP GU
+    // ------------------------------------------------------------------
+    const bool mirror_s = rdp.texture_tile[tile].cms & G_TX_MIRROR;
+    const bool mirror_t = rdp.texture_tile[tile].cmt & G_TX_MIRROR;
+
+    std::vector<uint8_t> mirror_buf;   // keeps data alive until upload
+    const uint8_t* src_mirrored = mirror_texture_rgba32(
+        src,                /* POT‑corrected source pixels     */
+        pot_w, pot_h,
+        mirror_s, mirror_t,
+        mirror_buf,
+        pot_w, pot_h);      /* may double w/h */
+
+    src = src_mirrored;
     gfx_rapi->upload_texture(src, pot_w, pot_h);
     if (rendering_state.textures[0]) {
         rendering_state.textures[0]->second.pot_w = pot_w;
@@ -661,6 +729,20 @@ static void import_texture_rgba32(int tile, const LoadedTexture& loaded_texture,
     std::vector<uint8_t> temp_pot_buf;
     uint32_t pot_w, pot_h;
     const uint8_t* src8 = fix_npot_texture((const uint8_t*)tex_upload_buffer, width, height, pot_w, pot_h, temp_pot_buf);
+    // ------------------------------------------------------------------
+    // Software fallback for MIRRORED_REPEAT on GLES 1.1 / PSP GU
+    // ------------------------------------------------------------------
+    const bool mirror_s = rdp.texture_tile[tile].cms & G_TX_MIRROR;
+    const bool mirror_t = rdp.texture_tile[tile].cmt & G_TX_MIRROR;
+
+    std::vector<uint8_t> mirror_buf;
+    const uint8_t* src_mirrored = mirror_texture_rgba32(
+        src8,
+        pot_w, pot_h,
+        mirror_s, mirror_t,
+        mirror_buf,
+        pot_w, pot_h);
+    src8 = src_mirrored;
     gfx_rapi->upload_texture(src8, pot_w, pot_h);
     if (rendering_state.textures[0]) {
         rendering_state.textures[0]->second.pot_w = pot_w;
@@ -696,6 +778,20 @@ static void import_texture_ia4(int tile, const LoadedTexture& loaded_texture, bo
     std::vector<uint8_t> temp_pot_buf;
     uint32_t pot_w, pot_h;
     const uint8_t* src = fix_npot_texture((const uint8_t*)tex_upload_buffer, width, height, pot_w, pot_h, temp_pot_buf);
+    // ------------------------------------------------------------------
+    // Software fallback for MIRRORED_REPEAT on GLES 1.1 / PSP GU
+    // ------------------------------------------------------------------
+    const bool mirror_s = rdp.texture_tile[tile].cms & G_TX_MIRROR;
+    const bool mirror_t = rdp.texture_tile[tile].cmt & G_TX_MIRROR;
+
+    std::vector<uint8_t> mirror_buf;
+    const uint8_t* src_mirrored = mirror_texture_rgba32(
+        src,
+        pot_w, pot_h,
+        mirror_s, mirror_t,
+        mirror_buf,
+        pot_w, pot_h);
+    src = src_mirrored;
     gfx_rapi->upload_texture(src, pot_w, pot_h);
     if (rendering_state.textures[0]) {
         rendering_state.textures[0]->second.pot_w = pot_w;
@@ -728,6 +824,20 @@ static void import_texture_ia8(int tile, const LoadedTexture& loaded_texture, bo
     std::vector<uint8_t> temp_pot_buf;
     uint32_t pot_w, pot_h;
     const uint8_t* src = fix_npot_texture((const uint8_t*)tex_upload_buffer, width, height, pot_w, pot_h, temp_pot_buf);
+    // ------------------------------------------------------------------
+    // Software fallback for MIRRORED_REPEAT on GLES 1.1 / PSP GU
+    // ------------------------------------------------------------------
+    const bool mirror_s = rdp.texture_tile[tile].cms & G_TX_MIRROR;
+    const bool mirror_t = rdp.texture_tile[tile].cmt & G_TX_MIRROR;
+
+    std::vector<uint8_t> mirror_buf;
+    const uint8_t* src_mirrored = mirror_texture_rgba32(
+        src,
+        pot_w, pot_h,
+        mirror_s, mirror_t,
+        mirror_buf,
+        pot_w, pot_h);
+    src = src_mirrored;
     gfx_rapi->upload_texture(src, pot_w, pot_h);
     if (rendering_state.textures[0]) {
         rendering_state.textures[0]->second.pot_w = pot_w;
@@ -760,6 +870,20 @@ static void import_texture_ia16(int tile, const LoadedTexture& loaded_texture, b
     std::vector<uint8_t> temp_pot_buf;
     uint32_t pot_w, pot_h;
     const uint8_t* src = fix_npot_texture((const uint8_t*)tex_upload_buffer, width, height, pot_w, pot_h, temp_pot_buf);
+    // ------------------------------------------------------------------
+    // Software fallback for MIRRORED_REPEAT on GLES 1.1 / PSP GU
+    // ------------------------------------------------------------------
+    const bool mirror_s = rdp.texture_tile[tile].cms & G_TX_MIRROR;
+    const bool mirror_t = rdp.texture_tile[tile].cmt & G_TX_MIRROR;
+
+    std::vector<uint8_t> mirror_buf;
+    const uint8_t* src_mirrored = mirror_texture_rgba32(
+        src,
+        pot_w, pot_h,
+        mirror_s, mirror_t,
+        mirror_buf,
+        pot_w, pot_h);
+    src = src_mirrored;
     gfx_rapi->upload_texture(src, pot_w, pot_h);
     if (rendering_state.textures[0]) {
         rendering_state.textures[0]->second.pot_w = pot_w;
@@ -793,6 +917,20 @@ static void import_texture_i4(int tile, const LoadedTexture& loaded_texture, boo
     std::vector<uint8_t> temp_pot_buf;
     uint32_t pot_w, pot_h;
     const uint8_t* src = fix_npot_texture((const uint8_t*)tex_upload_buffer, width, height, pot_w, pot_h, temp_pot_buf);
+    // ------------------------------------------------------------------
+    // Software fallback for MIRRORED_REPEAT on GLES 1.1 / PSP GU
+    // ------------------------------------------------------------------
+    const bool mirror_s = rdp.texture_tile[tile].cms & G_TX_MIRROR;
+    const bool mirror_t = rdp.texture_tile[tile].cmt & G_TX_MIRROR;
+
+    std::vector<uint8_t> mirror_buf;
+    const uint8_t* src_mirrored = mirror_texture_rgba32(
+        src,
+        pot_w, pot_h,
+        mirror_s, mirror_t,
+        mirror_buf,
+        pot_w, pot_h);
+    src = src_mirrored;
     gfx_rapi->upload_texture(src, pot_w, pot_h);
     if (rendering_state.textures[0]) {
         rendering_state.textures[0]->second.pot_w = pot_w;
@@ -824,6 +962,20 @@ static void import_texture_i8(int tile, const LoadedTexture& loaded_texture, boo
     std::vector<uint8_t> temp_pot_buf;
     uint32_t pot_w, pot_h;
     const uint8_t* src = fix_npot_texture((const uint8_t*)tex_upload_buffer, width, height, pot_w, pot_h, temp_pot_buf);
+    // ------------------------------------------------------------------
+    // Software fallback for MIRRORED_REPEAT on GLES 1.1 / PSP GU
+    // ------------------------------------------------------------------
+    const bool mirror_s = rdp.texture_tile[tile].cms & G_TX_MIRROR;
+    const bool mirror_t = rdp.texture_tile[tile].cmt & G_TX_MIRROR;
+
+    std::vector<uint8_t> mirror_buf;
+    const uint8_t* src_mirrored = mirror_texture_rgba32(
+        src,
+        pot_w, pot_h,
+        mirror_s, mirror_t,
+        mirror_buf,
+        pot_w, pot_h);
+    src = src_mirrored;
     gfx_rapi->upload_texture(src, pot_w, pot_h);
     if (rendering_state.textures[0]) {
         rendering_state.textures[0]->second.pot_w = pot_w;
@@ -881,6 +1033,20 @@ static void import_texture_ci4(int tile, const LoadedTexture& loaded_texture, bo
     std::vector<uint8_t> temp_pot_buf;
     uint32_t pot_w, pot_h;
     const uint8_t* src = fix_npot_texture((const uint8_t*)tex_upload_buffer, width, height, pot_w, pot_h, temp_pot_buf);
+    // ------------------------------------------------------------------
+    // Software fallback for MIRRORED_REPEAT on GLES 1.1 / PSP GU
+    // ------------------------------------------------------------------
+    const bool mirror_s = rdp.texture_tile[tile].cms & G_TX_MIRROR;
+    const bool mirror_t = rdp.texture_tile[tile].cmt & G_TX_MIRROR;
+
+    std::vector<uint8_t> mirror_buf;
+    const uint8_t* src_mirrored = mirror_texture_rgba32(
+        src,
+        pot_w, pot_h,
+        mirror_s, mirror_t,
+        mirror_buf,
+        pot_w, pot_h);
+    src = src_mirrored;
     gfx_rapi->upload_texture(src, pot_w, pot_h);
     if (rendering_state.textures[0]) {
         rendering_state.textures[0]->second.pot_w = pot_w;
@@ -914,6 +1080,20 @@ static void import_texture_ci8(int tile, const LoadedTexture& loaded_texture, bo
     std::vector<uint8_t> temp_pot_buf;
     uint32_t pot_w, pot_h;
     const uint8_t* src = fix_npot_texture((const uint8_t*)tex_upload_buffer, width, height, pot_w, pot_h, temp_pot_buf);
+    // ------------------------------------------------------------------
+    // Software fallback for MIRRORED_REPEAT on GLES 1.1 / PSP GU
+    // ------------------------------------------------------------------
+    const bool mirror_s = rdp.texture_tile[tile].cms & G_TX_MIRROR;
+    const bool mirror_t = rdp.texture_tile[tile].cmt & G_TX_MIRROR;
+
+    std::vector<uint8_t> mirror_buf;
+    const uint8_t* src_mirrored = mirror_texture_rgba32(
+        src,
+        pot_w, pot_h,
+        mirror_s, mirror_t,
+        mirror_buf,
+        pot_w, pot_h);
+    src = src_mirrored;
     gfx_rapi->upload_texture(src, pot_w, pot_h);
     if (rendering_state.textures[0]) {
         rendering_state.textures[0]->second.pot_w = pot_w;
@@ -1123,7 +1303,7 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* verti
         float z = v->v[0] * rsp.MP_matrix[0][2] + v->v[1] * rsp.MP_matrix[1][2] + v->v[2] * rsp.MP_matrix[2][2] + rsp.MP_matrix[3][2];
         float w = v->v[0] * rsp.MP_matrix[0][3] + v->v[1] * rsp.MP_matrix[1][3] + v->v[2] * rsp.MP_matrix[2][3] + rsp.MP_matrix[3][3];
 
-        //x = gfx_adjust_x_for_aspect_ratio(x, w);
+        x = gfx_adjust_x_for_aspect_ratio(x, w);
 
         short U = v->s * rsp.texture_scaling_factor.s >> 16;
         short V = v->t * rsp.texture_scaling_factor.t >> 16;

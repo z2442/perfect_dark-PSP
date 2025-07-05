@@ -50,57 +50,7 @@ PSP_HEAP_SIZE_KB(-1024); // Example: Request memory leaving 1MB for kernel/drive
 PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU); // Enable VFPU for the main thread if needed
 PSP_MAIN_THREAD_STACK_SIZE_KB(256); // Increase stack size if needed (default is 64KB)
 
-//Volatile Memory code Barrowed from DaedalusX64 
-bool bVolatileMem  = false;
-//*************************************************************************************
-//
-//*************************************************************************************
-void VolatileMemInit()
-{
-	// Unlock memory partition 5
-	void* pointer = NULL;
-	int size = 0;
-	int result = sceKernelVolatileMemLock(0, &pointer, &size);
 
-	if (result == 0)
-	{
-		scePowerLock(0);	// This used to avoid suspending while we are using the volatile memory
-		printf("Successfully Unlocked Volatile Mem: %d KB\n",size / 1024);
-		bVolatileMem = true;
-	}
-	else
-	{
-		printf( "Failed to unlock volatile mem: %08x\n", result );
-		bVolatileMem = false;
-	}
-
-}
-
-void* malloc_volatile_PSP(size_t size)
-{
-	//If volatile mem couldn't be unlocked, use normal memory
-	// Dangerous! There's not enough memory for this!
-	if (!bVolatileMem)	 return malloc(size);
-
-//	struct mallinfo info = _mallinfo_r(NULL);
-//	printf("used memory %d of %d - %d\n", info.usmblks + info.uordblks, info.arena, malloc_p5_memory_used);
-
-
-	SceUID uid = sceKernelAllocPartitionMemory(5, "", PSP_SMEM_Low, size + 8, NULL);
-	if (uid >= 0)
-	{
-
-//		printf("getting memory from p5 %d KBS\n", size / 1024);
-//		malloc_p5_memory_used += size;
-
-		u32* pointer = (u32*)sceKernelGetBlockHeadAddr(uid);
-		*pointer = uid;
-		*(pointer + 4) = size;
-		return (void*)(pointer + 8);
-	}
-
-
-}
 
 
 u32 g_OsMemSize = 0;

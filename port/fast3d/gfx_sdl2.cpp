@@ -97,7 +97,7 @@ static void gfx_sdl_init(const struct GfxWindowInitSettings *set) {
         sysFatalError("Could not init SDL:\n%s", SDL_GetError());
     }
 
-    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
+    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 16);
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     if (sysArgCheck("--debug-gl")) {
