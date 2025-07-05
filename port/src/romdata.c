@@ -11,7 +11,8 @@
 #include "preprocess.h"
 #include "platform.h"
 
-#define PDDEBUG
+//Used to enable debug on rom streaming. 
+//#define PDDEBUG
 
 #define ROMDATA_FILEDIR "files"
 #define ROMDATA_SEGDIR "segs"
