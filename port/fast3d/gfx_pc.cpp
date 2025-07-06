@@ -225,7 +225,7 @@ uint32_t gfx_msaa_level = 1;
 
 static bool dropped_frame;
 
-static float buf_vbo[MAX_BUFFERED * (32 * 3)]; // 3 vertices in a triangle and 32 floats per vtx
+static float buf_vbo[MAX_BUFFERED * (9 * 3)];  // 3 verts × 9 floats/vert
 static size_t buf_vbo_len;
 static size_t buf_vbo_num_tris;
 
@@ -1403,8 +1403,10 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* verti
         if (y > w) {
             d->clip_rej |= 8; // CLIP_TOP
         }
-        if (z < -w) d->clip_rej |= 16; // CLIP_NEAR
-        if (z > w)  d->clip_rej |= 32; // CLIP_FAR
+        const float CLIP_EPS = 0.01f;    // allow a sliver inside the near plane
+
+        if (z < -w - CLIP_EPS) d->clip_rej |= 16;   // CLIP_NEAR
+        if (z >  w + CLIP_EPS) d->clip_rej |= 32;   // CLIP_FAR
 
         d->x = x;
         d->y = y;
@@ -1447,6 +1449,44 @@ static inline int gfx_lod_tile_offset(const int i) {
     if (gfx_detail_textures_enabled)
         return ((rdp.tex_lod && !rdp.tex_detail) ? 0 : i);
     return (rdp.tex_lod ? rdp.tex_detail : i);
+}
+
+// ------------------------------------------------------------------
+// Perspective‑aware subdivision: split triangles whose 1/w range is large
+// so that affine UV mapping looks perspective‑correct on GPUs that only
+// accept 2‑component texcoords (PSP GU / GLES 1.1).
+// ------------------------------------------------------------------
+struct TempV {
+    float x,y,z,w;
+    float u,v;
+    float r,g,b,a;
+};
+
+template<typename EmitFn>
+static void split_if_needed(const TempV& A,const TempV& B,const TempV& C,
+                            int depth,float threshold,const EmitFn& emit)
+{
+    const float wmax = std::max(std::max(A.w, B.w), C.w);
+    const float wmin = std::min(std::min(A.w, B.w), C.w);
+    if (depth == 0 || wmax / wmin < threshold) { emit(A,B,C); return; }
+
+    auto scrDist2 = [](const TempV&p,const TempV&q){
+        float dx = p.x/p.w - q.x/q.w;
+        float dy = p.y/p.w - q.y/q.w;
+        return dx*dx + dy*dy;
+    };
+    const TempV *P=&A,*Q=&B,*R=&C;
+    if (scrDist2(B,C) > scrDist2(*P,*Q)) { P=&B; Q=&C; R=&A; }
+    if (scrDist2(C,A) > scrDist2(*P,*Q)) { P=&C; Q=&A; R=&B; }
+
+    TempV M;
+#define LERP(f) M.f = 0.5f*(P->f + Q->f)
+    LERP(x); LERP(y); LERP(z); LERP(w);
+    LERP(u); LERP(v); LERP(r); LERP(g); LERP(b); LERP(a);
+#undef LERP
+
+    split_if_needed(*P, M, *R, depth-1, threshold, emit);
+    split_if_needed(M, *Q, *R, depth-1, threshold, emit);
 }
 
 static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bool is_rect) {
@@ -1698,43 +1738,69 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
         pot_w = rendering_state.textures[0]->second.pot_w;
         pot_h = rendering_state.textures[0]->second.pot_h;
     }
+    // --- build TempV array --------------------------------------------------
+    TempV TV[3];
     for (int i = 0; i < 3; i++) {
-        float w = v_arr[i]->w;
-        if (fabsf(w) < 0.001f) {
-            w = 0.001f;
-        }
+        const auto *vtx = v_arr[i];
+        float w = fabsf(vtx->w) < 0.001f ? 0.001f : vtx->w;
         float inv_w = 1.0f / w;
-        uint32_t tex_w = tex_width2[0] ? tex_width2[0] : tex_width[0];
-        uint32_t tex_h = tex_height2[0] ? tex_height2[0] : tex_height[0];
+
         short uls = rdp.texture_tile[rdp.first_tile_index].uls;
         short ult = rdp.texture_tile[rdp.first_tile_index].ult;
 
         uint32_t orig_w = tex_width2[0] ? tex_width2[0] : pot_w;
         uint32_t orig_h = tex_height2[0] ? tex_height2[0] : pot_h;
-        float u = ((float)(v_arr[i]->u - uls) / 32.0f) / (float)(orig_w);
+
+        float u = ((float)(vtx->u - uls) / 32.0f) / (float)orig_w;
         u *= (float)orig_w / (float)pot_w;
-        float v = ((float)(v_arr[i]->v - ult) / 32.0f) / (float)(orig_h);
+        float v = ((float)(vtx->v - ult) / 32.0f) / (float)orig_h;
         v *= (float)orig_h / (float)pot_h;
 
-        float r = v_arr[i]->color.r / 255.0f;
-        float g = v_arr[i]->color.g / 255.0f;
-        float b = v_arr[i]->color.b / 255.0f;
-        float a = v_arr[i]->color.a / 255.0f;
-    
-        buf_vbo[buf_vbo_len++] = v_arr[i]->x * inv_w;
-        buf_vbo[buf_vbo_len++] = v_arr[i]->y * inv_w;
-        buf_vbo[buf_vbo_len++] = v_arr[i]->z * inv_w;
-        buf_vbo[buf_vbo_len++] = u;
-        buf_vbo[buf_vbo_len++] = v;
-        buf_vbo[buf_vbo_len++] = r;
-        buf_vbo[buf_vbo_len++] = g;
-        buf_vbo[buf_vbo_len++] = b;
-        buf_vbo[buf_vbo_len++] = a;
+        TV[i] = { vtx->x, vtx->y, vtx->z, w,
+                  u, v,
+                  vtx->color.r/255.f, vtx->color.g/255.f,
+                  vtx->color.b/255.f, vtx->color.a/255.f };
     }
 
-    if (++buf_vbo_num_tris == MAX_BUFFERED) {
-        gfx_flush();
-    }
+    // --- lambda to push one vertex (9 floats) -------------------------------
+    auto push9 = [&](const TempV& V){
+        float invw = 1.0f / V.w;
+        buf_vbo[buf_vbo_len++] = V.x * invw;
+        buf_vbo[buf_vbo_len++] = V.y * invw;
+        buf_vbo[buf_vbo_len++] = V.z * invw;
+        buf_vbo[buf_vbo_len++] = V.u;
+        buf_vbo[buf_vbo_len++] = V.v;
+        buf_vbo[buf_vbo_len++] = V.r;
+        buf_vbo[buf_vbo_len++] = V.g;
+        buf_vbo[buf_vbo_len++] = V.b;
+        buf_vbo[buf_vbo_len++] = V.a;
+    };
+
+    // --- leaf‑emit function --------------------------------------------------
+    auto emit_tri = [&](const TempV&A,const TempV&B,const TempV&C){
+        push9(A); push9(B); push9(C);
+        if (++buf_vbo_num_tris == MAX_BUFFERED) gfx_flush();
+    };
+
+  /* ------------------------------------------------------------
+   Only subdivide when at least one vertex is outside the clip cube
+------------------------------------------------------------- */
+const bool offscreen =
+    (v1->clip_rej | v2->clip_rej | v3->clip_rej) != 0;
+
+if (offscreen) {
+    /* Aggressive split: one extra recursion level, tight ratio */
+    split_if_needed(TV[0], TV[1], TV[2],
+                    /*maxDepth*/5,     // up to 32 micro-tris
+                    /*threshold*/1.02f,
+                    emit_tri);
+} else {
+    /* All verts fully on-screen — just push the triangle as-is */
+    push9(TV[0]);
+    push9(TV[1]);
+    push9(TV[2]);
+    if (++buf_vbo_num_tris == MAX_BUFFERED) gfx_flush();
+}
 }
 
 static inline void gfx_sp_tri4(Gfx *cmd) {
