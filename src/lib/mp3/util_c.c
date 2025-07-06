@@ -35,14 +35,33 @@ s32 mp3util000461c0(u8 *buffer, s32 *a2, s32 a3, struct mp3decfourbytes *v8, s32
 	return v8->unk02;
 }
 
-s32 mp3util00046290(u32 *ptr, u8 s1, u8 t0)
+// Change prototype: take const u8 *ptr instead of u32 *ptr
+s32 mp3util00046290(const u8 *ptr, u8 s1, u8 t0)
 {
-	return *ptr << (t0 & 7) >> (32 - s1);
+	/* `ptr` may not be 32‑bit aligned, so read the word byte‑by‑byte. */
+	const u8 *p = ptr;
+
+	u32 word = ((u32)p[0] << 24) |
+	           ((u32)p[1] << 16) |
+	           ((u32)p[2] <<  8) |
+	           ((u32)p[3]      );
+
+	return (word << (t0 & 7)) >> (32 - s1);
 }
 
 s32 mp3utilGetBits(u8 *buffer, s32 *count, s32 numbits)
 {
-	const s32 result = PD_BE32(*(u32 *)(buffer + (*count >> 3))) << (*count & 7) >> (32 - numbits);
+	/* PSP's MIPS core traps on unaligned 32‑bit accesses, so we build the
+	 * big‑endian 32‑bit word byte‑by‑byte instead of casting. */
+	const u8 *ptr = buffer + (*count >> 3);
+
+	u32 word = ((u32)ptr[0] << 24) |
+	           ((u32)ptr[1] << 16) |
+	           ((u32)ptr[2] <<  8) |
+	           ((u32)ptr[3]      );
+
+	const s32 result = (word << (*count & 7)) >> (32 - numbits);
+
 	*count += numbits;
 	return result;
 }
@@ -69,7 +88,7 @@ s32 mp3util000462f8(u8 *arg0, s32 *arg1, s32 arg2, s32 arg3, s32 arg4, s32 arg5,
 	while (iVar8 = arg5 + iVar8, iVar8 > 0) {
 		uVar2 = mp3util000461c0((u8 *)piVar4, arg1, arg2, s0, uVar5);
 		if ((arg4 != 0) && (uVar2 == 0xf)) {
-			uVar2 = mp3util00046290(piVar4, arg4, uVar5);
+			uVar2 = mp3util00046290((const u8 *)piVar4, arg4, uVar5);
 			uVar2 = uVar2 + 0xf;
 		}
 		if (uVar2 == 0) {
@@ -86,7 +105,7 @@ s32 mp3util000462f8(u8 *arg0, s32 *arg1, s32 arg2, s32 arg3, s32 arg4, s32 arg5,
 			}
 		}
 		if ((arg4 != 0) && (iVar8 == 0xf)) {
-			uVar3 = mp3util00046290(piVar4, arg4, uVar5);
+			uVar3 = mp3util00046290((const u8 *)piVar4, arg4, uVar5);
 			iVar8 = uVar3 + 0xf;
 		}
 		*puVar6 = (s16)uVar2;
@@ -149,7 +168,7 @@ s32 mp3util000464a8(u8 *arg0, s32 *arg1, s32 arg2, s32 arg3, s32 arg4, s16 **arg
 			puVar10[1] = (s16)uVar7;
 			puVar10[2] = (s16)uVar8;
 			puVar10[3] = (s16)uVar1;
-			uVar2 = mp3util00046290(piVar3, 4, uVar5);
+			uVar2 = mp3util00046290((const u8 *)piVar3, 4, uVar5);
 			uVar9 = 3;
 			*puVar11 = (u8)uVar2;
 			if (uVar6 != 0) {
