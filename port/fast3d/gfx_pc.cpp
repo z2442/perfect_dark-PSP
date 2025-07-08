@@ -1727,11 +1727,7 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
 
     struct GfxClipParameters clip_parameters = gfx_rapi->get_clip_parameters();
 
-    // Manual polygon offset in software
-    float polygon_offset_bias = 0.001f; // Tweak this value if needed
-    for (int i = 0; i < 3; i++) {
-        v_arr[i]->z += polygon_offset_bias * v_arr[i]->w;
-    }
+
 
     uint32_t pot_w = 1, pot_h = 1;
     if (rendering_state.textures[0]) {
