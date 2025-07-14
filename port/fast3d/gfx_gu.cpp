@@ -61,19 +61,97 @@ static void gfx_gu_shader_get_info(struct ShaderProgram* prg, uint8_t* num_input
 
 static void gfx_gu_clear_shaders(void) {}
 
+// max number of textures you’ll ever allocate
+#define MAX_TEXTURES 256
+
+/*
+ * These next few functions are shims to replace the standard opengl 
+ * functions that normally would interact with a "texture" cache.
+ *
+ * Through some digging it seems like the basic flow uploading/using a texture is 
+ * as follows:
+ *
+ * 1. Call new_texture() to generate a texture spot in the texture cache
+ * 2. Call select_texture() to bind a texture, also selects that texture spot as the 
+ *    'acting' texture so that the next call can populate it 
+ * 3. Call upload_texture() to write the texture data to bound texture's buffer
+ * 4. Call draw_triangles() to draw triangles with whatever the last selected texture was
+ */
+// Storing the important information about a texture
+typedef struct {
+    GLuint  name;
+    uint8_t*   handle; 
+    bool    in_use;
+    uint32_t pot_width;
+    uint32_t pot_height;
+} TextureSlot;
+
+// Static texture storage
+static TextureSlot texture_slots[MAX_TEXTURES] = {0};
+// Used to hold the next available texture id
+static GLuint      next_id = 1;
+
+static GLuint SelectedTexture = 0;
+
+// Generate texture name
+void guGenTexture(GLuint *texture_id) {
+    GLuint name = next_id++;
+    *texture_id = name;
+    
+    // find a free slot and reserve it
+    for (int i = 0; i < MAX_TEXTURES; i++) {
+        if (!texture_slots[i].in_use) {
+            texture_slots[i].in_use = true;
+            texture_slots[i].name   = name;
+            texture_slots[i].handle = NULL;  
+            break;
+        }
+    }
+}
+
+// This will free the texture data associated with the texture_id and open it for use
+void guDeleteTexture(GLuint texture_id) {
+    GLuint name = texture_id;
+    for (int i = 0; i < MAX_TEXTURES; i++) {
+        if (texture_slots[i].in_use && texture_slots[i].name == name) {
+            if (texture_slots[i].handle)
+                free(texture_slots[i].handle);
+            texture_slots[i].in_use = false;
+            return;
+        }
+    }
+}
+
+void guBindTexture(GLuint texture_id) {
+    for (int i = 0; i < MAX_TEXTURES; i++) {
+        if (texture_slots[i].in_use && texture_slots[i].name == texture_id) {
+            SelectedTexture = texture_id;
+             
+//             sceGuEnable(GU_TEXTURE_2D);
+//             sceGuTexMode(GU_PSM_8888, 0, 0, 0);
+//             sceGuTexImage(0, 
+//                           texture_slots[i].pot_width, 
+//                           texture_slots[i].pot_height, 
+//                           texture_slots[i].pot_width, 
+//                           texture_slots[i].handle
+//                           );
+            return;
+        }
+    };
+}
 static GLuint gfx_gu_new_texture(void) {
-    // GU does not use texture IDs, return a dummy handle
-    static GLuint dummy_tex_id = 1;
-    return dummy_tex_id++;
+    GLuint tex;
+    guGenTexture(&tex);
+    return tex;
 }
 
 static void gfx_gu_delete_texture(uint32_t texID) {
-    // No-op for GU; textures are not reference counted or deleted by ID
-    (void)texID;
+    GLuint gl_tex_id = (GLuint)texID;
+    guDeleteTexture(gl_tex_id);
 }
 
 static void gfx_gu_select_texture(int tile, GLuint texture_id, bool linear_filter) {
-    // No-op for GU; texture is already bound via sceGuTexImage
+    guBindTexture(texture_id);
     current_textures_linear_filter[tile] = linear_filter;
 }
 
@@ -107,10 +185,6 @@ static void gfx_gu_upload_texture(const uint8_t* rgba32_buf, uint32_t width, uin
     }
 
     // Flush cache if needed (for RAM, usually not needed unless you memcpy directly to VRAM)
-    // Upload to GU (copies from RAM to VRAM as needed)
-    sceGuEnable(GU_TEXTURE_2D);
-    sceGuTexMode(GU_PSM_8888, 0, 0, 0);
-    sceGuTexImage(0, pot_width, pot_height, pot_width, converted);
 
     free(converted);
 }
@@ -217,17 +291,17 @@ static void gfx_gu_init(void) {
 
     // Set depth range (1.0 near, 0.0 far in GU, which is 65535 to 0)
     sceGuDepthRange(65535, 0);
-    sceGuDepthFunc(GU_GEQUAL); // Depth buffer is reversed so Greater than or equals
-    sceGuEnable(GU_DEPTH_TEST); // Enable depth testing
+//     sceGuDepthFunc(GU_GEQUAL); // Depth buffer is reversed so Greater than or equals
+//     sceGuEnable(GU_DEPTH_TEST); // Enable depth testing
     // Enable scissor test to restrict drawing to visible region
     sceGuScissor(0, 0, 480, 272);
     sceGuEnable(GU_SCISSOR_TEST);
 
     // Set correct face winding (clockwise for GU, matching gu default)
-//     sceGuFrontFace(GU_CW);
+    sceGuFrontFace(GU_CW);
 
     // Enable smooth shading
-//     sceGuShadeModel(GU_SMOOTH);
+    sceGuShadeModel(GU_SMOOTH);
 
     // Start with textures disabled; will be enabled by draw routines as needed
     sceGuDisable(GU_TEXTURE_2D);
@@ -271,12 +345,14 @@ static void gfx_gu_start_frame(void) {
     sceGuSetMatrix(GU_VIEW, &identity);
     sceGuSetMatrix(GU_MODEL, &identity);
 }
+
 static void gfx_gu_end_frame(void) {
     sceGuFinish();
     sceGuSync(GU_SYNC_FINISH, GU_SYNC_WAIT);
     sceDisplayWaitVblankStart();
     sceGuSwapBuffers();
 }
+
 static void gfx_gu_finish_render(void) {
     // No-op for GU
 }

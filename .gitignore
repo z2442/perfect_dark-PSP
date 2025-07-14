@@ -27,3 +27,10 @@ tools/mkrom/mkrom
 CppProperties.json
 .idea
 .DS_Store
+.cache/clangd/index
+CMakeFiles
+data
+5a
+Perfect Dark (USA) (Rev 1).z64:Zone.Identifier
+CMakeCache.txt
+compile_commands.json
