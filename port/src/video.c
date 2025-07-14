@@ -10,7 +10,7 @@
 #include "video.h"
 #include "../fast3d/gfx_api.h"
 #include "../fast3d/gfx_sdl.h"
-#include "../fast3d/gfx_opengl.h"
+#include "../fast3d/gfx_gu.h"
 
 
 #ifdef PLATFORM_NSWITCH
@@ -68,7 +68,7 @@ static s32 videoInitDisplayModes(void);
 s32 videoInit(void)
 {
     wmAPI = &gfx_sdl;
-    renderingAPI = &gfx_opengl_api;
+    renderingAPI = &gfx_gu_api;
 
     // ... (setting gfx_current_native_viewport, etc.) ...
     gfx_current_native_viewport.width = 320;
