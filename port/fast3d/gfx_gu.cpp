@@ -91,12 +91,12 @@ static TextureSlot texture_slots[MAX_TEXTURES] = {0};
 // Used to hold the next available texture id
 static GLuint      next_id = 1;
 
-static GLuint SelectedTexture = 0;
+static GLuint SelectedTexture = 1;
 
 // Generate texture name
 void guGenTexture(GLuint *texture_id) {
     GLuint name = next_id++;
-    *texture_id = name;
+//     *texture_id = name;
     
     // find a free slot and reserve it
     for (int i = 0; i < MAX_TEXTURES; i++) {
@@ -104,6 +104,7 @@ void guGenTexture(GLuint *texture_id) {
             texture_slots[i].in_use = true;
             texture_slots[i].name   = name;
             texture_slots[i].handle = NULL;  
+            *texture_id = i;
             break;
         }
     }
@@ -126,15 +127,15 @@ void guBindTexture(GLuint texture_id) {
     for (int i = 0; i < MAX_TEXTURES; i++) {
         if (texture_slots[i].in_use && texture_slots[i].name == texture_id) {
             SelectedTexture = texture_id;
-             
-//             sceGuEnable(GU_TEXTURE_2D);
-//             sceGuTexMode(GU_PSM_8888, 0, 0, 0);
-//             sceGuTexImage(0, 
-//                           texture_slots[i].pot_width, 
-//                           texture_slots[i].pot_height, 
-//                           texture_slots[i].pot_width, 
-//                           texture_slots[i].handle
-//                           );
+            
+            sceGuEnable(GU_TEXTURE_2D);
+            sceGuTexMode(GU_PSM_8888, 0, 0, 0);
+            sceGuTexImage(0, 
+                          texture_slots[texture_id].pot_width, 
+                          texture_slots[texture_id].pot_height, 
+                          texture_slots[texture_id].pot_width, 
+                          texture_slots[texture_id].handle
+                          );
             return;
         }
     };
@@ -156,6 +157,9 @@ static void gfx_gu_select_texture(int tile, GLuint texture_id, bool linear_filte
 }
 
 static void gfx_gu_upload_texture(const uint8_t* rgba32_buf, uint32_t width, uint32_t height) {
+    // If texture hasn't been created, return
+    if (!texture_slots[SelectedTexture].in_use) return;
+    
     int pot_width = 1, pot_height = 1;
     // Calculate nearest power of two width and height for texture
     while (pot_width < (int)width)   pot_width <<= 1;
@@ -169,24 +173,20 @@ static void gfx_gu_upload_texture(const uint8_t* rgba32_buf, uint32_t width, uin
         return; // Out of RAM
     }
 
-    
-    // BGRA to RGBA swizzle, plus zero-padding as before
+    // Copy the data into the new resized texture cache
     for (uint32_t y = 0; y < height; ++y) {
-        for (uint32_t x = 0; x < width; ++x) {
-            uint8_t* dst = converted + (y * pot_width + x) * 4;
-            const uint8_t* src = rgba32_buf + (y * width + x) * 4;
-            dst[0] = src[2];
-            dst[1] = src[1];
-            dst[2] = src[0];
-            dst[3] = src[3];
-        }
-//         memcpy(converted + (y * pot_width * 4), rgba32_buf + (y * width * 4), width);
-        memset(converted + (y * pot_width + width) * 4, 0, (pot_width - width) * 4);
+        uint8_t* dst_row = converted + y * pot_width * 4;
+        const uint8_t* src_row = rgba32_buf + y * width     * 4;
+        memcpy(dst_row, src_row, width * 4);
+        memset(dst_row + width * 4,
+               0,
+               (pot_width - width) * 4);
     }
 
-    // Flush cache if needed (for RAM, usually not needed unless you memcpy directly to VRAM)
-
-    free(converted);
+    
+    texture_slots[SelectedTexture].handle = converted;
+    texture_slots[SelectedTexture].pot_width = pot_width;
+    texture_slots[SelectedTexture].pot_height = pot_height;
 }
 
 static void gfx_gu_set_sampler_parameters(int tile, bool linear_filter, uint32_t cms, uint32_t cmt) {
@@ -231,11 +231,28 @@ static void gfx_gu_set_use_alpha(bool use_alpha, bool modulate) {
     } else {
         sceGuDisable(GU_BLEND);
     }
+
+    if (modulate){
+        sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
+    } else {
+        sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
+    }
 }
 
 static void gfx_gu_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_vbo_num_tris) {
     if (!buf_vbo || buf_vbo_num_tris == 0) return;
 
+    sceGuEnable(GU_TEXTURE_2D);
+    sceGuShadeModel(GU_SMOOTH);
+    sceGuDisable(GU_LIGHTING);
+//     sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
+//     sceGuTexFilter(GU_LINEAR, GU_LINEAR);
+//     sceGumMatrixMode(GU_PROJECTION);
+//     sceGumPerspective(90.0, 16.0 / 9.0, 0.50, 40.0);
+    // Setup matrices for rendering
+//     sceGumMatrixMode(GU_MODEL);
+//     sceGumLoadIdentity();
+    
     typedef struct {
         float u, v;
         unsigned int color;
@@ -259,13 +276,8 @@ static void gfx_gu_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t bu
             ((uint8_t)(g * 255.0f) << 8)  |
             ((uint8_t)(r * 255.0f));
     }
-
-    sceGuEnable(GU_TEXTURE_2D);
-    sceGuShadeModel(GU_SMOOTH);
-    sceGuDisable(GU_LIGHTING);
-
-    // TODO: Initialize texture here triangle, and if we need to 
-
+    
+    
     sceGuDrawArray(GU_TRIANGLES,
         GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF,
         num_verts, 0, verts);
@@ -288,16 +300,19 @@ static void gfx_gu_init(void) {
     // Set screen offset and viewport to center
     sceGuOffset(2048 - (480 / 2), 2048 - (272 / 2));
     sceGuViewport(2048, 2048, 480, 272);
+    
+    // Fov, Aspect Ratio, Near clipping field, far clipping field
+    sceGumPerspective(90.0, 16.0 / 9.0, 0.50, 40.0);
 
     // Set depth range (1.0 near, 0.0 far in GU, which is 65535 to 0)
     sceGuDepthRange(65535, 0);
-//     sceGuDepthFunc(GU_GEQUAL); // Depth buffer is reversed so Greater than or equals
-//     sceGuEnable(GU_DEPTH_TEST); // Enable depth testing
+    
     // Enable scissor test to restrict drawing to visible region
     sceGuScissor(0, 0, 480, 272);
     sceGuEnable(GU_SCISSOR_TEST);
 
     // Set correct face winding (clockwise for GU, matching gu default)
+//     sceGuEnable(GU_CULL_FACE);
     sceGuFrontFace(GU_CW);
 
     // Enable smooth shading
@@ -339,8 +354,7 @@ static void gfx_gu_start_frame(void) {
         {0.0f, 0.0f, 1.0f, 0.0f},
         {0.0f, 0.0f, 0.0f, 1.0f}
     };
-
-    // Use sceGuSetMatrix for setting GU matrices (sceGuLoadMatrix is not allowed for inline matrix setup)
+    
     sceGuSetMatrix(GU_PROJECTION, &projection);
     sceGuSetMatrix(GU_VIEW, &identity);
     sceGuSetMatrix(GU_MODEL, &identity);
@@ -378,10 +392,9 @@ void* gfx_gu_get_framebuffer_texture_id(int fb_id) {
 }
 
 void gfx_gu_clear_framebuffer(bool c, bool d) {
-    unsigned int flags = 0;
-    if (c) flags |= GU_COLOR_BUFFER_BIT;
-    if (d) flags |= GU_DEPTH_BUFFER_BIT;
-    sceGuClear(flags);
+    sceGuClearColor(0); // Black background
+    sceGuClearDepth(0);
+    sceGuClear(GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT);
 }
 
 void gfx_gu_copy_framebuffer(int fb_dst, int fb_src, int l, int t, bool flip_y, bool use_back) {}

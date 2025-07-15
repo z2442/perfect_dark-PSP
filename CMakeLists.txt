@@ -428,7 +428,7 @@ set(BIN_NAME_ELF "pd${BIN_REGION}.${TARGET_ARCH}.elf") # Intermediate ELF name
 set(BIN_NAME_EBOOT "EBOOT.PBP") # Final PSP executable
 set(PD_TARGET_NAME "pd_elf") # Internal CMake target name for the ELF
 
-list(APPEND LIBS glut GLU GL m pspfpu pspvfpu psppower pspdebug pspctrl pspdisplay pspaudiolib pspaudio  )
+list(APPEND LIBS glut GLU GL m pspfpu pspvfpu psppower pspdebug pspctrl pspgum pspdisplay pspaudiolib pspaudio  )
 
 # Use the combined SRC list directly
 add_executable(${PD_TARGET_NAME} ${SRC})

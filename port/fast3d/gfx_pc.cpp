@@ -1451,17 +1451,11 @@ static inline int gfx_lod_tile_offset(const int i) {
     return (rdp.tex_lod ? rdp.tex_detail : i);
 }
 
-// ------------------------------------------------------------------
-// Perspective‑aware subdivision: split triangles whose 1/w range is large
-// so that affine UV mapping looks perspective‑correct on GPUs that only
-// accept 2‑component texcoords (PSP GU / GLES 1.1).
-// ------------------------------------------------------------------
 struct TempV {
     float x,y,z,w;
     float u,v;
     float r,g,b,a;
 };
-
 template<typename EmitFn>
 static void split_if_needed(const TempV& A,const TempV& B,const TempV& C,
                             int depth,float threshold,const EmitFn& emit)
@@ -1504,7 +1498,7 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
             return;
         }
 
-        // Corrected VFPU-style NDC clipping: z + w < 0
+     // Corrected VFPU-style NDC clipping: z + w < 0
         bool clipped = false;
         for (int i = 0; i < 3; i++) {
             float z = v_arr[i]->z;
@@ -1772,7 +1766,7 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
         buf_vbo[buf_vbo_len++] = V.a;
     };
 
-    // --- leaf‑emit function --------------------------------------------------
+//     // --- leaf‑emit function --------------------------------------------------
     auto emit_tri = [&](const TempV&A,const TempV&B,const TempV&C){
         push9(A); push9(B); push9(C);
         if (++buf_vbo_num_tris == MAX_BUFFERED) gfx_flush();
