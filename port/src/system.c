@@ -236,12 +236,11 @@ void sysLogPrintf(s32 level, const char *fmt, ...)
 	vsnprintf(logmsg, sizeof(logmsg), fmt, ap);
 	va_end(ap);
 
-	if (logPath[0]) {
-		FILE *f = fopen(logPath, "ab");
-		if (f) {
-			fprintf(f, "%s%s\n", prefix[level], logmsg);
-			fclose(f);
-		}
+	// Always write to ms0:/pd_log.txt on the PSP memory stick
+	FILE *f = fopen("ms0:/pd_log.txt", "ab");
+	if (f) {
+		fprintf(f, "%s%s\n", prefix[level], logmsg);
+		fclose(f);
 	}
 
 	FILE *fout = (level == LOG_NOTE) ? stdout : stderr;
