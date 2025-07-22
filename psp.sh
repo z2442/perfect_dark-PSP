@@ -13,7 +13,7 @@ psp-cmake -S . -B build-psp \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=1 
 
 # Build 
-cmake --build build-psp -j 4
+cmake --build build-psp -j 8
 
 ln -s ./build-psp/compile_commands.json . &> /dev/null
 

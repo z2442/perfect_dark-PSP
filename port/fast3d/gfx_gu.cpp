@@ -1,4 +1,7 @@
 #include "pspdebug.h"
+#include "psptypes.h"
+#include "psputils.h"
+#include "system.h"
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -7,6 +10,7 @@
 #include <SDL.h>
 #include <GL/gl.h>
 #include <PR/gbi.h>
+#include <string>
 #ifndef G_TX_CLAMP
 #define G_TX_CLAMP 0x02
 #endif
@@ -19,7 +23,7 @@
 #include <pspdisplay.h>
 #include <pspge.h>
 
-static unsigned int __attribute__((aligned(16))) list[262144];
+static unsigned int __attribute__((aligned(16))) list[0x20000];
 
 struct ShaderProgram {
     GLuint gu_program_id;
@@ -62,7 +66,7 @@ static void gfx_gu_shader_get_info(struct ShaderProgram* prg, uint8_t* num_input
 static void gfx_gu_clear_shaders(void) {}
 
 // max number of textures you’ll ever allocate
-#define MAX_TEXTURES 256
+#define MAX_TEXTURES 1024
 
 /*
  * These next few functions are shims to replace the standard opengl 
@@ -82,6 +86,8 @@ typedef struct {
     GLuint  name;
     uint8_t*   handle; 
     bool    in_use;
+    uint32_t orig_width;
+    uint32_t orig_height;
     uint32_t pot_width;
     uint32_t pot_height;
 } TextureSlot;
@@ -89,20 +95,18 @@ typedef struct {
 // Static texture storage
 static TextureSlot texture_slots[MAX_TEXTURES] = {0};
 // Used to hold the next available texture id
-static GLuint      next_id = 1;
+static GLuint      next_id = 0;
 
-static GLuint SelectedTexture = 1;
+static GLuint SelectedTexture = 0;
 
 // Generate texture name
 void guGenTexture(GLuint *texture_id) {
-    GLuint name = next_id++;
 //     *texture_id = name;
     
     // find a free slot and reserve it
     for (int i = 0; i < MAX_TEXTURES; i++) {
         if (!texture_slots[i].in_use) {
             texture_slots[i].in_use = true;
-            texture_slots[i].name   = name;
             texture_slots[i].handle = NULL;  
             *texture_id = i;
             break;
@@ -112,33 +116,37 @@ void guGenTexture(GLuint *texture_id) {
 
 // This will free the texture data associated with the texture_id and open it for use
 void guDeleteTexture(GLuint texture_id) {
-    GLuint name = texture_id;
-    for (int i = 0; i < MAX_TEXTURES; i++) {
-        if (texture_slots[i].in_use && texture_slots[i].name == name) {
-            if (texture_slots[i].handle)
-                free(texture_slots[i].handle);
-            texture_slots[i].in_use = false;
-            return;
-        }
+    GLuint i = texture_id;
+    
+    if (texture_slots[i].in_use) {
+        if (texture_slots[i].handle)
+            free(texture_slots[i].handle);
+        texture_slots[i].in_use = false;
+        return;
     }
 }
 
 void guBindTexture(GLuint texture_id) {
-    for (int i = 0; i < MAX_TEXTURES; i++) {
-        if (texture_slots[i].in_use && texture_slots[i].name == texture_id) {
-            SelectedTexture = texture_id;
-            
-            sceGuEnable(GU_TEXTURE_2D);
-            sceGuTexMode(GU_PSM_8888, 0, 0, 0);
-            sceGuTexImage(0, 
-                          texture_slots[texture_id].pot_width, 
-                          texture_slots[texture_id].pot_height, 
-                          texture_slots[texture_id].pot_width, 
-                          texture_slots[texture_id].handle
-                          );
-            return;
-        }
-    };
+
+    // bind texture to gu if it exists and is loaded
+    if (texture_slots[texture_id].in_use) {
+        SelectedTexture = texture_id;
+
+        uint32_t w = texture_slots[texture_id].pot_width; 
+        uint32_t h = texture_slots[texture_id].pot_height; 
+        uint32_t ow = texture_slots[texture_id].orig_width; 
+        
+        sceGuEnable(GU_TEXTURE_2D);
+        sceGuTexMode(GU_PSM_8888, 0, 0, 0);
+        sceGuTexImage(0, 
+                      w,
+                      h,
+                      ow,
+                      texture_slots[texture_id].handle
+                      );
+        return;
+    }
+//     };
 }
 static GLuint gfx_gu_new_texture(void) {
     GLuint tex;
@@ -183,10 +191,21 @@ static void gfx_gu_upload_texture(const uint8_t* rgba32_buf, uint32_t width, uin
                (pot_width - width) * 4);
     }
 
+    bool rebind = false;
+    if (!texture_slots[SelectedTexture].handle) {
+        rebind = true;
+    }
     
     texture_slots[SelectedTexture].handle = converted;
     texture_slots[SelectedTexture].pot_width = pot_width;
     texture_slots[SelectedTexture].pot_height = pot_height;
+    texture_slots[SelectedTexture].orig_width = pot_width;
+    texture_slots[SelectedTexture].orig_height = height;
+
+    // rebind if the handle null bad
+    if (rebind) {
+        guBindTexture(SelectedTexture);
+    }
 }
 
 static void gfx_gu_set_sampler_parameters(int tile, bool linear_filter, uint32_t cms, uint32_t cmt) {
@@ -202,14 +221,39 @@ static void gfx_gu_set_depth_mode(bool depth_test, bool depth_update, bool depth
     if (depth_test) {
         sceGuEnable(GU_DEPTH_TEST);
         sceGuDepthMask(!depth_update);
+        current_depth_mask = depth_update;
+        
+        // Made this mimic the pc version just for code continuity
+        if (depth_compare) {
+            switch(zmode) {
+               case ZMODE_INTER:
+                    sceGuDepthFunc(GU_LEQUAL);
+                    break;
+                case ZMODE_OPA:
+                case ZMODE_XLU:
+                    if (depth_source_prim) {
+                        sceGuDepthFunc(GU_LEQUAL);
+                    } else {
+                        sceGuDepthFunc(GU_LESS);
+                    }
+                    break;
+                case ZMODE_DEC:
+                    sceGuDepthFunc(GU_LEQUAL);
+                    // Polygon offset is not available in GLES 1.1; can't mimic exactly.
+                    break; 
+            }
         sceGuDepthFunc(depth_compare ? GU_GEQUAL : GU_ALWAYS);
+        } else {
+            // If we don't want to compare depth, then allow all pixels
+            sceGuDepthFunc(GU_ALWAYS);
+        }
     } else {
         sceGuDisable(GU_DEPTH_TEST);
     }
-    current_depth_mask = depth_update;
 }
 
 static void gfx_gu_set_depth_range(float znear, float zfar) {
+    // Invert and scale the opengl depth range so that 0 is 65535 and 1 is 0
     uint16_t near_val = (uint16_t)(65535.0f * (1.0f - znear));
     uint16_t far_val  = (uint16_t)(65535.0f * (1.0f - zfar));
     sceGuDepthRange(near_val, far_val);
@@ -227,60 +271,35 @@ static void gfx_gu_set_scissor(int x, int y, int width, int height) {
 static void gfx_gu_set_use_alpha(bool use_alpha, bool modulate) {
     if (use_alpha) {
         sceGuEnable(GU_BLEND);
-        sceGuBlendFunc(GU_ADD, GU_SRC_ALPHA, GU_ONE_MINUS_SRC_ALPHA, 0, 0);
     } else {
         sceGuDisable(GU_BLEND);
     }
 
+    // This is how it is setup in the PC version
     if (modulate){
-        sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
+        sceGuBlendFunc(GU_ADD, GU_DST_COLOR, GU_ZERO, 0, 0);
     } else {
-        sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
+        sceGuBlendFunc(GU_ADD, GU_SRC_ALPHA, GU_ONE_MINUS_SRC_ALPHA, 0, 0);
     }
 }
 
-static void gfx_gu_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_vbo_num_tris) {
+static void gfx_gu_draw_triangles(void* buf_vbo, size_t buf_vbo_len, size_t buf_vbo_num_tris) {
     if (!buf_vbo || buf_vbo_num_tris == 0) return;
 
     sceGuEnable(GU_TEXTURE_2D);
-    sceGuShadeModel(GU_SMOOTH);
-    sceGuDisable(GU_LIGHTING);
-//     sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
-//     sceGuTexFilter(GU_LINEAR, GU_LINEAR);
-//     sceGumMatrixMode(GU_PROJECTION);
-//     sceGumPerspective(90.0, 16.0 / 9.0, 0.50, 40.0);
-    // Setup matrices for rendering
-//     sceGumMatrixMode(GU_MODEL);
-//     sceGumLoadIdentity();
-    
-    typedef struct {
-        float u, v;
-        unsigned int color;
-        float x, y, z;
-    } Vertex;
 
-    const size_t num_verts = buf_vbo_num_tris * 3;
-    Vertex* verts = (Vertex*)sceGuGetMemory(sizeof(Vertex) * num_verts);
-
-    for (size_t i = 0; i < num_verts; ++i) {
-        float* src = &buf_vbo[i * 9];
-        verts[i].x = src[0];
-        verts[i].y = src[1];
-        verts[i].z = src[2];
-        verts[i].u = src[3];
-        verts[i].v = src[4];
-        float r = src[5], g = src[6], b = src[7], a = src[8];
-        verts[i].color =
-            ((uint8_t)(a * 255.0f) << 24) |
-            ((uint8_t)(b * 255.0f) << 16) |
-            ((uint8_t)(g * 255.0f) << 8)  |
-            ((uint8_t)(r * 255.0f));
-    }
+    const size_t num_verts = buf_vbo_len;
+    const size_t mem_size = (sizeof(float) * 5 + sizeof(unsigned int)) * num_verts;
+    void* d_buf = sceGuGetMemory(mem_size);
+    memcpy(d_buf, buf_vbo, mem_size);
     
-    
+//     sceKernelDcacheWritebackRange(d_buf, mem_size);
     sceGuDrawArray(GU_TRIANGLES,
-        GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF,
-        num_verts, 0, verts);
+        GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF, 
+        num_verts, 0, d_buf);
+//     sceKernelDcacheInvalidateRange(d_buf, mem_size);
+    
+    sceGuDisable(GU_TEXTURE_2D);
 }
 
 static void gfx_gu_init(void) {
@@ -292,43 +311,21 @@ static void gfx_gu_init(void) {
     sceGuInit();
     sceGuStart(GU_DIRECT, list);
 
-    // Set up double buffering
     sceGuDrawBuffer(GU_PSM_8888, fbp0, 512);
     sceGuDispBuffer(480, 272, fbp1, 512);
     sceGuDepthBuffer(zbp, 512);
 
-    // Set screen offset and viewport to center
+    sceGuEnable(GU_SCISSOR_TEST);
+    sceGuScissor(0, 0, 480, 272);
+    sceGuEnable(GU_CULL_FACE);
+    sceGuFrontFace(GU_CCW);
     sceGuOffset(2048 - (480 / 2), 2048 - (272 / 2));
     sceGuViewport(2048, 2048, 480, 272);
-    
-    // Fov, Aspect Ratio, Near clipping field, far clipping field
     sceGumPerspective(90.0, 16.0 / 9.0, 0.50, 40.0);
-
-    // Set depth range (1.0 near, 0.0 far in GU, which is 65535 to 0)
     sceGuDepthRange(65535, 0);
-    
-    // Enable scissor test to restrict drawing to visible region
-    sceGuScissor(0, 0, 480, 272);
-    sceGuEnable(GU_SCISSOR_TEST);
-
-    // Set correct face winding (clockwise for GU, matching gu default)
-//     sceGuEnable(GU_CULL_FACE);
-    sceGuFrontFace(GU_CW);
-
-    // Enable smooth shading
     sceGuShadeModel(GU_SMOOTH);
 
-    // Start with textures disabled; will be enabled by draw routines as needed
-    sceGuDisable(GU_TEXTURE_2D);
-
-    // Clear color and depth buffers on first frame
-    sceGuClearColor(0); // Black background
-    sceGuClearDepth(0);
-    sceGuClear(GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT);
-
     sceGuFinish();
-    sceGuSync(GU_SYNC_FINISH, GU_SYNC_WHAT_DONE);
-    sceDisplayWaitVblankStart();
     sceGuDisplay(GU_TRUE);
 }
 
@@ -394,7 +391,16 @@ void* gfx_gu_get_framebuffer_texture_id(int fb_id) {
 void gfx_gu_clear_framebuffer(bool c, bool d) {
     sceGuClearColor(0); // Black background
     sceGuClearDepth(0);
-    sceGuClear(GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT);
+    
+    int flags;
+    if (c) {
+        flags |= GU_COLOR_BUFFER_BIT;
+    }
+    if (d) {
+        flags |= GU_DEPTH_BUFFER_BIT;
+    }
+        
+    sceGuClear(flags);
 }
 
 void gfx_gu_copy_framebuffer(int fb_dst, int fb_src, int l, int t, bool flip_y, bool use_back) {}

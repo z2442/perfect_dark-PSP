@@ -3,6 +3,7 @@
 #include <stdarg.h>
 #include <string.h>
 #include <ctype.h>
+#include <pspdebug.h>
 #include <PR/ultratypes.h>
 #include "lib/rzip.h"
 #include "romdata.h"
@@ -11,7 +12,7 @@
 #include "preprocess.h"
 #include "platform.h"
 
-//Used to enable debug on rom streaming. 
+//Used to enable debug on rom streaming.
 //#define PDDEBUG
 
 #define ROMDATA_FILEDIR "files"
@@ -333,7 +334,7 @@ static inline void romdataInitSegment(struct romfile *seg)
 {
 	if (seg->rom_offset == 0 && seg->source == SRC_ROM_IN_FILE) { // rom_offset is used as initial offset storage
 		// unused in this ROM, or not ROM sourced initially. Mark as unloaded.
-        seg->source = SRC_UNLOADED; 
+        seg->source = SRC_UNLOADED;
         #ifdef PDDEBUG
 		sysLogPrintf(LOG_NOTE, "Skipping segment %s (zero offset)", seg->name);
         #endif
@@ -360,7 +361,7 @@ static inline void romdataInitSegment(struct romfile *seg)
             return;
         }
 	}
-    
+
 	// Check if we have an external replacement and load it if so
 	char tmp[FS_MAXPATH];
 	snprintf(tmp, sizeof(tmp), ROMDATA_SEGDIR "/%s", seg->name);
@@ -395,7 +396,7 @@ static inline void romdataInitSegment(struct romfile *seg)
             }
             if (seg->rom_offset + seg->size > g_RomFileSize) {
                 #ifdef PDDEBUG
-                sysLogPrintf(LOG_ERROR, "Segment %s from ROM (offset 0x%X, size %u) exceeds ROM size %u.", 
+                sysLogPrintf(LOG_ERROR, "Segment %s from ROM (offset 0x%X, size %u) exceeds ROM size %u.",
                              seg->name, seg->rom_offset, seg->size, g_RomFileSize);
                 #endif
                 seg->source = SRC_UNLOADED;
@@ -420,7 +421,7 @@ static inline void romdataInitSegment(struct romfile *seg)
             return; // Should not reach here due to sysFatalError
 		}
 	}
-    
+
     if (!seg->data && seg->source != SRC_UNLOADED) { // Failed to load for some reason
         sysFatalError("Segment %s has no data after load attempt.", seg->name);
         return;
@@ -462,7 +463,7 @@ static inline s32 romdataLoadExternalFileList(void)
         romDataSegSize = 0;
     }
 
-	romDataSeg = fsFileLoad("filenames.lst", &romDataSegSize); 
+	romDataSeg = fsFileLoad("filenames.lst", &romDataSegSize);
 	if (!romDataSeg || !romDataSegSize) {
 		return 0;
 	}
@@ -523,7 +524,7 @@ static inline void romdataInitFiles(void)
                 }
             if (offset_entry1 + fileSlots[current_file_idx].size > g_RomFileSize) {
                 #ifdef PDDEBUG
-                sysLogPrintf(LOG_ERROR, "File %d from ROM (offset 0x%X, size %u) exceeds ROM size %u.", 
+                sysLogPrintf(LOG_ERROR, "File %d from ROM (offset 0x%X, size %u) exceeds ROM size %u.",
                              current_file_idx, offset_entry1, fileSlots[current_file_idx].size, g_RomFileSize);
                 #endif
                 fileSlots[current_file_idx].source = SRC_UNLOADED; // Mark as invalid
@@ -531,7 +532,7 @@ static inline void romdataInitFiles(void)
 			actual_num_files = current_file_idx;
 		} else { // Next entry is 0, so current offset_entry1 is for the name table block
 			name_table_main_rom_offset = offset_entry1;
-			break; 
+			break;
 		}
 		current_file_idx++;
 	}
@@ -568,7 +569,7 @@ static inline void romdataInitFiles(void)
                 max_string_data_relative_offset = current_rel_offset;
             }
         }
-        
+
         u32 end_of_name_block_relative_offset = max_string_data_relative_offset;
         if (max_string_data_relative_offset > 0) { // If there are any names
             // Find length of the string at the furthest relative offset
@@ -641,7 +642,7 @@ static inline struct romfile *romdataGetSeg(const char *name)
         sysLogPrintf(LOG_ERROR, "Segment '%s' not found in romSegs table.", name);
         #endif
         // Return a dummy or handle error, for now, return the terminator
-        return &romSegs[ARRAYCOUNT(romSegs)-1]; 
+        return &romSegs[ARRAYCOUNT(romSegs)-1];
     }
 	return seg;
 }
@@ -667,8 +668,12 @@ s32 romdataInit(void)
 
 	romdataLoadRom(); // Opens g_RomFp, loads and inflates romDataSeg
 
+	pspDebugScreenInit();
+	pspDebugScreenPrintf("Loading...");
     // Initialize segments: load from external or read from g_RomFp into RAM
 	for (struct romfile *seg = romSegs; seg->name; ++seg) {
+		pspDebugScreenClear();
+		pspDebugScreenPrintf("Loading... %s", seg->name);
 		romdataInitSegment(seg);
 	}
 
@@ -783,7 +788,7 @@ s32 romdataFileGetSize(s32 fileNum)
         return fileSlots[fileNum].size;
     }
     #ifdef PDDEBUG
-	sysLogPrintf(LOG_ERROR, "romdataFileGetSize: could not determine size for file num %d (name: %s, source: %d)", 
+	sysLogPrintf(LOG_ERROR, "romdataFileGetSize: could not determine size for file num %d (name: %s, source: %d)",
                  fileNum, fileSlots[fileNum].name ? fileSlots[fileNum].name : "N/A", fileSlots[fileNum].source);
     #endif
 	return -1;
@@ -844,7 +849,7 @@ u8 *romdataFileLoad(s32 fileNum, u32 *outSize)
         if (g_RomFp && file->rom_offset > 0 && file->size > 0) {
             if (file->rom_offset + file->size > g_RomFileSize) {
                 #ifdef PDDEBUG
-                 sysLogPrintf(LOG_ERROR, "File %d (%s) (offset 0x%X, size %u) exceeds ROM size %u. Cannot load from ROM.", 
+                 sysLogPrintf(LOG_ERROR, "File %d (%s) (offset 0x%X, size %u) exceeds ROM size %u. Cannot load from ROM.",
                              fileNum, file->name ? file->name : "N/A", file->rom_offset, file->size, g_RomFileSize);
                 #endif
                 file->source = SRC_UNLOADED; // Mark as invalid for ROM loading
@@ -926,7 +931,7 @@ void romdataFilePreprocess(s32 fileNum, s32 loadType, u8 *data, u32 size, u32 *o
 			}
 			// Then preprocess. Preprocessing function might update the size via outSize.
             // It operates on the 'data' buffer passed in.
-			filePreprocFuncs[loadType](data, size, outSize); 
+			filePreprocFuncs[loadType](data, size, outSize);
 			// file->preprocessed = 1; // Mark as preprocessed for this instance of data.
                                      // If data is freed and reloaded, it would need preprocessing again.
 		} else if (outSize) {
