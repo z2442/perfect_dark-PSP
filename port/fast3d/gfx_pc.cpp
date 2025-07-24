@@ -1975,10 +1975,10 @@ static void gfx_sp_tri1(uint8_t v1_idx, uint8_t v2_idx, uint8_t v3_idx, bool is_
         }
         
         // If a texture is being used, grab pot dimensions for uv coordinates
-//         uint32_t pot_w = rendering_state.textures[t] ?
-//             rendering_state.textures[t]->second.pot_w : 1;
-//         uint32_t pot_h = rendering_state.textures[t] ?
-//             rendering_state.textures[t]->second.pot_h : 1;
+        uint32_t pot_w = rendering_state.textures[t] ?
+            rendering_state.textures[t]->second.pot_w : 1;
+        uint32_t pot_h = rendering_state.textures[t] ?
+            rendering_state.textures[t]->second.pot_h : 1;
         
         RGBA color = v_arr[i]->color;
         
@@ -1986,8 +1986,8 @@ static void gfx_sp_tri1(uint8_t v1_idx, uint8_t v2_idx, uint8_t v3_idx, bool is_
         vert.x = v_arr[i]->x;
         vert.y = clip_parameters.invert_y ? -v_arr[i]->y / w : v_arr[i]->y;
         vert.z = z;
-        vert.u = u / tex_width[t];
-        vert.v = v / tex_height[t];
+        vert.u = u / pot_w;
+        vert.v = v / pot_h;
         vert.color = ((uint8_t)color.a << 24) |
             ((uint8_t)color.b << 16) |
             ((uint8_t)color.g << 8)  |
