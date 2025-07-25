@@ -239,7 +239,7 @@ static void gfx_gu_set_depth_mode(bool depth_test, bool depth_update, bool depth
                     break;
                 case ZMODE_DEC:
                     sceGuDepthFunc(GU_LEQUAL);
-                    // Polygon offset is not available in GLES 1.1; can't mimic exactly.
+                    // Polygon offset is not available in GU; can't mimic exactly.
                     break; 
             }
         sceGuDepthFunc(depth_compare ? GU_GEQUAL : GU_ALWAYS);
@@ -264,8 +264,7 @@ static void gfx_gu_set_viewport(int x, int y, int width, int height) {
 }
 
 static void gfx_gu_set_scissor(int x, int y, int width, int height) {
-    sceGuEnable(GU_SCISSOR_TEST);
-    sceGuScissor(x, y, x + width, y + height);
+    sceGuScissor(x, y, width, height);
 }
 
 static void gfx_gu_set_use_alpha(bool use_alpha, bool modulate) {
@@ -293,11 +292,11 @@ static void gfx_gu_draw_triangles(void* buf_vbo, size_t buf_vbo_len, size_t buf_
     void* d_buf = sceGuGetMemory(mem_size);
     memcpy(d_buf, buf_vbo, mem_size);
     
-//     sceKernelDcacheWritebackRange(d_buf, mem_size);
-    sceGuDrawArray(GU_TRIANGLES,
-        GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF, 
+    sceKernelDcacheWritebackRange(d_buf, mem_size);
+    sceGumDrawArray(GU_TRIANGLES,
+        GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_3D, 
         num_verts, 0, d_buf);
-//     sceKernelDcacheInvalidateRange(d_buf, mem_size);
+    sceKernelDcacheInvalidateRange(d_buf, mem_size);
     
     sceGuDisable(GU_TEXTURE_2D);
 }
@@ -332,10 +331,10 @@ static void gfx_gu_init(void) {
 static void gfx_gu_start_frame(void) {
     sceGuStart(GU_DIRECT, list);
 
-    float fov = 70.0f;
-    float aspect = 480.0f / 272.0f;
-    float znear = 0.1f;
-    float zfar = 100.0f;
+    float fov = 90.0f;
+    float aspect = 16.0f / 9.0f;
+    float znear = 0.5f;
+    float zfar = 40.0f;
     float f = 1.0f / tanf(fov * (3.1415926f / 360.0f));
 
     ScePspFMatrix4 projection = {
@@ -389,6 +388,7 @@ void* gfx_gu_get_framebuffer_texture_id(int fb_id) {
 }
 
 void gfx_gu_clear_framebuffer(bool c, bool d) {
+    sceGuDisable(GU_SCISSOR_TEST);
     sceGuClearColor(0); // Black background
     sceGuClearDepth(0);
     
@@ -397,10 +397,15 @@ void gfx_gu_clear_framebuffer(bool c, bool d) {
         flags |= GU_COLOR_BUFFER_BIT;
     }
     if (d) {
+//         sceGuDepthMask(GU_TRUE);
         flags |= GU_DEPTH_BUFFER_BIT;
     }
-        
     sceGuClear(flags);
+//     if (d) {
+//         sceGuDepthMask(current_depth_mask ? GU_FALSE : GU_TRUE);
+//     }
+
+    sceGuEnable(GU_SCISSOR_TEST);
 }
 
 void gfx_gu_copy_framebuffer(int fb_dst, int fb_src, int l, int t, bool flip_y, bool use_back) {}

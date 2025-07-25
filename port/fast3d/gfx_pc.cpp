@@ -1560,6 +1560,7 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index,
       d->color.g = g > 255 ? 255 : g;
       d->color.b = b > 255 ? 255 : b;
 
+      // This seems to not affect walls and other things that suffer from projection issues
       if (rsp.geometry_mode & G_TEXTURE_GEN) {
         float dotx = 0, doty = 0;
         if (rsp.lookat_enabled) {
@@ -1607,7 +1608,7 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index,
     d->v = V;
 
     // trivial clip rejection
-    d->clip_rej = 0;
+//     d->clip_rej = 0;
 //     if (x < -w) {
 //       d->clip_rej |= 1; // CLIP_LEFT
 //     }
@@ -1681,71 +1682,71 @@ static void gfx_sp_tri1(uint8_t v1_idx, uint8_t v2_idx, uint8_t v3_idx, bool is_
     struct LoadedVertex *v_arr[3] = {v1, v2, v3};
 
     // VFPU-style NDC clipping: z + w < 0, using PSP inline assembly
-//     static const float clip_plane[4] __attribute__((aligned(16))) = { 0.0f, 0.0f, -1.0f, -1.0f };
-//     if ((rsp.extra_geometry_mode & G_NO_CLIPPING_EXT) == 0) {
-//         if (v1->clip_rej & v2->clip_rej & v3->clip_rej) {
-//             // The whole triangle lies outside the visible area
-//             return;
-//         }
-// 
-//      // Corrected VFPU-style NDC clipping: z + w < 0
-//         bool clipped = false;
-//         for (int i = 0; i < 3; i++) {
-//             float z = v_arr[i]->z;
-//             float w = v_arr[i]->w;
-//             float dot;
-//             __asm__ volatile (
-//                 "mtv    %1, S000\n"             // z
-//                 "mtv    %2, S001\n"             // w
-//                 "vadd.s S002, S000, S001\n"     // z + w
-//                 "mfv    %0, S002\n"
-//                 : "=r"(dot)
-//                 : "r"(z), "r"(w)
-//             );
-//             if (dot < 0.0f) {
-//                 clipped = true;
-//                 break;
-//             }
-//         }
-//         if (clipped) return;
-//     }
+    static const float clip_plane[4] __attribute__((aligned(16))) = { 0.0f, 0.0f, -1.0f, -1.0f };
+    if ((rsp.extra_geometry_mode & G_NO_CLIPPING_EXT) == 0) {
+        if (v1->clip_rej & v2->clip_rej & v3->clip_rej) {
+            // The whole triangle lies outside the visible area
+            return;
+        }
 
-//     if ((rsp.geometry_mode & G_CULL_BOTH) != 0) {
-//         float dx1 = v1->x / (v1->w) - v2->x / (v2->w);
-//         float dy1 = v1->y / (v1->w) - v2->y / (v2->w);
-//         float dx2 = v3->x / (v3->w) - v2->x / (v2->w);
-//         float dy2 = v3->y / (v3->w) - v2->y / (v2->w);
-//         float cross = dx1 * dy2 - dy1 * dx2;
-// 
-//         if ((v1->w < 0) ^ (v2->w < 0) ^ (v3->w < 0)) {
-//             // If one vertex lies behind the eye, negating cross will give
-//             //the correct result.
-//             // If all vertices lie behind the eye, the triangle will be
-//             //rejected anyway. 
-//             cross = -cross;
-//         }
-// 
-//         // If inverted culling is requested, negate the cross
-//         // if ((rsp.extra_geometry_mode & G_EX_INVERT_CULLING) == 1) {
-//         //     cross = -cross;
-//         // }
-// 
-//         switch (rsp.geometry_mode & G_CULL_BOTH) {
-//             case G_CULL_FRONT:
-//                 if (cross <= 0) {
-//                     return;
-//                 }
-//                 break;
-//             case G_CULL_BACK:
-//                 if (cross >= 0) {
-//                     return;
-//                 }
-//                 break;
-//             case G_CULL_BOTH:
-//                 // Why is this even an option?
-//                 return;
-//         }
-//     }
+     // Corrected VFPU-style NDC clipping: z + w < 0
+        bool clipped = false;
+        for (int i = 0; i < 3; i++) {
+            float z = v_arr[i]->z;
+            float w = v_arr[i]->w;
+            float dot;
+            __asm__ volatile (
+                "mtv    %1, S000\n"             // z
+                "mtv    %2, S001\n"             // w
+                "vadd.s S002, S000, S001\n"     // z + w
+                "mfv    %0, S002\n"
+                : "=r"(dot)
+                : "r"(z), "r"(w)
+            );
+            if (dot < 0.0f) {
+                clipped = true;
+                break;
+            }
+        }
+        if (clipped) return;
+    }
+
+    if ((rsp.geometry_mode & G_CULL_BOTH) != 0) {
+        float dx1 = v1->x / (v1->w) - v2->x / (v2->w);
+        float dy1 = v1->y / (v1->w) - v2->y / (v2->w);
+        float dx2 = v3->x / (v3->w) - v2->x / (v2->w);
+        float dy2 = v3->y / (v3->w) - v2->y / (v2->w);
+        float cross = dx1 * dy2 - dy1 * dx2;
+
+        if ((v1->w < 0) ^ (v2->w < 0) ^ (v3->w < 0)) {
+            // If one vertex lies behind the eye, negating cross will give
+            //the correct result.
+            // If all vertices lie behind the eye, the triangle will be
+            //rejected anyway. 
+            cross = -cross;
+        }
+
+        // If inverted culling is requested, negate the cross
+        // if ((rsp.extra_geometry_mode & G_EX_INVERT_CULLING) == 1) {
+        //     cross = -cross;
+        // }
+
+        switch (rsp.geometry_mode & G_CULL_BOTH) {
+            case G_CULL_FRONT:
+                if (cross <= 0) {
+                    return;
+                }
+                break;
+            case G_CULL_BACK:
+                if (cross >= 0) {
+                    return;
+                }
+                break;
+            case G_CULL_BOTH:
+                // Why is this even an option?
+                return;
+        }
+    }
 
     // Extract and decode depth-related state flags from other_mode
     bool depth_test = ((rsp.geometry_mode & G_ZBUFFER) == G_ZBUFFER 
@@ -1935,12 +1936,12 @@ static void gfx_sp_tri1(uint8_t v1_idx, uint8_t v2_idx, uint8_t v3_idx, bool is_
         auto t = 0;
 
         // TODO: fix this; for now just ignore mips
-        const uint32_t tile = 0;//gfx_lod_tile_offset(t);
+        const uint32_t tile = gfx_lod_tile_offset(t);
 
-        float u = v_arr[i]->u - rdp.texture_tile[rdp.first_tile_index + tile].uls;
-        float v = v_arr[i]->v - rdp.texture_tile[rdp.first_tile_index + tile].ult;
+        float u = v_arr[i]->u / 32.0; 
+        float v = v_arr[i]->v / 32.0; 
 
-        // apply uv shifts if there are any
+        // Apply uv shifts if there are any
         int shifts = rdp.texture_tile[rdp.first_tile_index + tile].shifts;
         int shiftt = rdp.texture_tile[rdp.first_tile_index + tile].shiftt;
         if (shifts != 0) {
@@ -1958,8 +1959,8 @@ static void gfx_sp_tri1(uint8_t v1_idx, uint8_t v2_idx, uint8_t v3_idx, bool is_
             }
         }
 
-        u /= 36.0f;
-        v /= 36.0f;
+        u -= rdp.texture_tile[rdp.first_tile_index + tile].uls / 4.0;
+        v -= rdp.texture_tile[rdp.first_tile_index + tile].ult / 4.0;
 
         if (!is_rect) {
             if (!(rdp.other_mode_h & G_TP_PERSP)) {
@@ -2122,6 +2123,7 @@ static void gfx_adjust_viewport_or_scissor(XYWidthHeight *area,
 
 static void gfx_calc_and_set_viewport(const Vp_t *viewport) {
   // 2 bits fraction
+  
   float width = 2.0f * viewport->vscale[0] / 4.0f;
   float height = 2.0f * viewport->vscale[1] / 4.0f;
   float x = (viewport->vtrans[0] / 4.0f) - width / 2.0f;
