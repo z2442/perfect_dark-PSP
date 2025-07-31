@@ -1628,9 +1628,9 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index,
 //     if (z > w + CLIP_EPS)
 //       d->clip_rej |= 32; // CLIP_FAR
 
-    d->x = x / w;
-    d->y = y / w;
-    d->z = z / w;
+    d->x = x;
+    d->y = y;
+    d->z = z;
     d->w = w;
 
     if (rsp.geometry_mode & G_FOG) {
@@ -1684,117 +1684,109 @@ static void gfx_sp_tri1(uint8_t v1_idx, uint8_t v2_idx, uint8_t v3_idx, bool is_
     // VFPU-style NDC clipping: z + w < 0, using PSP inline assembly
     static const float clip_plane[4] __attribute__((aligned(16))) = { 0.0f, 0.0f, -1.0f, -1.0f };
     if ((rsp.extra_geometry_mode & G_NO_CLIPPING_EXT) == 0) {
+        // We'll keep this that way we dont go through this whole function for something that will be culled anyway...
         if (v1->clip_rej & v2->clip_rej & v3->clip_rej) {
             // The whole triangle lies outside the visible area
             return;
         }
 
-     // Corrected VFPU-style NDC clipping: z + w < 0
-        bool clipped = false;
-        for (int i = 0; i < 3; i++) {
-            float z = v_arr[i]->z;
-            float w = v_arr[i]->w;
-            float dot;
-            __asm__ volatile (
-                "mtv    %1, S000\n"             // z
-                "mtv    %2, S001\n"             // w
-                "vadd.s S002, S000, S001\n"     // z + w
-                "mfv    %0, S002\n"
-                : "=r"(dot)
-                : "r"(z), "r"(w)
-            );
-            if (dot < 0.0f) {
-                clipped = true;
-                break;
-            }
-        }
-        if (clipped) return;
+  // Corrected VFPU-style NDC clipping: z + w < 0
+//         bool clipped = false;
+//         for (int i = 0; i < 3; i++) {
+//             float z = v_arr[i]->z;
+//             float w = v_arr[i]->w;
+//             float dot;
+//             __asm__ volatile (
+//                 "mtv    %1, S000\n"             // z
+//                 "mtv    %2, S001\n"             // w
+//                 "vadd.s S002, S000, S001\n"     // z + w
+//                 "mfv    %0, S002\n"
+//                 : "=r"(dot)
+//                 : "r"(z), "r"(w)
+//             );
+//             if (dot < 0.0f) {
+//                 clipped = true;
+//                 break;
+//             }
+//         }
+//         if (clipped) return;
     }
 
-    if ((rsp.geometry_mode & G_CULL_BOTH) != 0) {
-        float dx1 = v1->x / (v1->w) - v2->x / (v2->w);
-        float dy1 = v1->y / (v1->w) - v2->y / (v2->w);
-        float dx2 = v3->x / (v3->w) - v2->x / (v2->w);
-        float dy2 = v3->y / (v3->w) - v2->y / (v2->w);
-        float cross = dx1 * dy2 - dy1 * dx2;
+//     if ((rsp.geometry_mode & G_CULL_BOTH) != 0) {
+//         float dx1 = v1->x / (v1->w) - v2->x / (v2->w);
+//         float dy1 = v1->y / (v1->w) - v2->y / (v2->w);
+//         float dx2 = v3->x / (v3->w) - v2->x / (v2->w);
+//         float dy2 = v3->y / (v3->w) - v2->y / (v2->w);
+//         float cross = dx1 * dy2 - dy1 * dx2;
+// 
+//         if ((v1->w < 0) ^ (v2->w < 0) ^ (v3->w < 0)) {
+//             // If one vertex lies behind the eye, negating cross will give
+//             //the correct result.
+//             // If all vertices lie behind the eye, the triangle will be
+//             //rejected anyway. 
+//             cross = -cross;
+//         }
+// 
+//         // If inverted culling is requested, negate the cross
+//         // if ((rsp.extra_geometry_mode & G_EX_INVERT_CULLING) == 1) {
+//         //     cross = -cross;
+//         // }
+// 
+//         switch (rsp.geometry_mode & G_CULL_BOTH) {
+//             case G_CULL_FRONT:
+//                 if (cross <= 0) {
+//                     return;
+//                 }
+//                 break;
+//             case G_CULL_BACK:
+//                 if (cross >= 0) {
+//                     return;
+//                 }
+//                 break;
+//             case G_CULL_BOTH:
+//                 // Why is this even an option?
+//                 return;
+//         }
+//     }
 
-        if ((v1->w < 0) ^ (v2->w < 0) ^ (v3->w < 0)) {
-            // If one vertex lies behind the eye, negating cross will give
-            //the correct result.
-            // If all vertices lie behind the eye, the triangle will be
-            //rejected anyway. 
-            cross = -cross;
-        }
-
-        // If inverted culling is requested, negate the cross
-        // if ((rsp.extra_geometry_mode & G_EX_INVERT_CULLING) == 1) {
-        //     cross = -cross;
-        // }
-
-        switch (rsp.geometry_mode & G_CULL_BOTH) {
-            case G_CULL_FRONT:
-                if (cross <= 0) {
-                    return;
-                }
-                break;
-            case G_CULL_BACK:
-                if (cross >= 0) {
-                    return;
-                }
-                break;
-            case G_CULL_BOTH:
-                // Why is this even an option?
-                return;
-        }
-    }
-
-    // Extract and decode depth-related state flags from other_mode
-    bool depth_test = ((rsp.geometry_mode & G_ZBUFFER) == G_ZBUFFER 
-        || (rdp.other_mode_l & G_ZS_PRIM) == G_ZS_PRIM) 
-        && ((rdp.other_mode_h & G_CYC_1CYCLE) == G_CYC_1CYCLE 
-        || (rdp.other_mode_h & G_CYC_2CYCLE) == G_CYC_2CYCLE);
-    bool depth_update = (rdp.other_mode_l & Z_UPD) != 0;
-    bool depth_compare = (rdp.other_mode_l & Z_CMP) != 0;
-    bool depth_source_prim = (rdp.other_mode_l & G_ZS_PRIM) != 0;
-    uint16_t zmode = (rdp.other_mode_l & ZMODE_DEC) >> 6; // extract zmode bits properly
-    // Compose depth mode bitfield used to avoid redundant state changes
-    uint8_t depth_mode = (depth_test ? 1 : 0) | (depth_update ? 2 : 0) |
-    (depth_compare ? 4 : 0) | (depth_source_prim ? 8 : 0) | (zmode << 4);
+    bool depth_test = ((rsp.geometry_mode & G_ZBUFFER) == G_ZBUFFER || (rdp.other_mode_l & G_ZS_PRIM) == G_ZS_PRIM) &&
+                      ((rdp.other_mode_h & G_CYC_1CYCLE) == G_CYC_1CYCLE || (rdp.other_mode_h & G_CYC_2CYCLE) == G_CYC_2CYCLE);
+    bool depth_update = (rdp.other_mode_l & Z_UPD) == Z_UPD;
+    bool depth_compare = (rdp.other_mode_l & Z_CMP) == Z_CMP;
+    bool depth_source_prim = (rdp.other_mode_l & G_ZS_PRIM) == G_ZS_PRIM /* && gDP.primDepth.z == 1.0f */;
+    uint16_t zmode = rdp.other_mode_l & ZMODE_DEC;
+    uint8_t depth_mode = (depth_test ? 1 : 0) | (depth_update ? 2 : 0) | (depth_compare ? 4 : 0) | (depth_source_prim ? 8 : 0) | (zmode >> 6);
 
     if (depth_mode != rendering_state.depth_mode) {
         gfx_flush();
-        gfx_rapi->set_depth_mode(depth_test, depth_update, depth_compare,
-        depth_source_prim, zmode); rendering_state.depth_mode = depth_mode;
+        gfx_rapi->set_depth_mode(depth_test, depth_update, depth_compare, depth_source_prim, zmode);
+        rendering_state.depth_mode = depth_mode;
     }
 
     if (rdp.viewport_or_scissor_changed) {
-        if (memcmp(&rdp.viewport, &rendering_state.viewport,
-        sizeof(rdp.viewport)) != 0) {
+        if (memcmp(&rdp.viewport, &rendering_state.viewport, sizeof(rdp.viewport)) != 0) {
             gfx_flush();
-            gfx_rapi->set_viewport(rdp.viewport.x, rdp.viewport.y,
-            rdp.viewport.width, rdp.viewport.height);
+            gfx_rapi->set_viewport(rdp.viewport.x, rdp.viewport.y, rdp.viewport.width, rdp.viewport.height);
             rendering_state.viewport = rdp.viewport;
         }
         if (memcmp(&rdp.scissor, &rendering_state.scissor,
         sizeof(rdp.scissor)) != 0) {
             gfx_flush();
-            gfx_rapi->set_scissor(rdp.scissor.x, rdp.scissor.y,
-            rdp.scissor.width, rdp.scissor.height); rendering_state.scissor =
-            rdp.scissor;
+            gfx_rapi->set_scissor(rdp.scissor.x, rdp.scissor.y, rdp.scissor.width, rdp.scissor.height); 
+            rendering_state.scissor = rdp.scissor;
         }
         rdp.viewport_or_scissor_changed = false;
     }
 
     uint64_t cc_options = 0;
     bool use_alpha =
-        (rdp.other_mode_l & (3 << 20)) == (G_BL_CLR_MEM << 20) &&
-        (rdp.other_mode_l & (3 << 16)) == (G_BL_1MA << 16);
-    const bool use_fog = ((rdp.other_mode_l >> 30) == G_BL_CLR_FOG) || ((rdp.other_mode_l >> 26) == G_BL_A_FOG); 
-    const bool texture_edge = (rdp.other_mode_l & CVG_X_ALPHA) == CVG_X_ALPHA; 
-    const bool use_noise = (rdp.other_mode_l & (3U << G_MDSFT_ALPHACOMPARE)) == G_AC_DITHER; 
+        (rdp.other_mode_l & (3 << 20)) == (G_BL_CLR_MEM << 20) && (rdp.other_mode_l & (3 << 16)) == (G_BL_1MA << 16);
+    const bool use_fog = ((rdp.other_mode_l >> 30) == G_BL_CLR_FOG) || ((rdp.other_mode_l >> 26) == G_BL_A_FOG);
+    const bool texture_edge = (rdp.other_mode_l & CVG_X_ALPHA) == CVG_X_ALPHA;
+    const bool use_noise = (rdp.other_mode_l & (3U << G_MDSFT_ALPHACOMPARE)) == G_AC_DITHER;
     const bool use_2cyc = (rdp.other_mode_h & (3U << G_MDSFT_CYCLETYPE)) == G_CYC_2CYCLE;
-    const bool alpha_threshold = (rdp.other_mode_l & (3U << G_MDSFT_ALPHACOMPARE)) == G_AC_THRESHOLD; 
-    const bool invisible = (rdp.other_mode_l & (3 << 24)) == (G_BL_0 << 24) && (rdp.other_mode_l & (3 << 20)) == (G_BL_CLR_MEM << 20); 
+    const bool alpha_threshold = (rdp.other_mode_l & (3U << G_MDSFT_ALPHACOMPARE)) == G_AC_THRESHOLD;
+    const bool invisible = (rdp.other_mode_l & (3 << 24)) == (G_BL_0 << 24) && (rdp.other_mode_l & (3 << 20)) == (G_BL_CLR_MEM << 20);
     const bool use_grayscale = rdp.grayscale;
     const bool use_modulate = use_alpha && (rsp.extra_geometry_mode & G_MODULATE_EXT) != 0;
     const bool use_blur = (rdp.other_mode_h & (3U << G_MDSFT_TEXTFILT)) == G_TF_BLUR_EXT;
@@ -1831,7 +1823,7 @@ static void gfx_sp_tri1(uint8_t v1_idx, uint8_t v2_idx, uint8_t v3_idx, bool is_
         cc_options |= (uint64_t)SHADER_OPT_BLUR;
     }
 
-    // If we are not using alpha, clear the alpha components of the combiner as they have no effect 
+    // If we are not using alpha, clear the alpha components of the combiner as they have no effect
     if (!use_alpha) {
         cc_options &= ~((0xfff << 16) | ((uint64_t)0xfff << 44));
     }
@@ -1846,6 +1838,7 @@ static void gfx_sp_tri1(uint8_t v1_idx, uint8_t v2_idx, uint8_t v3_idx, bool is_
     uint32_t tex_width[2], tex_height[2], tex_width2[2], tex_height2[2];
 
     for (int i = 0; i < 2; i++) {
+        // TODO: fix this; for now just ignore smaller mips
         const uint32_t tile = rdp.first_tile_index + gfx_lod_tile_offset(i);
         if (comb->used_textures[i]) {
             if (rdp.textures_changed[i]) {
@@ -1857,8 +1850,7 @@ static void gfx_sp_tri1(uint8_t v1_idx, uint8_t v2_idx, uint8_t v3_idx, bool is_
             uint8_t cms = rdp.texture_tile[tile].cms;
             uint8_t cmt = rdp.texture_tile[tile].cmt;
 
-            uint32_t tex_size_bytes =
-            rdp.loaded_texture[rdp.texture_tile[tile].tmem].orig_size_bytes;
+            uint32_t tex_size_bytes = rdp.loaded_texture[rdp.texture_tile[tile].tmem].orig_size_bytes;
             uint32_t line_size = rdp.texture_tile[tile].line_size_bytes;
 
             if (line_size == 0) {
@@ -1882,29 +1874,25 @@ static void gfx_sp_tri1(uint8_t v1_idx, uint8_t v2_idx, uint8_t v3_idx, bool is_
             }
             tex_width[i] = line_size;
 
-            tex_width2[i] = (rdp.texture_tile[tile].lrs - rdp.texture_tile[tile].uls + 4) / 4; tex_height2[i] = (rdp.texture_tile[tile].lrt - rdp.texture_tile[tile].ult + 4) / 4;
+            tex_width2[i] = (rdp.texture_tile[tile].lrs - rdp.texture_tile[tile].uls + 4) / 4;
+            tex_height2[i] = (rdp.texture_tile[tile].lrt - rdp.texture_tile[tile].ult + 4) / 4;
 
             uint32_t tex_width1 = tex_width[i] << (cms & G_TX_MIRROR);
             uint32_t tex_height1 = tex_height[i] << (cmt & G_TX_MIRROR);
 
-            if ((cms & G_TX_CLAMP) && ((cms & G_TX_MIRROR) || tex_width1 !=
-            tex_width2[i])) {
+            if ((cms & G_TX_CLAMP) && ((cms & G_TX_MIRROR) || tex_width1 != tex_width2[i])) {
                 tm |= 1 << 2 * i;
                 cms &= ~G_TX_CLAMP;
             }
-            if ((cmt & G_TX_CLAMP) && ((cmt & G_TX_MIRROR) || tex_height1 !=
-            tex_height2[i])) {
+            if ((cmt & G_TX_CLAMP) && ((cmt & G_TX_MIRROR) || tex_height1 != tex_height2[i])) {
                 tm |= 1 << (2 * i + 1);
                 cmt &= ~G_TX_CLAMP;
             }
 
-            // If using a texture
             if (rendering_state.textures[i]) {
-                // Set linear filter 
-                bool linear_filter = (rdp.other_mode_h & (3U << G_MDSFT_TEXTFILT)) != G_TF_POINT; 
-                if (linear_filter != rendering_state.textures[i]->second.linear_filter 
-                    || cms != rendering_state.textures[i]->second.cms 
-                    || cmt != rendering_state.textures[i]->second.cmt) { 
+                bool linear_filter = (rdp.other_mode_h & (3U << G_MDSFT_TEXTFILT)) != G_TF_POINT;
+                if (linear_filter != rendering_state.textures[i]->second.linear_filter ||
+                    cms != rendering_state.textures[i]->second.cms || cmt != rendering_state.textures[i]->second.cmt) {
                     gfx_flush();
                     gfx_rapi->set_sampler_parameters(i, linear_filter, cms, cmt);
                     rendering_state.textures[i]->second.linear_filter = linear_filter;
@@ -1984,9 +1972,9 @@ static void gfx_sp_tri1(uint8_t v1_idx, uint8_t v2_idx, uint8_t v3_idx, bool is_
         RGBA color = v_arr[i]->color;
         
         Vertex vert;
-        vert.x = v_arr[i]->x;
-        vert.y = clip_parameters.invert_y ? -v_arr[i]->y / w : v_arr[i]->y;
-        vert.z = z;
+        vert.x = v_arr[i]->x / w;
+        vert.y = clip_parameters.invert_y ? -v_arr[i]->y / w : v_arr[i]->y / w;
+        vert.z = z / w;
         vert.u = u / pot_w;
         vert.v = v / pot_h;
         vert.color = ((uint8_t)color.a << 24) |
@@ -1998,11 +1986,7 @@ static void gfx_sp_tri1(uint8_t v1_idx, uint8_t v2_idx, uint8_t v3_idx, bool is_
 
         // TODO: Figure out how to incorporate this once rendering is finished
 //         if (use_fog) {
-//             sceGuFog(v_arr[i]->fog, v_arr[i]->fog, rdp.fog_color);
-//             buf_vbo[buf_vbo_len++] = rdp.fog_color.r / 255.0f;
-//             buf_vbo[buf_vbo_len++] = rdp.fog_color.g / 255.0f;
-//             buf_vbo[buf_vbo_len++] = rdp.fog_color.b / 255.0f;
-//             buf_vbo[buf_vbo_len++] = v_arr[i]->fog / 255.0f; // fog factor
+//             sceGuFog(v_arr[i]->fog, 0, rdp.fog_color);
 //         }
 // 
 //         if (use_grayscale) {
@@ -3005,7 +2989,7 @@ static void gfx_run_dl(Gfx *cmd) {
       gfx_flush();
       break;
     case G_CLEAR_DEPTH_EXT:
-      gfx_flush();
+//       gfx_flush();
       gfx_rapi->clear_framebuffer(false, true);
       break;
     case G_RDPPIPESYNC:

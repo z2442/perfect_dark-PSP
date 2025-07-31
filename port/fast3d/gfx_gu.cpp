@@ -127,26 +127,11 @@ void guDeleteTexture(GLuint texture_id) {
 }
 
 void guBindTexture(GLuint texture_id) {
-
-    // bind texture to gu if it exists and is loaded
-    if (texture_slots[texture_id].in_use) {
+    // Select which texture to perform operations on
+    TextureSlot *t = &texture_slots[texture_id];
+    if (t->in_use) {
         SelectedTexture = texture_id;
-
-        uint32_t w = texture_slots[texture_id].pot_width; 
-        uint32_t h = texture_slots[texture_id].pot_height; 
-        uint32_t ow = texture_slots[texture_id].orig_width; 
-        
-        sceGuEnable(GU_TEXTURE_2D);
-        sceGuTexMode(GU_PSM_8888, 0, 0, 0);
-        sceGuTexImage(0, 
-                      w,
-                      h,
-                      ow,
-                      texture_slots[texture_id].handle
-                      );
-        return;
     }
-//     };
 }
 static GLuint gfx_gu_new_texture(void) {
     GLuint tex;
@@ -165,47 +150,39 @@ static void gfx_gu_select_texture(int tile, GLuint texture_id, bool linear_filte
 }
 
 static void gfx_gu_upload_texture(const uint8_t* rgba32_buf, uint32_t width, uint32_t height) {
-    // If texture hasn't been created, return
-    if (!texture_slots[SelectedTexture].in_use) return;
-    
-    int pot_width = 1, pot_height = 1;
-    // Calculate nearest power of two width and height for texture
-    while (pot_width < (int)width)   pot_width <<= 1;
-    while (pot_height < (int)height) pot_height <<= 1;
+    TextureSlot *t = &texture_slots[SelectedTexture];    
+    // If texture hasn't been generated, this means that texture was deleted 'guDeleteTexture'
+    if (!t->in_use) return;
 
-    // Allocate RAM buffer for converted texture
-    uint8_t* converted = (uint8_t*)malloc(pot_width * pot_height * 4);
- 
-    if (!converted) {
-        pspDebugScreenPrintf("OUT OF RAM");
-        return; // Out of RAM
-    }
-
-    // Copy the data into the new resized texture cache
-    for (uint32_t y = 0; y < height; ++y) {
-        uint8_t* dst_row = converted + y * pot_width * 4;
-        const uint8_t* src_row = rgba32_buf + y * width     * 4;
-        memcpy(dst_row, src_row, width * 4);
-        memset(dst_row + width * 4,
-               0,
-               (pot_width - width) * 4);
-    }
-
-    bool rebind = false;
-    if (!texture_slots[SelectedTexture].handle) {
-        rebind = true;
-    }
-    
-    texture_slots[SelectedTexture].handle = converted;
-    texture_slots[SelectedTexture].pot_width = pot_width;
-    texture_slots[SelectedTexture].pot_height = pot_height;
-    texture_slots[SelectedTexture].orig_width = pot_width;
-    texture_slots[SelectedTexture].orig_height = height;
-
-    // rebind if the handle null bad
-    if (rebind) {
-        guBindTexture(SelectedTexture);
-    }
+    // If texture hasn't been initialized with information, upload information
+        
+        // Calculate nearest power of two width and height for texture
+        int pot_width = 1, pot_height = 1;
+        while (pot_width < (int)width)   pot_width <<= 1;
+        while (pot_height < (int)height) pot_height <<= 1;
+        
+        // Allocate memory region for texture
+        uint8_t* converted = (uint8_t*)malloc(pot_width * pot_height * 4);
+        if (!converted) {
+            pspDebugScreenPrintf("OUT OF RAM");
+            return; // Out of RAM
+        }
+        
+        // Copy the data into the new resized texture cache
+        for (uint32_t y = 0; y < height; ++y) {
+            uint8_t* dst_row = converted + y * pot_width * 4;
+            const uint8_t* src_row = rgba32_buf + y * width     * 4;
+            memcpy(dst_row, src_row, width * 4);
+            memset(dst_row + width * 4,
+                   0,
+                   (pot_width - width) * 4);
+        }
+        
+        texture_slots[SelectedTexture].handle = converted;
+        texture_slots[SelectedTexture].pot_width = pot_width;
+        texture_slots[SelectedTexture].pot_height = pot_height;
+        texture_slots[SelectedTexture].orig_width = pot_width;
+        texture_slots[SelectedTexture].orig_height = height;
 }
 
 static void gfx_gu_set_sampler_parameters(int tile, bool linear_filter, uint32_t cms, uint32_t cmt) {
@@ -277,28 +254,38 @@ static void gfx_gu_set_use_alpha(bool use_alpha, bool modulate) {
     // This is how it is setup in the PC version
     if (modulate){
         sceGuBlendFunc(GU_ADD, GU_DST_COLOR, GU_ZERO, 0, 0);
+        sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
     } else {
         sceGuBlendFunc(GU_ADD, GU_SRC_ALPHA, GU_ONE_MINUS_SRC_ALPHA, 0, 0);
+        sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
     }
 }
 
 static void gfx_gu_draw_triangles(void* buf_vbo, size_t buf_vbo_len, size_t buf_vbo_num_tris) {
     if (!buf_vbo || buf_vbo_num_tris == 0) return;
-
-    sceGuEnable(GU_TEXTURE_2D);
-
+    
     const size_t num_verts = buf_vbo_len;
     const size_t mem_size = (sizeof(float) * 5 + sizeof(unsigned int)) * num_verts;
     void* d_buf = sceGuGetMemory(mem_size);
     memcpy(d_buf, buf_vbo, mem_size);
     
+    TextureSlot *t = &texture_slots[SelectedTexture];
+    
+    sceGuTexMode(GU_PSM_8888, 0, 0, 0);
+    sceGuTexScale(1.0, 1.0);  
+    
+    sceGuTexImage(0, 
+          t->pot_width,
+          t->pot_height,
+          t->orig_width,
+          t->handle
+          );
+    
     sceKernelDcacheWritebackRange(d_buf, mem_size);
-    sceGumDrawArray(GU_TRIANGLES,
-        GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_3D, 
+    sceGuDrawArray(GU_TRIANGLES,
+        GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF,
         num_verts, 0, d_buf);
     sceKernelDcacheInvalidateRange(d_buf, mem_size);
-    
-    sceGuDisable(GU_TEXTURE_2D);
 }
 
 static void gfx_gu_init(void) {
@@ -317,43 +304,48 @@ static void gfx_gu_init(void) {
     sceGuEnable(GU_SCISSOR_TEST);
     sceGuScissor(0, 0, 480, 272);
     sceGuEnable(GU_CULL_FACE);
+    sceGuEnable(GU_CLIP_PLANES);
+    sceGuEnable(GU_TEXTURE_2D);
     sceGuFrontFace(GU_CCW);
     sceGuOffset(2048 - (480 / 2), 2048 - (272 / 2));
-    sceGuViewport(2048, 2048, 480, 272);
-    sceGumPerspective(90.0, 16.0 / 9.0, 0.50, 40.0);
+    sceGuViewport(2048, 2048, GU_SCR_WIDTH, GU_SCR_HEIGHT);
     sceGuDepthRange(65535, 0);
     sceGuShadeModel(GU_SMOOTH);
+    
+    float fov = 90.0f;
+    fov *= (GU_PI / 180.0f);
+    float aspect = GU_SCR_ASPECT;
+    
+    // TODO: Figure out how to incorporate these without breaking the rendering...
+    // This seems to accept a mix between an orthographic projection matrix and a perspective projection matrix?
+    float near = 0.5f;
+    float far = 40.0f;
+    float f = 1.0f / tanf(fov / 2.0);
+ 
+    ScePspFMatrix4 projection = {
+        {f / aspect, 0.0f, 0.0f, 0.0f},
+        {0.0f, f, 0.0f, 0.0f},
+        {0.0f, 0.0f, 1.0f, 0.0f},
+        {0.0f, 0.0f, 0.0f, 1.0f}
+    };
+    sceGuSetMatrix(GU_PROJECTION, &projection);
 
     sceGuFinish();
     sceGuDisplay(GU_TRUE);
 }
 
+static ScePspFMatrix4 identity = {
+    {1.0f, 0.0f, 0.0f, 0.0f},
+    {0.0f, 1.0f, 0.0f, 0.0f},
+    {0.0f, 0.0f, 1.0f, 0.0f},
+    {0.0f, 0.0f, 0.0f, 1.0f}
+};
+
 static void gfx_gu_start_frame(void) {
     sceGuStart(GU_DIRECT, list);
-
-    float fov = 90.0f;
-    float aspect = 16.0f / 9.0f;
-    float znear = 0.5f;
-    float zfar = 40.0f;
-    float f = 1.0f / tanf(fov * (3.1415926f / 360.0f));
-
-    ScePspFMatrix4 projection = {
-        {f / aspect, 0.0f, 0.0f, 0.0f},
-        {0.0f, f, 0.0f, 0.0f},
-        {0.0f, 0.0f, zfar / (zfar - znear), 1.0f},
-        {0.0f, 0.0f, (-znear * zfar) / (zfar - znear), 0.0f}
-    };
-
-    ScePspFMatrix4 identity = {
-        {1.0f, 0.0f, 0.0f, 0.0f},
-        {0.0f, 1.0f, 0.0f, 0.0f},
-        {0.0f, 0.0f, 1.0f, 0.0f},
-        {0.0f, 0.0f, 0.0f, 1.0f}
-    };
-    
-    sceGuSetMatrix(GU_PROJECTION, &projection);
     sceGuSetMatrix(GU_VIEW, &identity);
-    sceGuSetMatrix(GU_MODEL, &identity);
+    sceGuSetMatrix(GU_TEXTURE, &identity);    
+    sceGuSetMatrix(GU_MODEL, &identity);    
 }
 
 static void gfx_gu_end_frame(void) {
@@ -384,12 +376,12 @@ static struct GfxClipParameters gfx_gu_get_clip_parameters(void) {
 }
 
 void* gfx_gu_get_framebuffer_texture_id(int fb_id) {
-    return NULL;
+    return 0;
 }
 
 void gfx_gu_clear_framebuffer(bool c, bool d) {
     sceGuDisable(GU_SCISSOR_TEST);
-    sceGuClearColor(0); // Black background
+    sceGuClearColor(GU_RGBA(0, 0, 0, 0xFF)); // Black background
     sceGuClearDepth(0);
     
     int flags;
@@ -397,13 +389,13 @@ void gfx_gu_clear_framebuffer(bool c, bool d) {
         flags |= GU_COLOR_BUFFER_BIT;
     }
     if (d) {
-//         sceGuDepthMask(GU_TRUE);
+        sceGuDepthMask(GU_TRUE);
         flags |= GU_DEPTH_BUFFER_BIT;
     }
     sceGuClear(flags);
-//     if (d) {
-//         sceGuDepthMask(current_depth_mask ? GU_FALSE : GU_TRUE);
-//     }
+    if (d) {
+        sceGuDepthMask(current_depth_mask ? GU_FALSE : GU_TRUE);
+    }
 
     sceGuEnable(GU_SCISSOR_TEST);
 }
