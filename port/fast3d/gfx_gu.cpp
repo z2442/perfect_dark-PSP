@@ -381,6 +381,7 @@ void* gfx_gu_get_framebuffer_texture_id(int fb_id) {
 
 void gfx_gu_clear_framebuffer(bool c, bool d) {
     sceGuDisable(GU_SCISSOR_TEST);
+    // Clear with alpha
     sceGuClearColor(GU_RGBA(0, 0, 0, 0xFF)); // Black background
     sceGuClearDepth(0);
     
