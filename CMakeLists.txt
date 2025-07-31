@@ -252,18 +252,6 @@ set(LIBS)
 if(BUILD_PSP)
   # --- PSP Dependencies ---
 
-  # SDL2 (PSP Port) - Requires SDL-PSP installed within PSPSDK or findable via pkg-config
-  # Option 1: Use pkg-config (Recommended if SDL-PSP provides .pc file)
-  find_package(PkgConfig REQUIRED)
-  find_package(SDL2 CONFIG REQUIRED)
-
-	if(GCC_LEGACY)
-	find_package(fmt REQUIRED)
-	endif(GCC_LEGACY)
-
-	link_libraries(SDL2::SDL2)
-	link_libraries(${SDL2_LIBRARIES})
- 
 
   # ZLib (PSP Port)
   pkg_check_modules(ZLIB REQUIRED zlib)
@@ -434,7 +422,7 @@ set(BIN_NAME_ELF "pd${BIN_REGION}.${TARGET_ARCH}.elf") # Intermediate ELF name
 set(BIN_NAME_EBOOT "EBOOT.PBP") # Final PSP executable
 set(PD_TARGET_NAME "pd_elf") # Internal CMake target name for the ELF
 
-list(APPEND LIBS m pspfpu pspvfpu psppower pspdebug pspctrl pspgum pspdisplay pspaudiolib pspaudio  )
+list(APPEND LIBS m pspfpu pspvfpu psppower pspdebug pspctrl pspgu pspge pspgum pspdisplay pspaudiolib pspaudio )
 
 # Use the combined SRC list directly
 add_executable(${PD_TARGET_NAME} ${SRC})

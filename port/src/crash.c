@@ -5,7 +5,6 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-#include <SDL2/SDL.h>
 #include <PR/ultratypes.h>
 #include "system.h"
 #include "platform.h"

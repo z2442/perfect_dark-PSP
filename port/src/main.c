@@ -51,8 +51,6 @@ PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU); // Enable VFPU for th
 PSP_MAIN_THREAD_STACK_SIZE_KB(256); // Increase stack size if needed (default is 64KB)
 
 
-
-
 u32 g_OsMemSize = 0;
 s32 g_OsMemSizeMb = 12;
 u8 g_Is4Mb = 1;

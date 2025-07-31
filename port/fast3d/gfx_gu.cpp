@@ -7,8 +7,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <SDL.h>
 #include <GL/gl.h>
+#include <math.h> 
 #include <PR/gbi.h>
 #include <string>
 #ifndef G_TX_CLAMP
