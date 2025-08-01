@@ -1734,6 +1734,9 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
         pot_w = rendering_state.textures[0]->second.pot_w;
         pot_h = rendering_state.textures[0]->second.pot_h;
     }
+    // Add safeguard for pot_w and pot_h
+    if (pot_w == 0) pot_w = 1;
+    if (pot_h == 0) pot_h = 1;
     // --- build TempV array --------------------------------------------------
     TempV TV[3];
     for (int i = 0; i < 3; i++) {
@@ -1747,8 +1750,10 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
         uint32_t orig_w = tex_width2[0] ? tex_width2[0] : pot_w;
         uint32_t orig_h = tex_height2[0] ? tex_height2[0] : pot_h;
 
+        // Perspective-correct UVs: multiply by 1/w after scaling
         float u = ((float)(vtx->u - uls) / 32.0f) / (float)orig_w;
         u *= (float)orig_w / (float)pot_w;
+
         float v = ((float)(vtx->v - ult) / 32.0f) / (float)orig_h;
         v *= (float)orig_h / (float)pot_h;
 
@@ -1784,19 +1789,23 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
 const bool offscreen =
     (v1->clip_rej | v2->clip_rej | v3->clip_rej) != 0;
 
-if (offscreen) {
-    /* Aggressive split: one extra recursion level, tight ratio */
-    split_if_needed(TV[0], TV[1], TV[2],
-                    /*maxDepth*/5,     // up to 32 micro-tris
-                    /*threshold*/1.02f,
-                    emit_tri);
-} else {
-    /* All verts fully on-screen — just push the triangle as-is */
-    push9(TV[0]);
-    push9(TV[1]);
-    push9(TV[2]);
-    if (++buf_vbo_num_tris == MAX_BUFFERED) gfx_flush();
+float dx1 = TV[1].x - TV[0].x;
+float dy1 = TV[1].y - TV[0].y;
+float dx2 = TV[2].x - TV[0].x;
+float dy2 = TV[2].y - TV[0].y;
+float area = fabsf(dx1 * dy2 - dx2 * dy1);
+
+if (area < 10000.0f) {
+    emit_tri(TV[0], TV[1], TV[2]);
+    return;
 }
+
+/* Aggressive split: one extra recursion level, tight ratio */
+split_if_needed(TV[0], TV[1], TV[2],
+                /*maxDepth*/6,
+                /*threshold*/1.01f,
+                emit_tri);
+
 }
 
 static inline void gfx_sp_tri4(Gfx *cmd) {
