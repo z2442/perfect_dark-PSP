@@ -1,4 +1,6 @@
 #include "pspgu.h"
+#include "pspgum.h"
+#include "psptypes.h"
 #include "system.h"
 #define NOMINMAX
 
@@ -261,9 +263,40 @@ static constexpr float clampf(const float x, const float min, const float max) {
   return (x < min) ? min : (x > max) ? max : x;
 }
 
+struct MPentry {
+    ScePspFMatrix4 modelview;
+    ScePspFMatrix4 projection;
+    size_t count; 
+};
+
+static MPentry mpStack[128];
+static size_t mpStackLength = 0;
+
 static void gfx_flush(void) {
   if (buf_vbo_len > 0) {
     gfx_rapi->draw_triangles(buf_vbo, buf_vbo_len, buf_vbo_num_tris);
+        
+    // Init temp vbo for placeholding
+//     Vertex * vbo_temp = buf_vbo;
+
+    // Iterate the matrix stack 
+//     for (int i = 0; i < mpStackLength; i++) {
+//         // Deserialize current details
+//         ScePspFMatrix4 m = mpStack[i].modelview; 
+//         ScePspFMatrix4 p = mpStack[i].projection; 
+//         size_t count = mpStack[i].count;
+// 
+//         // Set current matrices
+//         sceGuSetMatrix(GU_PROJECTION, &p);
+//         sceGuSetMatrix(GU_MODEL, &m);
+
+        // Draw vertices
+//         gfx_rapi->draw_triangles(vbo_temp, count, count);
+//         vbo_temp = buf_vbo + count; // set temp to next set of vertices
+//     }
+
+    // Reinitialize global variables
+    mpStackLength = 0;
     buf_vbo_len = 0;
     buf_vbo_num_tris = 0;
   }
@@ -1412,7 +1445,12 @@ static void gfx_matrix_mul(float res[4][4], const float a[4][4],
 }
 
 static void gfx_sp_matrix(uint8_t parameters, const int32_t *addr) {
-  float matrix[4][4];
+    // should be the same as float matrix[4][4]
+    float matrix[4][4];
+    
+  // When using the hardware matrix stack, flush any pending geometry
+  // so previously buffered vertices are transformed with the old matrix
+  gfx_flush();
 
 #ifndef GBI_FLOATS
   // Original GBI where fixed point matrices are used
@@ -1428,44 +1466,72 @@ static void gfx_sp_matrix(uint8_t parameters, const int32_t *addr) {
   }
 #else
   // For a modified GBI where fixed point values are replaced with floats
-  memcpy(matrix, addr, sizeof(matrix));
+    ScePspFMatrix4 matrix;
+  memcpy(&matrix, addr, sizeof(matrix));
 #endif
+//     sysLogPrintf(LOG_NOTE, 
+//                  "{{%f, %f, %f, %f}\n{%f, %f, %f, %f}\n{%f, %f, %f, %f}\n{%f, %f, %f, %f}}",
+//                  m->x.x, m->x.y, m->x.z, m->x.w,
+//                  m->y.x, m->y.y, m->y.z, m->y.w,
+//                  m->z.x, m->z.y, m->z.z, m->z.w,
+//                  m->w.x, m->w.y, m->w.z, m->w.w
+// //                  matrix[0][0], matrix[0][1], matrix[0][2], matrix[0][3],
+// //                  matrix[1][0], matrix[1][1], matrix[1][2], matrix[1][3],
+// //                  matrix[2][0], matrix[2][1], matrix[2][2], matrix[2][3],
+// //                  matrix[3][0], matrix[3][1], matrix[3][2], matrix[3][3]
+//                  ); 
 
   if (parameters & G_MTX_PROJECTION) {
     if (parameters & G_MTX_LOAD) {
-      memcpy(rsp.P_matrix, matrix, sizeof(matrix));
+        memcpy(rsp.P_matrix, matrix, sizeof(matrix));
     } else {
-      gfx_matrix_mul(rsp.P_matrix, matrix, rsp.P_matrix);
+        gfx_matrix_mul(rsp.P_matrix, matrix, rsp.P_matrix);
     }
   } else { // G_MTX_MODELVIEW
     if ((parameters & G_MTX_PUSH) && rsp.modelview_matrix_stack_size < 11) {
-      ++rsp.modelview_matrix_stack_size;
-      memcpy(rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1],
+        ++rsp.modelview_matrix_stack_size;
+        memcpy(rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1],
              rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 2],
              sizeof(matrix));
     }
     if (parameters & G_MTX_LOAD) {
-      memcpy(rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1],
+        memcpy(rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1],
              matrix, sizeof(matrix));
-    } else {
-      gfx_matrix_mul(
+    } else { // Multiply
+        gfx_matrix_mul(
           rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1],
           matrix,
           rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1]);
     }
     rsp.lights_changed = 1;
   }
-  gfx_matrix_mul(
+    gfx_matrix_mul(
       rsp.MP_matrix,
       rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1],
       rsp.P_matrix);
+    
+  // Update the GU with the new projection and model matrices so that
+  // vertex transformation is performed by the GPU instead of the CPU
+  ScePspFMatrix4 *m = (ScePspFMatrix4 *)rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1];
+  ScePspFMatrix4 *p = (ScePspFMatrix4 *)rsp.P_matrix;
+  sceGuSetMatrix(GU_PROJECTION, p);
+  sceGuSetMatrix(GU_MODEL, m);
 }
 
 static void gfx_sp_pop_matrix(uint32_t count) {
+  // Flush pending geometry before modifying the matrix stack
+  gfx_flush();
   while (count--) {
     if (rsp.modelview_matrix_stack_size > 0) {
       --rsp.modelview_matrix_stack_size;
       if (rsp.modelview_matrix_stack_size > 0) {
+//         sceGumMatrixMode(GU_PROJECTION);
+//         sceGumPopMatrix();
+//         sceGumMatrixMode(GU_MODEL);
+//         sceGumPopMatrix();
+//         ScePspFMatrix4 *m = (ScePspFMatrix4 *)rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1];
+//         sceGuSetMatrix(GU_MODEL, m);
+        
         gfx_matrix_mul(
             rsp.MP_matrix,
             rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1],
@@ -1473,7 +1539,15 @@ static void gfx_sp_pop_matrix(uint32_t count) {
       }
     }
   }
+    
+  if (rsp.modelview_matrix_stack_size > 0) {
+    ScePspFMatrix4 *m = (ScePspFMatrix4 *)rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1];
+    ScePspFMatrix4 *p = (ScePspFMatrix4 *)rsp.P_matrix;
+    sceGuSetMatrix(GU_PROJECTION, p);
+    sceGuSetMatrix(GU_MODEL, m);
+  }
 }
+
 static float gfx_adjust_x_for_aspect_ratio(float x, float w = 1.f) {
   if (fbActive) {
     return x;
@@ -1495,10 +1569,20 @@ static void gfx_adjust_width_height_for_scale(uint32_t &width,
   }
 }
 
-static void gfx_sp_vertex(size_t n_vertices, size_t dest_index,
-                          const Vtx *vertices) {
+static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx *vertices) {
   SUPPORT_CHECK(n_vertices <= MAX_VERTICES);
 
+    ScePspFMatrix4 *m = (ScePspFMatrix4*)rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1];
+    ScePspFMatrix4 *p = (ScePspFMatrix4*)rsp.P_matrix;
+    sceGuSetMatrix(GU_PROJECTION, p);
+    sceGuSetMatrix(GU_MODEL, m);
+//   
+//     mpStack[mpStackLength++] = MPentry { 
+//         *(ScePspFMatrix4*)rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1],
+//         *(ScePspFMatrix4*)rsp.P_matrix,
+//         n_vertices
+//     };
+    
   for (size_t i = 0; i < n_vertices; i++, dest_index++) {
     const Vtx *v = &vertices[i];
     struct LoadedVertex *d = &rsp.loaded_vertices[dest_index];
@@ -1512,7 +1596,10 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index,
               v->v[2] * rsp.MP_matrix[2][2] + rsp.MP_matrix[3][2];
     float w = v->v[0] * rsp.MP_matrix[0][3] + v->v[1] * rsp.MP_matrix[1][3] +
               v->v[2] * rsp.MP_matrix[2][3] + rsp.MP_matrix[3][3];
-        
+//     float x = v->v[0];
+//     float y = v->v[1];
+//     float z = v->v[2];
+//     float w = v->v[3];
 // #ifdef PLATFORM_PSP
 //     w = 1.0f;
 // #endif
@@ -1560,7 +1647,6 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index,
       d->color.g = g > 255 ? 255 : g;
       d->color.b = b > 255 ? 255 : b;
 
-      // This seems to not affect walls and other things that suffer from projection issues
       if (rsp.geometry_mode & G_TEXTURE_GEN) {
         float dotx = 0, doty = 0;
         if (rsp.lookat_enabled) {
@@ -1608,7 +1694,7 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index,
     d->v = V;
 
     // trivial clip rejection
-//     d->clip_rej = 0;
+    d->clip_rej = 0;
 //     if (x < -w) {
 //       d->clip_rej |= 1; // CLIP_LEFT
 //     }
@@ -1628,9 +1714,13 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index,
 //     if (z > w + CLIP_EPS)
 //       d->clip_rej |= 32; // CLIP_FAR
 
-    d->x = x;
-    d->y = y;
-    d->z = z;
+//     d->x = x;
+//     d->y = y;
+//     d->z = z;
+    // Use original coordinates and let the GU handle transformation
+    d->x = v->v[0];
+    d->y = v->v[1];
+    d->z = v->v[2];
     d->w = w;
 
     if (rsp.geometry_mode & G_FOG) {
@@ -1684,7 +1774,6 @@ static void gfx_sp_tri1(uint8_t v1_idx, uint8_t v2_idx, uint8_t v3_idx, bool is_
     // VFPU-style NDC clipping: z + w < 0, using PSP inline assembly
     static const float clip_plane[4] __attribute__((aligned(16))) = { 0.0f, 0.0f, -1.0f, -1.0f };
     if ((rsp.extra_geometry_mode & G_NO_CLIPPING_EXT) == 0) {
-        // We'll keep this that way we dont go through this whole function for something that will be culled anyway...
         if (v1->clip_rej & v2->clip_rej & v3->clip_rej) {
             // The whole triangle lies outside the visible area
             return;
@@ -1972,11 +2061,16 @@ static void gfx_sp_tri1(uint8_t v1_idx, uint8_t v2_idx, uint8_t v3_idx, bool is_
         RGBA color = v_arr[i]->color;
         
         Vertex vert;
-        vert.x = v_arr[i]->x / w;
-        vert.y = clip_parameters.invert_y ? -v_arr[i]->y / w : v_arr[i]->y / w;
-        vert.z = z / w;
-        vert.u = u / pot_w;
-        vert.v = v / pot_h;
+        vert.x = v_arr[i]->x;
+        vert.y = clip_parameters.invert_y ? -v_arr[i]->y: v_arr[i]->y;
+        vert.z = z;
+        // Normalize UVs
+        u /= pot_w;
+        v /= pot_h;
+            
+        vert.u = u;
+        vert.v = v;
+            
         vert.color = ((uint8_t)color.a << 24) |
             ((uint8_t)color.b << 16) |
             ((uint8_t)color.g << 8)  |

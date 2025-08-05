@@ -266,8 +266,11 @@ static void gfx_gu_draw_triangles(void* buf_vbo, size_t buf_vbo_len, size_t buf_
     
     const size_t num_verts = buf_vbo_len;
     const size_t mem_size = (sizeof(float) * 5 + sizeof(unsigned int)) * num_verts;
+    
     void* d_buf = sceGuGetMemory(mem_size);
     memcpy(d_buf, buf_vbo, mem_size);
+    
+    sceGuBeginObject(GU_VERTEX_32BITF, num_verts, 0, d_buf);
     
     TextureSlot *t = &texture_slots[SelectedTexture];
     
@@ -286,7 +289,15 @@ static void gfx_gu_draw_triangles(void* buf_vbo, size_t buf_vbo_len, size_t buf_
         GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF,
         num_verts, 0, d_buf);
     sceKernelDcacheInvalidateRange(d_buf, mem_size);
+    sceGuEndObject();
 }
+
+static ScePspFMatrix4 identity = {
+    {1.0f, 0.0f, 0.0f, 0.0f},
+    {0.0f, 1.0f, 0.0f, 0.0f},
+    {0.0f, 0.0f, 1.0f, 0.0f},
+    {0.0f, 0.0f, 0.0f, 1.0f}
+};
 
 static void gfx_gu_init(void) {
     // Allocate framebuffers in VRAM (align width to 512 for PSP)
@@ -295,6 +306,7 @@ static void gfx_gu_init(void) {
     void* zbp  = guGetStaticVramBuffer(512, 272, GU_PSM_4444);
 
     sceGuInit();
+    gumInit();
     sceGuStart(GU_DIRECT, list);
 
     sceGuDrawBuffer(GU_PSM_8888, fbp0, 512);
@@ -321,31 +333,38 @@ static void gfx_gu_init(void) {
     float near = 0.5f;
     float far = 40.0f;
     float f = 1.0f / tanf(fov / 2.0);
+    
+//     ScePspFMatrix4 t = {
+//         {1.0f, 0.0f, 0.0f, 0.0f},
+//         {0.0f, 1.0f, 0.0f, 0.0f},
+//         {0.0f, 0.0f, 1.0f, 0.0f},
+//         {0.0f, 0.0f, 0.0f, 1.0f}
+//     };
+// 
+//     gumPerspective(&t, 90.0, GU_SCR_ASPECT, 0.10f, 40.0f);
+
  
-    ScePspFMatrix4 projection = {
-        {f / aspect, 0.0f, 0.0f, 0.0f},
-        {0.0f, f, 0.0f, 0.0f},
-        {0.0f, 0.0f, 1.0f, 0.0f},
-        {0.0f, 0.0f, 0.0f, 1.0f}
-    };
-    sceGuSetMatrix(GU_PROJECTION, &projection);
+//     ScePspFMatrix4 projection = {
+//         {f / aspect, 0.0f, 0.0f, 0.0f},
+//         {0.0f, f, 0.0f, 0.0f},
+//         {0.0f, 0.0f, 1.0f, 0.0f},
+//         {0.0f, 0.0f, 0.0f, 1.0f}
+//     };
+    // Initialize matrices
+    sceGuSetMatrix(GU_PROJECTION, &identity);
+    sceGuSetMatrix(GU_VIEW, &identity);
+    sceGuSetMatrix(GU_TEXTURE, &identity);    
+    sceGuSetMatrix(GU_MODEL, &identity);    
 
     sceGuFinish();
     sceGuDisplay(GU_TRUE);
 }
 
-static ScePspFMatrix4 identity = {
-    {1.0f, 0.0f, 0.0f, 0.0f},
-    {0.0f, 1.0f, 0.0f, 0.0f},
-    {0.0f, 0.0f, 1.0f, 0.0f},
-    {0.0f, 0.0f, 0.0f, 1.0f}
-};
 
 static void gfx_gu_start_frame(void) {
     sceGuStart(GU_DIRECT, list);
-    sceGuSetMatrix(GU_VIEW, &identity);
-    sceGuSetMatrix(GU_TEXTURE, &identity);    
-    sceGuSetMatrix(GU_MODEL, &identity);    
+//     sceGuSetMatrix(GU_MODEL, &identity);    
+//     sceGuSetMatrix(GU_PROJECTION, &identity);    
 }
 
 static void gfx_gu_end_frame(void) {
