@@ -31,6 +31,8 @@
 #include "gfx_rendering_api.h"
 #include "gfx_screen_config.h"
 
+
+
 uintptr_t gfxFramebuffer;
 
 #define ALIGN(x, a) (((x) + (a - 1)) & ~(a - 1))
@@ -222,6 +224,19 @@ static int game_framebuffer;
 static int game_framebuffer_msaa_resolved;
 
 uint32_t gfx_msaa_level = 1;
+
+extern "C" float g_es1_MP[4][4];
+extern "C" volatile int g_es1_matrix_dirty;
+
+extern "C" float g_es1_P[4][4];
+extern "C" float g_es1_M[4][4];
+
+float g_es1_MP[4][4] = { {0} };
+volatile int g_es1_matrix_dirty = 1;
+float g_es1_P[4][4] = { {0} };
+float g_es1_M[4][4] = { {0} };
+extern "C" volatile uint8_t g_es1_cull_mode; // 0=disable, 1=cull back, 2=cull front
+volatile uint8_t g_es1_cull_mode = 1;
 
 static bool dropped_frame;
 
@@ -590,6 +605,8 @@ void gfx_texture_cache_clear() {
 }
 
 static bool gfx_texture_cache_lookup(int i, const TextureCacheKey& key) {
+    // For CI textures, include palette pointer(s) and NPOT sizes in the key for more accurate cache matching.
+    // For NPOT textures, include pot_w and pot_h in the key.
     TextureCacheMap::iterator it = gfx_texture_cache.map.find(key);
     TextureCacheNode** n = &rendering_state.textures[i];
 
@@ -657,7 +674,7 @@ void gfx_texture_cache_delete(const uint8_t* orig_addr) {
     }
 }
 
-static void import_texture_rgba16(int tile, const LoadedTexture& loaded_texture, bool importReplacement) {
+static void import_texture_rgba16(int unit, int tile, const LoadedTexture& loaded_texture, bool importReplacement) {
     const RawTexMetadata* metadata = &loaded_texture.raw_tex_metadata;
     const uint8_t* addr = loaded_texture.addr;
     const uint32_t size_bytes = loaded_texture.size_bytes;
@@ -703,13 +720,13 @@ static void import_texture_rgba16(int tile, const LoadedTexture& loaded_texture,
 
     src = src_mirrored;
     gfx_rapi->upload_texture(src, pot_w, pot_h);
-    if (rendering_state.textures[0]) {
-        rendering_state.textures[0]->second.pot_w = pot_w;
-        rendering_state.textures[0]->second.pot_h = pot_h;
+    if (rendering_state.textures[unit]) {
+        rendering_state.textures[unit]->second.pot_w = pot_w;
+        rendering_state.textures[unit]->second.pot_h = pot_h;
     }
 }
 
-static void import_texture_rgba32(int tile, const LoadedTexture& loaded_texture, bool importReplacement) {
+static void import_texture_rgba32(int unit, int tile, const LoadedTexture& loaded_texture, bool importReplacement) {
     const RawTexMetadata* metadata = &loaded_texture.raw_tex_metadata;
     const uint8_t* addr = loaded_texture.addr;
     const uint32_t size_bytes = loaded_texture.size_bytes;
@@ -744,13 +761,13 @@ static void import_texture_rgba32(int tile, const LoadedTexture& loaded_texture,
         pot_w, pot_h);
     src8 = src_mirrored;
     gfx_rapi->upload_texture(src8, pot_w, pot_h);
-    if (rendering_state.textures[0]) {
-        rendering_state.textures[0]->second.pot_w = pot_w;
-        rendering_state.textures[0]->second.pot_h = pot_h;
+    if (rendering_state.textures[unit]) {
+        rendering_state.textures[unit]->second.pot_w = pot_w;
+        rendering_state.textures[unit]->second.pot_h = pot_h;
     }
 }
 
-static void import_texture_ia4(int tile, const LoadedTexture& loaded_texture, bool importReplacement) {
+static void import_texture_ia4(int unit, int tile, const LoadedTexture& loaded_texture, bool importReplacement) {
     const RawTexMetadata* metadata = &loaded_texture.raw_tex_metadata;
     const uint8_t* addr = loaded_texture.addr;
     const uint32_t size_bytes = loaded_texture.size_bytes;
@@ -793,13 +810,13 @@ static void import_texture_ia4(int tile, const LoadedTexture& loaded_texture, bo
         pot_w, pot_h);
     src = src_mirrored;
     gfx_rapi->upload_texture(src, pot_w, pot_h);
-    if (rendering_state.textures[0]) {
-        rendering_state.textures[0]->second.pot_w = pot_w;
-        rendering_state.textures[0]->second.pot_h = pot_h;
+    if (rendering_state.textures[unit]) {
+        rendering_state.textures[unit]->second.pot_w = pot_w;
+        rendering_state.textures[unit]->second.pot_h = pot_h;
     }
 }
 
-static void import_texture_ia8(int tile, const LoadedTexture& loaded_texture, bool importReplacement) {
+static void import_texture_ia8(int unit, int tile, const LoadedTexture& loaded_texture, bool importReplacement) {
     const RawTexMetadata* metadata = &loaded_texture.raw_tex_metadata;
     const uint8_t* addr = loaded_texture.addr;
     const uint32_t size_bytes = loaded_texture.size_bytes;
@@ -839,13 +856,13 @@ static void import_texture_ia8(int tile, const LoadedTexture& loaded_texture, bo
         pot_w, pot_h);
     src = src_mirrored;
     gfx_rapi->upload_texture(src, pot_w, pot_h);
-    if (rendering_state.textures[0]) {
-        rendering_state.textures[0]->second.pot_w = pot_w;
-        rendering_state.textures[0]->second.pot_h = pot_h;
+    if (rendering_state.textures[unit]) {
+        rendering_state.textures[unit]->second.pot_w = pot_w;
+        rendering_state.textures[unit]->second.pot_h = pot_h;
     }
 }
 
-static void import_texture_ia16(int tile, const LoadedTexture& loaded_texture, bool importReplacement) {
+static void import_texture_ia16(int unit, int tile, const LoadedTexture& loaded_texture, bool importReplacement) {
     const RawTexMetadata* metadata = &loaded_texture.raw_tex_metadata;
     const uint8_t* addr = loaded_texture.addr;
     const uint32_t size_bytes = loaded_texture.size_bytes;
@@ -885,13 +902,13 @@ static void import_texture_ia16(int tile, const LoadedTexture& loaded_texture, b
         pot_w, pot_h);
     src = src_mirrored;
     gfx_rapi->upload_texture(src, pot_w, pot_h);
-    if (rendering_state.textures[0]) {
-        rendering_state.textures[0]->second.pot_w = pot_w;
-        rendering_state.textures[0]->second.pot_h = pot_h;
+    if (rendering_state.textures[unit]) {
+        rendering_state.textures[unit]->second.pot_w = pot_w;
+        rendering_state.textures[unit]->second.pot_h = pot_h;
     }
 }
 
-static void import_texture_i4(int tile, const LoadedTexture& loaded_texture, bool importReplacement) {
+static void import_texture_i4(int unit, int tile, const LoadedTexture& loaded_texture, bool importReplacement) {
     const RawTexMetadata* metadata = &loaded_texture.raw_tex_metadata;
     const uint8_t* addr = loaded_texture.addr;
     const uint32_t size_bytes = loaded_texture.size_bytes;
@@ -932,13 +949,13 @@ static void import_texture_i4(int tile, const LoadedTexture& loaded_texture, boo
         pot_w, pot_h);
     src = src_mirrored;
     gfx_rapi->upload_texture(src, pot_w, pot_h);
-    if (rendering_state.textures[0]) {
-        rendering_state.textures[0]->second.pot_w = pot_w;
-        rendering_state.textures[0]->second.pot_h = pot_h;
+    if (rendering_state.textures[unit]) {
+        rendering_state.textures[unit]->second.pot_w = pot_w;
+        rendering_state.textures[unit]->second.pot_h = pot_h;
     }
 }
 
-static void import_texture_i8(int tile, const LoadedTexture& loaded_texture, bool importReplacement) {
+static void import_texture_i8(int unit, int tile, const LoadedTexture& loaded_texture, bool importReplacement) {
     const RawTexMetadata* metadata = &loaded_texture.raw_tex_metadata;
     const uint8_t* addr = loaded_texture.addr;
     const uint32_t size_bytes = loaded_texture.size_bytes;
@@ -977,9 +994,9 @@ static void import_texture_i8(int tile, const LoadedTexture& loaded_texture, boo
         pot_w, pot_h);
     src = src_mirrored;
     gfx_rapi->upload_texture(src, pot_w, pot_h);
-    if (rendering_state.textures[0]) {
-        rendering_state.textures[0]->second.pot_w = pot_w;
-        rendering_state.textures[0]->second.pot_h = pot_h;
+    if (rendering_state.textures[unit]) {
+        rendering_state.textures[unit]->second.pot_w = pot_w;
+        rendering_state.textures[unit]->second.pot_h = pot_h;
     }
 }
 
@@ -1004,7 +1021,7 @@ static inline void palette_to_rgba32(const uint16_t palentry, uint8_t *rgba32_bu
     }
 }
 
-static void import_texture_ci4(int tile, const LoadedTexture& loaded_texture, bool importReplacement) {
+static void import_texture_ci4(int unit, int tile, const LoadedTexture& loaded_texture, bool importReplacement) {
     const RawTexMetadata* metadata = &loaded_texture.raw_tex_metadata;
     const uint8_t* addr = loaded_texture.addr;
     const uint32_t size_bytes = loaded_texture.size_bytes;
@@ -1048,13 +1065,13 @@ static void import_texture_ci4(int tile, const LoadedTexture& loaded_texture, bo
         pot_w, pot_h);
     src = src_mirrored;
     gfx_rapi->upload_texture(src, pot_w, pot_h);
-    if (rendering_state.textures[0]) {
-        rendering_state.textures[0]->second.pot_w = pot_w;
-        rendering_state.textures[0]->second.pot_h = pot_h;
+    if (rendering_state.textures[unit]) {
+        rendering_state.textures[unit]->second.pot_w = pot_w;
+        rendering_state.textures[unit]->second.pot_h = pot_h;
     }
 }
 
-static void import_texture_ci8(int tile, const LoadedTexture& loaded_texture, bool importReplacement) {
+static void import_texture_ci8(int unit, int tile, const LoadedTexture& loaded_texture, bool importReplacement) {
     const RawTexMetadata* metadata = &loaded_texture.raw_tex_metadata;
     const uint8_t* addr = loaded_texture.addr;
     const uint32_t size_bytes = loaded_texture.size_bytes;
@@ -1095,9 +1112,9 @@ static void import_texture_ci8(int tile, const LoadedTexture& loaded_texture, bo
         pot_w, pot_h);
     src = src_mirrored;
     gfx_rapi->upload_texture(src, pot_w, pot_h);
-    if (rendering_state.textures[0]) {
-        rendering_state.textures[0]->second.pot_w = pot_w;
-        rendering_state.textures[0]->second.pot_h = pot_h;
+    if (rendering_state.textures[unit]) {
+        rendering_state.textures[unit]->second.pot_w = pot_w;
+        rendering_state.textures[unit]->second.pot_h = pot_h;
     }
 }
 
@@ -1107,7 +1124,6 @@ static void import_texture(int i, int tile, bool importReplacement) {
     const uint8_t siz = rdp.texture_tile[tile].siz;
     const uint32_t tex_flags = loaded_texture.tex_flags;
     const uint8_t palette_index = rdp.texture_tile[tile].palette;
-
     const auto& tileinfo = rdp.texture_tile[tile];
 
     if ((rdp.tex_lod && tile >= rdp.first_tile_index + rdp.tex_detail) || !loaded_texture.addr) {
@@ -1129,51 +1145,57 @@ static void import_texture(int i, int tile, bool importReplacement) {
     const uint8_t* orig_addr = loaded_texture.addr;
     SUPPORT_CHECK(orig_addr);
 
+    // Determine pot_w and pot_h for the cache key, so NPOT textures are cached correctly.
+    uint32_t pot_w = 1, pot_h = 1;
+    while (pot_w < tileinfo.width) pot_w <<= 1;
+    while (pot_h < tileinfo.height) pot_h <<= 1;
+
     TextureCacheKey key;
     if (fmt == G_IM_FMT_CI) {
-    key = TextureCacheKey{ orig_addr, { rdp.palette_addrs[0], rdp.palette_addrs[1] }, fmt, siz, palette_index,
-        tileinfo.uls, tileinfo.ult, tileinfo.lrs, tileinfo.lrt,
-        tileinfo.cms, tileinfo.cmt, tileinfo.width, tileinfo.height };
+        key = TextureCacheKey{ orig_addr, { rdp.palette_addrs[0], rdp.palette_addrs[1] }, fmt, siz, palette_index,
+            tileinfo.uls, tileinfo.ult, tileinfo.lrs, tileinfo.lrt,
+            tileinfo.cms, tileinfo.cmt, pot_w, pot_h };
     } else {
-    key = TextureCacheKey{ orig_addr, { nullptr, nullptr }, fmt, siz, palette_index,
-        tileinfo.uls, tileinfo.ult, tileinfo.lrs, tileinfo.lrt,
-        tileinfo.cms, tileinfo.cmt, tileinfo.width, tileinfo.height };
-}
+        // For non-CI formats, palette_index is not meaningful, set to 0 to avoid cache collisions.
+        key = TextureCacheKey{ orig_addr, { nullptr, nullptr }, fmt, siz, 0,
+            tileinfo.uls, tileinfo.ult, tileinfo.lrs, tileinfo.lrt,
+            tileinfo.cms, tileinfo.cmt, pot_w, pot_h };
+    }
     if (gfx_texture_cache_lookup(i, key)) {
         return;
     }
 
     if (fmt == G_IM_FMT_RGBA) {
         if (siz == G_IM_SIZ_16b) {
-            import_texture_rgba16(tile, loaded_texture, importReplacement);
+            import_texture_rgba16(i, tile, loaded_texture, importReplacement);
         } else if (siz == G_IM_SIZ_32b) {
-            import_texture_rgba32(tile, loaded_texture, importReplacement);
+            import_texture_rgba32(i, tile, loaded_texture, importReplacement);
         } else {
             sysFatalError("Bad size for RGBA texture in tile %d: %02x", tile, siz);
         }
     } else if (fmt == G_IM_FMT_IA) {
         if (siz == G_IM_SIZ_4b) {
-            import_texture_ia4(tile, loaded_texture, importReplacement);
+            import_texture_ia4(i, tile, loaded_texture, importReplacement);
         } else if (siz == G_IM_SIZ_8b) {
-            import_texture_ia8(tile, loaded_texture, importReplacement);
+            import_texture_ia8(i, tile, loaded_texture, importReplacement);
         } else if (siz == G_IM_SIZ_16b) {
-            import_texture_ia16(tile, loaded_texture, importReplacement);
+            import_texture_ia16(i, tile, loaded_texture, importReplacement);
         } else {
             sysFatalError("Bad size for IA texture in tile %d: %02x", tile, siz);
         }
     } else if (fmt == G_IM_FMT_CI) {
         if (siz == G_IM_SIZ_4b) {
-            import_texture_ci4(tile, loaded_texture, importReplacement);
+            import_texture_ci4(i, tile, loaded_texture, importReplacement);
         } else if (siz == G_IM_SIZ_8b) {
-            import_texture_ci8(tile, loaded_texture, importReplacement);
+            import_texture_ci8(i, tile, loaded_texture, importReplacement);
         } else {
             sysFatalError("Bad size for CI texture in tile %d: %02x", tile, siz);
         }
     } else if (fmt == G_IM_FMT_I) {
         if (siz == G_IM_SIZ_4b) {
-            import_texture_i4(tile, loaded_texture, importReplacement);
+            import_texture_i4(i, tile, loaded_texture, importReplacement);
         } else if (siz == G_IM_SIZ_8b) {
-            import_texture_i8(tile, loaded_texture, importReplacement);
+            import_texture_i8(i, tile, loaded_texture, importReplacement);
         } else {
             sysFatalError("Bad size for I texture in tile %d: %02x", tile, siz);
         }
@@ -1219,6 +1241,20 @@ static void gfx_matrix_mul(float res[4][4], const float a[4][4], const float b[4
     memcpy(res, tmp, sizeof(tmp));
 }
 
+static float mat3_det_mv(const float M[4][4]) {
+    // Treat M as column-major (matching how we load into GL without transposing).
+    // Columns are the transformed basis vectors in eye space.
+    const float c0x = M[0][0], c0y = M[1][0], c0z = M[2][0];
+    const float c1x = M[0][1], c1y = M[1][1], c1z = M[2][1];
+    const float c2x = M[0][2], c2y = M[1][2], c2z = M[2][2];
+    // det = dot(c0, cross(c1, c2))
+    const float cx = c1y * c2z - c1z * c2y;
+    const float cy = c1z * c2x - c1x * c2z;
+    const float cz = c1x * c2y - c1y * c2x;
+    return c0x * cx + c0y * cy + c0z * cz;
+}
+
+
 static void gfx_sp_matrix(uint8_t parameters, const int32_t* addr) {
     float matrix[4][4];
 
@@ -1236,6 +1272,11 @@ static void gfx_sp_matrix(uint8_t parameters, const int32_t* addr) {
     // For a modified GBI where fixed point values are replaced with floats
     memcpy(matrix, addr, sizeof(matrix));
 #endif
+
+    // Ensure any triangles built with the previous matrices are drawn
+    // before we change P/M. Prevents batching triangles across matrix changes
+    // (which scrambles skinned/segmented models).
+    gfx_flush();
 
     if (parameters & G_MTX_PROJECTION) {
         if (parameters & G_MTX_LOAD) {
@@ -1258,15 +1299,26 @@ static void gfx_sp_matrix(uint8_t parameters, const int32_t* addr) {
         rsp.lights_changed = 1;
     }
     gfx_matrix_mul(rsp.MP_matrix, rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], rsp.P_matrix);
+
+    // Publish raw P and M to GLES (no aspect bake)
+    memcpy(g_es1_P, rsp.P_matrix, sizeof(rsp.P_matrix));
+    memcpy(g_es1_M, rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], sizeof(rsp.P_matrix));
+    g_es1_matrix_dirty = 1;
 }
 
 static void gfx_sp_pop_matrix(uint32_t count) {
+    // Flush pending geometry before altering the modelview stack
+    gfx_flush();
     while (count--) {
         if (rsp.modelview_matrix_stack_size > 0) {
             --rsp.modelview_matrix_stack_size;
             if (rsp.modelview_matrix_stack_size > 0) {
                 gfx_matrix_mul(rsp.MP_matrix, rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1],
                                rsp.P_matrix);
+                // Publish raw P and M to GLES (no aspect bake)
+                memcpy(g_es1_P, rsp.P_matrix, sizeof(rsp.P_matrix));
+                memcpy(g_es1_M, rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], sizeof(rsp.P_matrix));
+                g_es1_matrix_dirty = 1;
             }
         }
     }
@@ -1298,12 +1350,11 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* verti
         const Vtx* v = &vertices[i];
         struct LoadedVertex* d = &rsp.loaded_vertices[dest_index];
 
-        float x = v->v[0] * rsp.MP_matrix[0][0] + v->v[1] * rsp.MP_matrix[1][0] + v->v[2] * rsp.MP_matrix[2][0] + rsp.MP_matrix[3][0];
-        float y = v->v[0] * rsp.MP_matrix[0][1] + v->v[1] * rsp.MP_matrix[1][1] + v->v[2] * rsp.MP_matrix[2][1] + rsp.MP_matrix[3][1];
-        float z = v->v[0] * rsp.MP_matrix[0][2] + v->v[1] * rsp.MP_matrix[1][2] + v->v[2] * rsp.MP_matrix[2][2] + rsp.MP_matrix[3][2];
-        float w = v->v[0] * rsp.MP_matrix[0][3] + v->v[1] * rsp.MP_matrix[1][3] + v->v[2] * rsp.MP_matrix[2][3] + rsp.MP_matrix[3][3];
-
-        x = gfx_adjust_x_for_aspect_ratio(x, w);
+        float x = (float)v->v[0];
+        float y = (float)v->v[1];
+        float z = (float)v->v[2];
+        // Homogeneous w stays 1.0 in object space; GL will produce clip w.
+        float w = 1.0f;
 
         short U = v->s * rsp.texture_scaling_factor.s >> 16;
         short V = v->t * rsp.texture_scaling_factor.t >> 16;
@@ -1389,24 +1440,8 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* verti
         d->u = U;
         d->v = V;
 
-        // trivial clip rejection
+        // Let GLES handle clipping
         d->clip_rej = 0;
-        if (x < -w) {
-            d->clip_rej |= 1; // CLIP_LEFT
-        }
-        if (x > w) {
-            d->clip_rej |= 2; // CLIP_RIGHT
-        }
-        if (y < -w) {
-            d->clip_rej |= 4; // CLIP_BOTTOM
-        }
-        if (y > w) {
-            d->clip_rej |= 8; // CLIP_TOP
-        }
-        const float CLIP_EPS = 0.01f;    // allow a sliver inside the near plane
-
-        if (z < -w - CLIP_EPS) d->clip_rej |= 16;   // CLIP_NEAR
-        if (z >  w + CLIP_EPS) d->clip_rej |= 32;   // CLIP_FAR
 
         d->x = x;
         d->y = y;
@@ -1462,104 +1497,31 @@ struct TempV {
     float r,g,b,a;
 };
 
-template<typename EmitFn>
-static void split_if_needed(const TempV& A,const TempV& B,const TempV& C,
-                            int depth,float threshold,const EmitFn& emit)
-{
-    const float wmax = std::max(std::max(A.w, B.w), C.w);
-    const float wmin = std::min(std::min(A.w, B.w), C.w);
-    if (depth == 0 || wmax / wmin < threshold) { emit(A,B,C); return; }
-
-    auto scrDist2 = [](const TempV&p,const TempV&q){
-        float dx = p.x/p.w - q.x/q.w;
-        float dy = p.y/p.w - q.y/q.w;
-        return dx*dx + dy*dy;
-    };
-    const TempV *P=&A,*Q=&B,*R=&C;
-    if (scrDist2(B,C) > scrDist2(*P,*Q)) { P=&B; Q=&C; R=&A; }
-    if (scrDist2(C,A) > scrDist2(*P,*Q)) { P=&C; Q=&A; R=&B; }
-
-    TempV M;
-#define LERP(f) M.f = 0.5f*(P->f + Q->f)
-    LERP(x); LERP(y); LERP(z); LERP(w);
-    LERP(u); LERP(v); LERP(r); LERP(g); LERP(b); LERP(a);
-#undef LERP
-
-    split_if_needed(*P, M, *R, depth-1, threshold, emit);
-    split_if_needed(M, *Q, *R, depth-1, threshold, emit);
-}
-
 static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bool is_rect) {
     struct LoadedVertex* v1 = &rsp.loaded_vertices[vtx1_idx];
     struct LoadedVertex* v2 = &rsp.loaded_vertices[vtx2_idx];
     struct LoadedVertex* v3 = &rsp.loaded_vertices[vtx3_idx];
     struct LoadedVertex* v_arr[3] = { v1, v2, v3 };
 
-    // VFPU-style NDC clipping: z + w < 0, using PSP inline assembly
-    static const float clip_plane[4] __attribute__((aligned(16))) = { 0.0f, 0.0f, -1.0f, -1.0f };
+    // Detect if the current ModelView flips handedness (negative determinant)
+    const float (*MV)[4] = rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1];
+    const bool mv_mirrored = (mat3_det_mv(MV) < 0.0f);
 
-    if ((rsp.extra_geometry_mode & G_NO_CLIPPING_EXT) == 0) {
-        if (v1->clip_rej & v2->clip_rej & v3->clip_rej) {
-            // The whole triangle lies outside the visible area
-            return;
-        }
-
-        // Corrected VFPU-style NDC clipping: z + w < 0
-        bool clipped = false;
-        for (int i = 0; i < 3; i++) {
-            float z = v_arr[i]->z;
-            float w = v_arr[i]->w;
-            float dot;
-            __asm__ volatile (
-                "mtv    %1, S000\n"             // z
-                "mtv    %2, S001\n"             // w
-                "vadd.s S002, S000, S001\n"     // z + w
-                "mfv    %0, S002\n"
-                : "=r"(dot)
-                : "r"(z), "r"(w)
-            );
-            if (dot < 0.0f) {
-                clipped = true;
-                break;
-            }
-        }
-        if (clipped) return;
+    // Map N64 G_CULL_* geometry bits to GL culling. We keep GL front-face=CCW;
+    // CPU will swap winding per limb if mirrored.
+    uint8_t new_cull = 1; // default: cull back
+    const bool want_cull_back  = (rsp.geometry_mode & G_CULL_BACK)  != 0;
+    const bool want_cull_front = (rsp.geometry_mode & G_CULL_FRONT) != 0;
+    if (want_cull_back && !want_cull_front) new_cull = 1;         // back only
+    else if (!want_cull_back && want_cull_front) new_cull = 2;    // front only
+    else if (!want_cull_back && !want_cull_front) new_cull = 0;   // no culling
+    else /* both set */ new_cull = 1; // prefer back; matches most microcode uses
+    if (new_cull != g_es1_cull_mode) {
+        gfx_flush();
+        g_es1_cull_mode = new_cull;
     }
 
-    if ((rsp.geometry_mode & G_CULL_BOTH) != 0) {
-        float dx1 = v1->x / (v1->w) - v2->x / (v2->w);
-        float dy1 = v1->y / (v1->w) - v2->y / (v2->w);
-        float dx2 = v3->x / (v3->w) - v2->x / (v2->w);
-        float dy2 = v3->y / (v3->w) - v2->y / (v2->w);
-        float cross = dx1 * dy2 - dy1 * dx2;
-
-        if ((v1->w < 0) ^ (v2->w < 0) ^ (v3->w < 0)) {
-            // If one vertex lies behind the eye, negating cross will give the correct result.
-            // If all vertices lie behind the eye, the triangle will be rejected anyway.
-            cross = -cross;
-        }
-
-        // If inverted culling is requested, negate the cross
-        // if ((rsp.extra_geometry_mode & G_EX_INVERT_CULLING) == 1) {
-        //     cross = -cross;
-        // }
-
-        switch (rsp.geometry_mode & G_CULL_BOTH) {
-            case G_CULL_FRONT:
-                if (cross <= 0) {
-                    return;
-                }
-                break;
-            case G_CULL_BACK:
-                if (cross >= 0) {
-                    return;
-                }
-                break;
-            case G_CULL_BOTH:
-                // Why is this even an option?
-                return;
-        }
-    }
+    // Let GL handle face culling; CPU space here is object space now.
 
     // Extract and decode depth-related state flags from other_mode
     bool depth_test = ((rsp.geometry_mode & G_ZBUFFER) == G_ZBUFFER || (rdp.other_mode_l & G_ZS_PRIM) == G_ZS_PRIM) &&
@@ -1765,10 +1727,9 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
 
     // --- lambda to push one vertex (9 floats) -------------------------------
     auto push9 = [&](const TempV& V){
-        float invw = 1.0f / V.w;
-        buf_vbo[buf_vbo_len++] = V.x * invw;
-        buf_vbo[buf_vbo_len++] = V.y * invw;
-        buf_vbo[buf_vbo_len++] = V.z * invw;
+        buf_vbo[buf_vbo_len++] = V.x;
+        buf_vbo[buf_vbo_len++] = V.y;
+        buf_vbo[buf_vbo_len++] = V.z;
         buf_vbo[buf_vbo_len++] = V.u;
         buf_vbo[buf_vbo_len++] = V.v;
         buf_vbo[buf_vbo_len++] = V.r;
@@ -1795,16 +1756,12 @@ float dx2 = TV[2].x - TV[0].x;
 float dy2 = TV[2].y - TV[0].y;
 float area = fabsf(dx1 * dy2 - dx2 * dy1);
 
-if (area < 10000.0f) {
+if (mv_mirrored) {
+    emit_tri(TV[0], TV[2], TV[1]);
+} else {
     emit_tri(TV[0], TV[1], TV[2]);
-    return;
 }
 
-/* Aggressive split: one extra recursion level, tight ratio */
-split_if_needed(TV[0], TV[1], TV[2],
-                /*maxDepth*/6,
-                /*threshold*/1.01f,
-                emit_tri);
 
 }
 
