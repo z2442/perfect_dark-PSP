@@ -333,16 +333,18 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
     const int stride_floats = 9; // not 8
     const int stride_bytes = stride_floats * sizeof(float);
 
-    // Detect 2D by counting how many verts are effectively z≈0
+    // Detect 2D by counting how many verts are effectively z≈0 and measure z range
     const size_t total_verts = buf_vbo_num_tris * 3;
     size_t near_zero_z = 0;
-    const float Z_EPS = 1e-3f; // tolerate tiny numerical noise
+    float minz =  1e30f, maxz = -1e30f;
+    const float Z_EPS = 1e-3f;   // tolerate tiny numerical noise in z
     for (size_t v = 0; v < total_verts; ++v) {
         float* base = buf_vbo + v * stride_floats; // [x,y,z,u,v,r,g,b,a]
-        if (fabsf(base[2]) < Z_EPS) ++near_zero_z;
+        const float z = base[2];
+        if (fabsf(z) < Z_EPS) ++near_zero_z;
+        if (z < minz) minz = z; if (z > maxz) maxz = z;
     }
-    // Consider 2D if depth test is off OR ≥90% verts have z≈0
-    bool batch_is_2d = (!es_depth_test) || (near_zero_z * 10 >= total_verts * 9);
+    const float z_span = maxz - minz;
 
     // Inspect XY range to decide if 2D vertices are in screen space (pixels) or NDC [-1..1]
     float minx =  1e30f, miny =  1e30f;
@@ -355,6 +357,21 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
     }
     const float maxAbsXY = fmaxf(fabsf(maxx), fmaxf(fabsf(maxy), fmaxf(fabsf(minx), fabsf(miny))));
     const bool ndc_like = (maxAbsXY <= 1.2f);   // vertices look like NDC [-1..1]
+
+    // Decide if this draw is truly 2D.
+    // Add planar-z requirement and hard exclusion for obvious 3D spans, while keeping tolerance for UI overscan.
+    const bool in_screen_pixels = (minx >= -8.0f && maxx <= (float)SCREEN_WIDTH + 8.0f &&
+                                   miny >= -8.0f && maxy <= (float)SCREEN_HEIGHT + 8.0f);
+    const bool z_mostly_zero = (near_zero_z * 20 >= total_verts * 19); // >=95%
+    const bool z_planar = (z_span < 5e-3f); // all tris lie on (almost) one plane
+
+    // Exclude obvious 3D: wide z range while depth writes are enabled or NDC not used
+    const bool obviously_3d = (z_span > 1e-2f) && es_depth_write;
+
+    bool batch_is_2d = (!obviously_3d) &&
+                       (!es_depth_write) &&
+                       (ndc_like || in_screen_pixels) &&
+                       (z_mostly_zero || z_planar);
 
     // Apply software mirroring to UVs in-place if requested by N64 wrap flags
     for (size_t v = 0; v < total_verts; ++v) {
@@ -369,10 +386,10 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
         glMatrixMode(GL_PROJECTION);
         glLoadIdentity();
         if (ndc_like) {
-            // Vertices are already in NDC-ish space [-1..1]; use Y-up (fix vertical flip)
+            // NDC-like coordinates; Y-up
             glOrthof(-1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f);
         } else {
-            // Vertices are pixel coordinates; use origin bottom-left (Y-up) to fix flip
+            // Pixel coordinates; origin bottom-left, Y-up
             glOrthof(0.0f, (GLfloat)SCREEN_WIDTH, 0.0f, (GLfloat)SCREEN_HEIGHT, -1.0f, 1.0f);
         }
         glMatrixMode(GL_MODELVIEW);
