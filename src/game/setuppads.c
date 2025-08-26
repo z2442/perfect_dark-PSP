@@ -12,6 +12,7 @@
 #include "data.h"
 #include "types.h"
 #include "platform.h"
+#include <string.h>
 
 /**
  * The function assumes that a pad file's data has been loaded from the ROM
@@ -51,11 +52,18 @@ void setupPreparePads(void)
 
 	for (; padnum < numpads; padnum++) {
 		offset = g_PadOffsets[padnum];
-		packedpad = (struct packedpad *) &g_StageSetup.padfiledata[offset];
+		u8 *p = &g_StageSetup.padfiledata[offset];
+		packedpad = (struct packedpad *)p; /* keep type info, avoid direct derefs */
 		padUnpack(padnum, PADFIELD_POS | PADFIELD_BBOX, &pad);
 
-		// If room is negative (ie. not specified)
-		if (packedpad->room < 0) {
+		/* Load header and room safely (unaligned OK). Room is a bit-field in the header. */
+		u32 header_val;
+		memcpy(&header_val, p, 4);
+		/* room occupies bits [13:4] as signed 10-bit; extract like padUnpack: (hdr<<18)>>22 */
+		s32 packed_room = (s32)(header_val << 18) >> 22;
+
+		/* If room is negative (ie. not specified) */
+		if (packed_room < 0) {
 			roomsptr = NULL;
 			bgFindRoomsByPos(&pad.pos, inrooms, aboverooms, 20, NULL);
 
@@ -67,18 +75,19 @@ void setupPreparePads(void)
 
 			if (roomsptr != NULL) {
 				roomnum = cdFindFloorRoomAtPos(&pad.pos, roomsptr);
-
-				if (roomnum > 0) {
-					packedpad->room = roomnum;
-				} else {
-					packedpad->room = roomsptr[0];
-				}
+				s32 newroom = (roomnum > 0) ? roomnum : roomsptr[0];
+				/* Clamp to signed 10-bit range (-512..511) */
+				if (newroom < -512) newroom = -512;
+				if (newroom >  511) newroom =  511;
+				/* Clear room bits [13:4] and set them */
+				header_val &= ~0x00003FF0u;
+				header_val |= ((u32)(newroom & 0x3FF) << 4);
+				memcpy(p, &header_val, 4);
 			}
 		}
 
-		// Scale the bbox by 1 and save it back into the packed pad data.
-		// Yeah, this is effectively doing nothing.
-		if ((*(u32 *) packedpad >> 14) & PADFLAG_HASBBOXDATA) {
+		/* Scale the bbox by 1 and save it back into the packed pad data. (no-op) */
+		if ((header_val >> 14) & PADFLAG_HASBBOXDATA) {
 			f32 scale = 1;
 
 			pad.bbox.xmin *= scale;
@@ -100,20 +109,40 @@ void setupPreparePads(void)
 		setupPrepareCover();
 	}
 
-	// Promote offsets to pointers in waypoints
+	// Promote offsets to pointers in waypoints (unaligned-safe)
 	waypoint = g_StageSetup.waypoints;
+	for (;;) {
+		s32 padnum_val;
+		memcpy(&padnum_val, (u8 *)waypoint + offsetof(struct waypoint, padnum), 4);
+		if (padnum_val < 0) {
+			break;
+		}
 
-	while (waypoint->padnum >= 0) {
-		waypoint->neighbours = (s32 *)((uintptr_t)g_StageSetup.padfiledata + (uintptr_t)waypoint->neighbours);
-		waypoint++;
+		void *neiptr;
+		memcpy(&neiptr, (u8 *)waypoint + offsetof(struct waypoint, neighbours), sizeof(neiptr));
+		neiptr = (void *)((uintptr_t)g_StageSetup.padfiledata + (uintptr_t)neiptr);
+		memcpy((u8 *)waypoint + offsetof(struct waypoint, neighbours), &neiptr, sizeof(neiptr));
+
+		waypoint = (struct waypoint *)((u8 *)waypoint + sizeof(struct waypoint));
 	}
 
-	// Promote offsets to pointers in waygroups
+	// Promote offsets to pointers in waygroups (unaligned-safe)
 	waygroup = g_StageSetup.waygroups;
+	for (;;) {
+		void *neigh_val;
+		memcpy(&neigh_val, (u8 *)waygroup + offsetof(struct waygroup, neighbours), sizeof(neigh_val));
+		if (neigh_val == NULL) {
+			break;
+		}
 
-	while (waygroup->neighbours != NULL) {
-		waygroup->neighbours = (s32 *)((uintptr_t)g_StageSetup.padfiledata + (uintptr_t)waygroup->neighbours);
-		waygroup->waypoints = (s32 *)((uintptr_t)g_StageSetup.padfiledata + (uintptr_t)waygroup->waypoints);
-		waygroup++;
+		void *new_neigh = (void *)((uintptr_t)g_StageSetup.padfiledata + (uintptr_t)neigh_val);
+		memcpy((u8 *)waygroup + offsetof(struct waygroup, neighbours), &new_neigh, sizeof(new_neigh));
+
+		void *wps_val, *new_wps;
+		memcpy(&wps_val, (u8 *)waygroup + offsetof(struct waygroup, waypoints), sizeof(wps_val));
+		new_wps = (void *)((uintptr_t)g_StageSetup.padfiledata + (uintptr_t)wps_val);
+		memcpy((u8 *)waygroup + offsetof(struct waygroup, waypoints), &new_wps, sizeof(new_wps));
+
+		waygroup = (struct waygroup *)((u8 *)waygroup + sizeof(struct waygroup));
 	}
 }

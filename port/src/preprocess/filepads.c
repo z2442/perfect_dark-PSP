@@ -54,11 +54,12 @@ static u32 convertPads(u8 *dst, u32 dstpos, u8 *src, u32 srcpos, int num_pads)
 		dst_offsets[i] = (dstpos);
 
 		// Header
-		u32 n64_padheader = PD_BE32(*(u32 *) &src[srcpos]);
-		struct padheader *host_padheader = (struct padheader *) &dst[dstpos];
+		u32 n64_padheader = PD_BE32(*(u32 *)&src[srcpos]);
+		struct padheader *host_padheader = (struct padheader *)&dst[dstpos];
 		u32 flags = (n64_padheader >> 14) & 0x3ffff;
 
-		*(u32*)host_padheader = (n64_padheader);
+		// safe unaligned store (no crash on PSP)
+		memcpy(host_padheader, &n64_padheader, sizeof(u32));
 
 		srcpos += sizeof(struct padheader);
 		dstpos += sizeof(struct padheader);
@@ -88,45 +89,75 @@ static u32 convertPads(u8 *dst, u32 dstpos, u8 *src, u32 srcpos, int num_pads)
 
 		// Up
 		if ((flags & (PADFLAG_UPALIGNTOX | PADFLAG_UPALIGNTOY | PADFLAG_UPALIGNTOZ)) == 0) {
-			u32 *srcptr = (u32 *) &src[srcpos];
-			u32 *dstptr = (u32 *) &dst[dstpos];
+   		 uint32_t tmp;
 
-			dstptr[0] = PD_BE32(srcptr[0]);
-			dstptr[1] = PD_BE32(srcptr[1]);
-			dstptr[2] = PD_BE32(srcptr[2]);
+   		 memcpy(&tmp, &src[srcpos + 0], 4);
+    	tmp = PD_BE32(tmp);
+    	memcpy(&dst[dstpos + 0], &tmp, 4);
 
-			srcpos += 12;
-			dstpos += 12;
+    	memcpy(&tmp, &src[srcpos + 4], 4);
+    	tmp = PD_BE32(tmp);
+    	memcpy(&dst[dstpos + 4], &tmp, 4);
+
+    	memcpy(&tmp, &src[srcpos + 8], 4);
+    	tmp = PD_BE32(tmp);
+    	memcpy(&dst[dstpos + 8], &tmp, 4);
+
+    	srcpos += 12;
+    	dstpos += 12;
 		}
 
-		// Look
-		if ((flags & (PADFLAG_LOOKALIGNTOX | PADFLAG_LOOKALIGNTOY | PADFLAG_LOOKALIGNTOZ)) == 0) {
-			u32 *srcptr = (u32 *) &src[srcpos];
-			u32 *dstptr = (u32 *) &dst[dstpos];
+// Look
+if ((flags & (PADFLAG_LOOKALIGNTOX | PADFLAG_LOOKALIGNTOY | PADFLAG_LOOKALIGNTOZ)) == 0) {
+    uint32_t tmp;
 
-			dstptr[0] = PD_BE32(srcptr[0]);
-			dstptr[1] = PD_BE32(srcptr[1]);
-			dstptr[2] = PD_BE32(srcptr[2]);
+    memcpy(&tmp, &src[srcpos + 0], 4);
+    tmp = PD_BE32(tmp);
+    memcpy(&dst[dstpos + 0], &tmp, 4);
 
-			srcpos += 12;
-			dstpos += 12;
-		}
+    memcpy(&tmp, &src[srcpos + 4], 4);
+    tmp = PD_BE32(tmp);
+    memcpy(&dst[dstpos + 4], &tmp, 4);
 
-		// Bbox
-		if (flags & PADFLAG_HASBBOXDATA) {
-			u32 *srcptr = (u32 *) &src[srcpos];
-			u32 *dstptr = (u32 *) &dst[dstpos];
+    memcpy(&tmp, &src[srcpos + 8], 4);
+    tmp = PD_BE32(tmp);
+    memcpy(&dst[dstpos + 8], &tmp, 4);
 
-			dstptr[0] = PD_BE32(srcptr[0]);
-			dstptr[1] = PD_BE32(srcptr[1]);
-			dstptr[2] = PD_BE32(srcptr[2]);
-			dstptr[3] = PD_BE32(srcptr[3]);
-			dstptr[4] = PD_BE32(srcptr[4]);
-			dstptr[5] = PD_BE32(srcptr[5]);
+    srcpos += 12;
+    dstpos += 12;
+}
 
-			srcpos += 4 * 6;
-			dstpos += 4 * 6;
-		}
+// Bbox
+if (flags & PADFLAG_HASBBOXDATA) {
+    uint32_t tmp;
+
+    memcpy(&tmp, &src[srcpos +  0], 4);
+    tmp = PD_BE32(tmp);
+    memcpy(&dst[dstpos +  0], &tmp, 4);
+
+    memcpy(&tmp, &src[srcpos +  4], 4);
+    tmp = PD_BE32(tmp);
+    memcpy(&dst[dstpos +  4], &tmp, 4);
+
+    memcpy(&tmp, &src[srcpos +  8], 4);
+    tmp = PD_BE32(tmp);
+    memcpy(&dst[dstpos +  8], &tmp, 4);
+
+    memcpy(&tmp, &src[srcpos + 12], 4);
+    tmp = PD_BE32(tmp);
+    memcpy(&dst[dstpos + 12], &tmp, 4);
+
+    memcpy(&tmp, &src[srcpos + 16], 4);
+    tmp = PD_BE32(tmp);
+    memcpy(&dst[dstpos + 16], &tmp, 4);
+
+    memcpy(&tmp, &src[srcpos + 20], 4);
+    tmp = PD_BE32(tmp);
+    memcpy(&dst[dstpos + 20], &tmp, 4);
+
+    srcpos += 24;  // 4 * 6
+    dstpos += 24;  // 4 * 6
+}
 	}
 
 	return dstpos;
@@ -134,159 +165,260 @@ static u32 convertPads(u8 *dst, u32 dstpos, u8 *src, u32 srcpos, int num_pads)
 
 static u32 convertWayPoints(u8 *dst, u32 dstpos, u8 *src, u32 srcpos)
 {
-	struct n64_waypoint *n64_waypoints = (struct n64_waypoint *) &src[srcpos];
-	struct waypoint *host_waypoints = (struct waypoint *) &dst[dstpos];
-	int num_waypoints;
+    // Count waypoints by scanning padnum until 0xFFFFFFFF (terminator)
+    int num_waypoints = 0;
+    for (;;) {
+        uint32_t pad_be, pad;
+        memcpy(&pad_be, &src[srcpos + num_waypoints * sizeof(struct n64_waypoint)
+                             + offsetof(struct n64_waypoint, padnum)], 4);
+        pad = PD_BE32(pad_be);
+        if (pad == 0xFFFFFFFFu) break;
+        num_waypoints++;
+    }
 
-	for (num_waypoints = 0; n64_waypoints[num_waypoints].padnum != -1; num_waypoints++);
+    // Reserve space for host waypoint table (+1 terminator)
+    u32 host_tbl_pos = dstpos;
+    dstpos += (num_waypoints + 1) * sizeof(struct waypoint);
 
-	dstpos += (num_waypoints + 1) * sizeof(struct waypoint);
+    // Where we will write the flattened neighbours arrays
+    u8 *neigh_write = &dst[dstpos];
 
-	u32 *host_neighbours = (u32 *) &dst[dstpos];
-	int n = 0;
+    // Fill host waypoints and copy neighbour lists
+    for (int i = 0; i < num_waypoints; i++) {
+        size_t sbase = srcpos + i * sizeof(struct n64_waypoint);
 
-	for (int i = 0; i < num_waypoints; i++) {
-		host_waypoints[i].padnum = PD_BE32(n64_waypoints[i].padnum);
-		host_waypoints[i].neighbours = (void *)(uintptr_t)dstpos;
-		host_waypoints[i].groupnum = PD_BE32(n64_waypoints[i].groupnum);
-		host_waypoints[i].step = 0;
+        uint32_t pad_be, grp_be, ptr_be;
+        uint32_t pad_le, grp_le, ptr_le;
 
-		u32 *n64_neighbours = (u32 *) &src[PD_BE32(n64_waypoints[i].ptr_neighbours)];
+        memcpy(&pad_be, &src[sbase + offsetof(struct n64_waypoint, padnum)], 4);
+        memcpy(&grp_be, &src[sbase + offsetof(struct n64_waypoint, groupnum)], 4);
+        memcpy(&ptr_be, &src[sbase + offsetof(struct n64_waypoint, ptr_neighbours)], 4);
 
-		for (int j = 0; n64_neighbours[j] != 0xffffffff; j++) {
-			host_neighbours[n++] = PD_BE32(n64_neighbours[j]);
-			dstpos += 4;
-		}
+        pad_le = PD_BE32(pad_be);
+        grp_le = PD_BE32(grp_be);
+        ptr_le = PD_BE32(ptr_be);
 
-		host_neighbours[n++] = 0xffffffff;
-		dstpos += 4;
-	}
+        // Write host waypoint entry (use memcpy to avoid unaligned stores)
+        struct waypoint *host_waypoints = (struct waypoint *)&dst[host_tbl_pos];
 
-	// Terminator
-	host_waypoints[num_waypoints].padnum = 0xffffffff;
-	host_waypoints[num_waypoints].neighbours = NULL;
-	host_waypoints[num_waypoints].groupnum = 0;
-	host_waypoints[num_waypoints].step = 0;
+        memcpy(&host_waypoints[i].padnum, &pad_le, 4);
 
-	return dstpos;
+        void *neiptr = (void *)(uintptr_t)dstpos;  // neighbours field points to current dstpos
+        memcpy(&host_waypoints[i].neighbours, &neiptr, sizeof(host_waypoints[i].neighbours));
+
+        memcpy(&host_waypoints[i].groupnum, &grp_le, 4);
+        memset(&host_waypoints[i].step, 0, sizeof(host_waypoints[i].step));
+
+        // Copy neighbour list (32-bit entries ending with 0xFFFFFFFF), unaligned-safe
+        const u8 *nsrc = &src[ptr_le];
+        for (;;) {
+            uint32_t nb_be, nb_le;
+            memcpy(&nb_be, nsrc, 4);
+            nb_le = PD_BE32(nb_be);
+
+            memcpy(neigh_write, &nb_le, 4);
+            neigh_write += 4;
+            dstpos += 4;
+            nsrc += 4;
+
+            if (nb_le == 0xFFFFFFFFu)
+                break;
+        }
+    }
+
+    // Terminator waypoint
+    {
+        struct waypoint *host_waypoints = (struct waypoint *)&dst[host_tbl_pos];
+        uint32_t term = 0xFFFFFFFFu, zero = 0;
+        void *nullp = NULL;
+
+        memcpy(&host_waypoints[num_waypoints].padnum, &term, 4);
+        memcpy(&host_waypoints[num_waypoints].neighbours, &nullp,
+               sizeof(host_waypoints[num_waypoints].neighbours));
+        memcpy(&host_waypoints[num_waypoints].groupnum, &zero, 4);
+        memset(&host_waypoints[num_waypoints].step, 0,
+               sizeof(host_waypoints[num_waypoints].step));
+    }
+
+    return dstpos;
 }
 
 static u32 convertWayGroups(u8 *dst, u32 dstpos, u8 *src, u32 srcpos)
 {
-	struct n64_waygroup *n64_waygroups = (struct n64_waygroup *) &src[srcpos];
-	struct waygroup *host_waygroups = (struct waygroup *) &dst[dstpos];
-	int num_waygroups;
+    // Count waygroups until ptr_neighbours == 0 (terminator)
+    int num_waygroups = 0;
+    for (;;) {
+        uint32_t pn_be, pn_le;
+        memcpy(&pn_be, &src[srcpos + num_waygroups * sizeof(struct n64_waygroup)
+                             + offsetof(struct n64_waygroup, ptr_neighbours)], 4);
+        pn_le = PD_BE32(pn_be);
+        if (pn_le == 0) break;
+        num_waygroups++;
+    }
 
-	for (num_waygroups = 0; n64_waygroups[num_waygroups].ptr_neighbours != 0; num_waygroups++);
+    // Reserve space for host waygroup table (+1 terminator)
+    u32 host_tbl_pos = dstpos;
+    dstpos += (num_waygroups + 1) * sizeof(struct waygroup);
 
-	dstpos += (num_waygroups + 1) * sizeof(struct waygroup);
+    // Waygroups and child waypoints
+    for (int i = 0; i < num_waygroups; i++) {
+        struct waygroup *host_waygroups = (struct waygroup *)&dst[host_tbl_pos];
 
-	// Waygroups and child waypoints
-	u32 *host_waypoints = (u32 *) &dst[dstpos];
-	int n = 0;
+        // waypoints pointer -> current dstpos
+        void *wpp = (void *)(uintptr_t)dstpos;
+        memcpy(&host_waygroups[i].waypoints, &wpp, sizeof(host_waygroups[i].waypoints));
+        memset(&host_waygroups[i].step, 0, sizeof(host_waygroups[i].step));
 
-	for (int i = 0; i < num_waygroups; i++) {
-		host_waygroups[i].waypoints = (void *)(uintptr_t)dstpos;
-		host_waygroups[i].step = 0;
+        // Read source ptr to waypoints list
+        size_t sbase = srcpos + i * sizeof(struct n64_waygroup);
+        uint32_t wp_be, wp_le;
+        memcpy(&wp_be, &src[sbase + offsetof(struct n64_waygroup, ptr_waypoints)], 4);
+        wp_le = PD_BE32(wp_be);
 
-		u32 *n64_waypoints = (u32 *) &src[PD_BE32(n64_waygroups[i].ptr_waypoints)];
+        // Copy waypoint list (u32s) until 0xFFFFFFFF, endian-fixing each
+        const u8 *sp = &src[wp_le];
+        for (;;) {
+            uint32_t v_be, v_le;
+            memcpy(&v_be, sp, 4);
+            v_le = PD_BE32(v_be);
+            memcpy(&dst[dstpos], &v_le, 4);
+            dstpos += 4;
+            sp += 4;
+            if (v_le == 0xFFFFFFFFu) break;
+        }
+    }
 
-		for (int j = 0; n64_waypoints[j] != 0xffffffff; j++) {
-			host_waypoints[n++] = PD_BE32(n64_waypoints[j]);
-			dstpos += 4;
-		}
+    // Terminator waygroup
+    {
+        struct waygroup *host_waygroups = (struct waygroup *)&dst[host_tbl_pos];
+        void *nullp = NULL;
+        memcpy(&host_waygroups[num_waygroups].neighbours, &nullp,
+               sizeof(host_waygroups[num_waygroups].neighbours));
+        memcpy(&host_waygroups[num_waygroups].waypoints, &nullp,
+               sizeof(host_waygroups[num_waygroups].waypoints));
+        memset(&host_waygroups[num_waygroups].step, 0,
+               sizeof(host_waygroups[num_waygroups].step));
+    }
 
-		host_waypoints[n++] = 0xffffffff;
-		dstpos += 4;
-	}
+    // Waygroup neighbours
+    for (int i = 0; i < num_waygroups; i++) {
+        struct waygroup *host_waygroups = (struct waygroup *)&dst[host_tbl_pos];
 
-	// Terminator
-	host_waygroups[num_waygroups].neighbours = NULL;
-	host_waygroups[num_waygroups].waypoints = NULL;
-	host_waygroups[num_waygroups].step = 0;
+        // neighbours pointer -> current dstpos
+        void *nbp = (void *)(uintptr_t)dstpos;
+        memcpy(&host_waygroups[i].neighbours, &nbp, sizeof(host_waygroups[i].neighbours));
 
-	// Waygroup neighbours
-	u32 *host_neighbours = (u32 *) &dst[dstpos];
-	n = 0;
+        // Read source ptr to neighbours list
+        size_t sbase = srcpos + i * sizeof(struct n64_waygroup);
+        uint32_t nbptr_be, nbptr_le;
+        memcpy(&nbptr_be, &src[sbase + offsetof(struct n64_waygroup, ptr_neighbours)], 4);
+        nbptr_le = PD_BE32(nbptr_be);
 
-	for (int i = 0; i < num_waygroups; i++) {
-		host_waygroups[i].neighbours = (void *)(uintptr_t)dstpos;
+        // Copy neighbour list (u32s) until 0xFFFFFFFF, endian-fixing each
+        const u8 *sp = &src[nbptr_le];
+        for (;;) {
+            uint32_t v_be, v_le;
+            memcpy(&v_be, sp, 4);
+            v_le = PD_BE32(v_be);
+            memcpy(&dst[dstpos], &v_le, 4);
+            dstpos += 4;
+            sp += 4;
+            if (v_le == 0xFFFFFFFFu) break;
+        }
+    }
 
-		u32 *n64_neighbours = (u32 *) &src[PD_BE32(n64_waygroups[i].ptr_neighbours)];
-
-		for (int j = 0; n64_neighbours[j] != 0xffffffff; j++) {
-			host_neighbours[n++] = PD_BE32(n64_neighbours[j]);
-			dstpos += 4;
-		}
-
-		host_neighbours[n++] = 0xffffffff;
-		dstpos += 4;
-	}
-
-	return dstpos;
+    return dstpos;
 }
 
 static u32 convertCover(u8 *dst, u32 dstpos, u8 *src, u32 srcpos, int num_covers)
 {
-	struct coverdefinition *n64_covers = (struct coverdefinition *) &src[srcpos];
-	struct coverdefinition *host_covers = (struct coverdefinition *) &dst[dstpos];
+    struct coverdefinition *n64_covers  = (struct coverdefinition *)&src[srcpos];
+    struct coverdefinition *host_covers = (struct coverdefinition *)&dst[dstpos];
 
-	for (int i = 0; i < num_covers; i++) {
-		host_covers[i].pos = PD_SWAPPED_VAL(n64_covers[i].pos);
-		host_covers[i].look = PD_SWAPPED_VAL(n64_covers[i].look);
-		host_covers[i].flags = PD_BE16(n64_covers[i].flags);
-	}
+    for (int i = 0; i < num_covers; i++) {
+        uint32_t v32;
 
-	dstpos += num_covers * sizeof(struct coverdefinition);
+        // pos
+        memcpy(&v32, &n64_covers[i].pos, sizeof(v32));
+        v32 = PD_SWAPPED_VAL(v32);
+        memcpy(&host_covers[i].pos, &v32, sizeof(v32));
 
-	return dstpos;
+        // look
+        memcpy(&v32, &n64_covers[i].look, sizeof(v32));
+        v32 = PD_SWAPPED_VAL(v32);
+        memcpy(&host_covers[i].look, &v32, sizeof(v32));
+
+        // flags (16-bit)
+        uint16_t v16;
+        memcpy(&v16, &n64_covers[i].flags, sizeof(v16));
+        v16 = PD_BE16(v16);
+        memcpy(&host_covers[i].flags, &v16, sizeof(v16));
+    }
+
+    dstpos += (u32)(num_covers * sizeof(struct coverdefinition));
+    return dstpos;
 }
+
 
 static u32 convertPadsFile(u8 *dst, u8 *src)
 {
-	u32 dstpos = 0;
-	struct n64_header *n64_header = (struct n64_header *) src;
-	struct host_header *host_header = (struct host_header *) dst;
+    u32 dstpos = 0;
 
-	int num_pads = PD_BE32(n64_header->num_pads);
-	int num_covers = PD_BE32(n64_header->num_covers);
-	host_header->num_pads = (num_pads);
-	host_header->num_covers = (num_covers);
+    struct n64_header *n64_header  = (struct n64_header *)src;
+    struct host_header *host_header = (struct host_header *)&dst[dstpos];
 
-	dstpos += sizeof(struct host_header);
+    uint32_t tmp32;
 
-	// Pads
-	dstpos = convertPads(dst, dstpos, src, sizeof(struct n64_header), num_pads);
+    // num_pads
+    memcpy(&tmp32, &n64_header->num_pads, 4);
+    uint32_t num_pads = PD_BE32(tmp32);
+    memcpy(&host_header->num_pads, &num_pads, 4);
 
-	// Waypoints
-	host_header->ptr_waypoints = (dstpos);
-	dstpos = convertWayPoints(dst, dstpos, src, PD_BE32(n64_header->ptr_waypoints));
+    // num_covers
+    memcpy(&tmp32, &n64_header->num_covers, 4);
+    uint32_t num_covers = PD_BE32(tmp32);
+    memcpy(&host_header->num_covers, &num_covers, 4);
 
-	// Waygroups
-	host_header->ptr_waygroups = (dstpos);
-	dstpos = convertWayGroups(dst, dstpos, src, PD_BE32(n64_header->ptr_waygroups));
+    dstpos += sizeof(struct host_header);
 
-	// Cover
-	host_header->ptr_cover = (dstpos);
-	dstpos = convertCover(dst, dstpos, src, PD_BE32(n64_header->ptr_cover), num_covers);
+    // Pads
+    dstpos = convertPads(dst, dstpos, src, sizeof(struct n64_header), num_pads);
 
-	return dstpos;
+    // Waypoints
+    memcpy(&tmp32, &n64_header->ptr_waypoints, 4);
+    tmp32 = PD_BE32(tmp32);
+    memcpy(&host_header->ptr_waypoints, &dstpos, 4);
+    dstpos = convertWayPoints(dst, dstpos, src, tmp32);
+
+    // Waygroups
+    memcpy(&tmp32, &n64_header->ptr_waygroups, 4);
+    tmp32 = PD_BE32(tmp32);
+    memcpy(&host_header->ptr_waygroups, &dstpos, 4);
+    dstpos = convertWayGroups(dst, dstpos, src, tmp32);
+
+    // Cover
+    memcpy(&tmp32, &n64_header->ptr_cover, 4);
+    tmp32 = PD_BE32(tmp32);
+    memcpy(&host_header->ptr_cover, &dstpos, 4);
+    dstpos = convertCover(dst, dstpos, src, tmp32, num_covers);
+
+    return dstpos;
 }
 
-u8* preprocessPadsFile(u8 *data, u32 size, u32 *outSize) {
-	u32 newSizeEstimated = romdataFileGetEstimatedSize(size, LOADTYPE_PADS);
-	u8* dst = sysMemZeroAlloc(newSizeEstimated);
+u8* preprocessPadsFile(u8 *data, u32 size, u32 *outSize)
+{
+    u32 newSizeEstimated = romdataFileGetEstimatedSize(size, LOADTYPE_PADS);
+    u8 *dst = sysMemZeroAlloc(newSizeEstimated);
 
-	u32 newSize = convertPadsFile(dst, data);
+    u32 newSize = convertPadsFile(dst, data);
 
-	if (newSize > newSizeEstimated) {
-		sysFatalError("overflow when trying to preprocess a pads file, size %d newsize %d", size, newSize);
-	}
+    if (newSize > newSizeEstimated) {
+        sysFatalError("overflow when trying to preprocess a pads file, size %d newsize %d", size, newSize);
+    }
 
-	memcpy(data, dst, newSize);
-	sysMemFree(dst);
+    memcpy(data, dst, newSize);
+    sysMemFree(dst);
 
-	*outSize = newSize;
-
-	return 0;
+    *outSize = newSize;
+    return 0;  // (kept same return contract as your original)
 }

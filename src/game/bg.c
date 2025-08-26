@@ -4930,6 +4930,7 @@ bool bgTestPosInRoom(struct coord *pos, RoomNum roomnum)
  * to pos and writes the room number to the bestroom pointer. The bestroom
  * pointer is a pointer to a single s16 rather than an array.
  */
+#include <string.h>
 void bgFindRoomsByPos(struct coord *posarg, RoomNum *inrooms, RoomNum *aboverooms, s32 max, RoomNum *bestroom)
 {
 	s32 inlen = 0;
@@ -4940,9 +4941,15 @@ void bgFindRoomsByPos(struct coord *posarg, RoomNum *inrooms, RoomNum *aboveroom
 	s32 i;
 	s32 j;
 
-	pos.x = posarg->x;
-	pos.y = posarg->y;
-	pos.z = posarg->z;
+{
+    float _fx, _fy, _fz;
+    memcpy(&_fx, &posarg->x, 4);
+    memcpy(&_fy, &posarg->y, 4);
+    memcpy(&_fz, &posarg->z, 4);
+    pos.x = _fx;
+    pos.y = _fy;
+    pos.z = _fz;
+}
 
 	// Try rooms which have portals
 	for (i = 1; i < g_Vars.roomcount; i++) {

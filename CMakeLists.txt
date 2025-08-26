@@ -185,14 +185,14 @@ if(BUILD_PSP)
     -Wall # Keep warnings enabled
     # Add other PSP specific flags as needed, e.g., -fno-builtin-printf for smaller code size if using pspDebugScreenPrintf
   )
-  # Optimization: -O3 (optimize for speed) for PSP release builds
+  # Optimization: -O2 (optimize for speed) for PSP release builds
   # CMake sets optimization flags per build type, adjust if needed:
   if(CMAKE_BUILD_TYPE MATCHES "Release|RelWithDebInfo")
-      message(STATUS "Using -O3 optimization for PSP ${CMAKE_BUILD_TYPE} build")
-      set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -O3")
-      set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3")
-      set(CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} -O3")
-      set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -O3")
+      message(STATUS "Using -O2 optimization for PSP ${CMAKE_BUILD_TYPE} build")
+      set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -g -O2")
+      set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -g -O2")
+      set(CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} -g -O2")
+      set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -g -O2")
   endif()
 
 else() # Non-PSP builds

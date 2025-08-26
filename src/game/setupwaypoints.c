@@ -5,6 +5,8 @@
 #include "lib/memp.h"
 #include "data.h"
 #include "types.h"
+#include <string.h>
+#include <stddef.h>
 
 void setupLoadWaypoints(void)
 {
@@ -25,8 +27,13 @@ void setupLoadWaypoints(void)
 	// reused here to iterate the waypoints one at a time.
 	waypoints = g_StageSetup.waypoints;
 
-	for (numwaypoints = 0; waypoints->padnum >= 0; numwaypoints++) {
-		waypoints++;
+	for (numwaypoints = 0; ; numwaypoints++) {
+		s32 padnum_val;
+		memcpy(&padnum_val, (u8 *)waypoints + offsetof(struct waypoint, padnum), sizeof(padnum_val));
+		if (padnum_val < 0) {
+			break;
+		}
+		waypoints = (struct waypoint *)((u8 *)waypoints + sizeof(struct waypoint));
 	}
 
 	waypoints = g_StageSetup.waypoints;
@@ -39,20 +46,24 @@ void setupLoadWaypoints(void)
 	// Populate g_Vars.waypointnums, ordering them by roomnum asc, padnum asc
 	for (i = 0; i < numwaypoints; i++) {
 		waypoint = &waypoints[i];
-		padUnpack(waypoint->padnum, PADFIELD_ROOM | PADFIELD_FLAGS, &pad);
+		s32 wp_padnum;
+		memcpy(&wp_padnum, (u8 *)waypoint + offsetof(struct waypoint, padnum), sizeof(wp_padnum));
+		padUnpack(wp_padnum, PADFIELD_ROOM | PADFIELD_FLAGS, &pad);
 
 		// Iterate previously processed waypoints and bail if the outer loop's
 		// waypoint should be inserted prior to this one
 		for (j = 0; j < numinserted; j++) {
 			waypoint2 = &waypoints[g_Vars.waypointnums[j]];
-			padUnpack(waypoint2->padnum, PADFIELD_ROOM | PADFIELD_FLAGS, &pad2);
+			s32 wp2_padnum;
+			memcpy(&wp2_padnum, (u8 *)waypoint2 + offsetof(struct waypoint, padnum), sizeof(wp2_padnum));
+			padUnpack(wp2_padnum, PADFIELD_ROOM | PADFIELD_FLAGS, &pad2);
 
 			if (pad.room < pad2.room) {
 				break;
 			}
 
 			if (pad.room == pad2.room
-					&& ((pad2.flags & PADFLAG_AIDROP) || waypoint->padnum < waypoint2->padnum)) {
+					&& ((pad2.flags & PADFLAG_AIDROP) || wp_padnum < wp2_padnum)) {
 				break;
 			}
 		}
@@ -78,7 +89,11 @@ void setupLoadWaypoints(void)
 
 	for (i = 0; i < numwaypoints; i++) {
 		waypoint = &g_StageSetup.waypoints[g_Vars.waypointnums[i]];
-		padUnpack(waypoint->padnum, PADFIELD_ROOM | PADFIELD_FLAGS, &pad);
+		{
+			s32 wp_padnum2;
+			memcpy(&wp_padnum2, (u8 *)waypoint + offsetof(struct waypoint, padnum), sizeof(wp_padnum2));
+			padUnpack(wp_padnum2, PADFIELD_ROOM | PADFIELD_FLAGS, &pad);
+		}
 
 		if (pad.room != currentroom) {
 			currentroom = pad.room;

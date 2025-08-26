@@ -11,6 +11,8 @@
 #include "lib/libc/ll.h"
 #include "data.h"
 #include "types.h"
+#include <string.h>
+#include <stddef.h>
 
 /**
  * Path Finding
@@ -93,6 +95,16 @@ struct waypoint *waypointFindClosestToPos(struct coord *pos, RoomNum *rooms)
 	struct coord sp250[10];
 	struct coord sp1d8[10];
 
+	/* PSP-safe: pos might be unaligned; copy to a local aligned coord and cache components */
+	struct coord pos_aligned;
+	float px, py, pz;
+	memcpy(&px, &pos->x, 4);
+	memcpy(&py, &pos->y, 4);
+	memcpy(&pz, &pos->z, 4);
+	pos_aligned.x = px;
+	pos_aligned.y = py;
+	pos_aligned.z = pz;
+
 	for (i = 0; rooms[i] != -1; i++) {
 		allrooms[i] = rooms[i];
 	}
@@ -116,11 +128,14 @@ struct waypoint *waypointFindClosestToPos(struct coord *pos, RoomNum *rooms)
 					u32 stack;
 					struct pad pad;
 
-					padUnpack(waypoint->padnum, PADFIELD_POS, &pad);
+					/* PSP-safe: waypoint->padnum may be unaligned in some builds */
+					s32 wp_padnum;
+					memcpy(&wp_padnum, (u8 *)waypoint + offsetof(struct waypoint, padnum), sizeof(wp_padnum));
+					padUnpack(wp_padnum, PADFIELD_POS, &pad);
 
-					sqdist = (pos->f[0] - pad.pos.f[0]) * (pos->f[0] - pad.pos.f[0])
-						+ (pos->f[1] - pad.pos.f[1]) * (pos->f[1] - pad.pos.f[1])
-						+ (pos->f[2] - pad.pos.f[2]) * (pos->f[2] - pad.pos.f[2]);
+					sqdist = (px - pad.pos.f[0]) * (px - pad.pos.f[0])
+						+ (py - pad.pos.f[1]) * (py - pad.pos.f[1])
+						+ (pz - pad.pos.f[2]) * (pz - pad.pos.f[2]);
 
 					// Find the index where this waypoint should go
 					// into the candidates list
@@ -160,13 +175,17 @@ struct waypoint *waypointFindClosestToPos(struct coord *pos, RoomNum *rooms)
 			struct pad pad;
 			RoomNum padrooms[8];
 
-			padUnpack(candwaypoints[i]->padnum, PADFIELD_POS | PADFIELD_ROOM, &pad);
+			{
+				s32 wp_padnum2;
+				memcpy(&wp_padnum2, (u8 *)candwaypoints[i] + offsetof(struct waypoint, padnum), sizeof(wp_padnum2));
+				padUnpack(wp_padnum2, PADFIELD_POS | PADFIELD_ROOM, &pad);
+			}
 
 			padrooms[0] = pad.room;
 			padrooms[1] = -1;
 
-			if (cdTestLos05(pos, rooms, &pad.pos, padrooms, CDTYPE_BG, GEOFLAG_FLOOR1 | GEOFLAG_FLOOR2) != CDRESULT_COLLISION) {
-				s32 cdresult = cdExamCylMove05(pos, rooms, &pad.pos, padrooms, CDTYPE_BG | CDTYPE_PATHBLOCKER, true, 0.0f, 0.0f);
+			if (cdTestLos05(&pos_aligned, rooms, &pad.pos, padrooms, CDTYPE_BG, GEOFLAG_FLOOR1 | GEOFLAG_FLOOR2) != CDRESULT_COLLISION) {
+				s32 cdresult = cdExamCylMove05(&pos_aligned, rooms, &pad.pos, padrooms, CDTYPE_BG | CDTYPE_PATHBLOCKER, true, 0.0f, 0.0f);
 
 				if (cdresult == CDRESULT_ERROR) {
 					checkmore[i] = false;
@@ -197,7 +216,11 @@ struct waypoint *waypointFindClosestToPos(struct coord *pos, RoomNum *rooms)
 					RoomNum tmprooms[8];
 					f32 mult;
 
-					padUnpack(candwaypoints[i]->padnum, PADFIELD_POS | PADFIELD_ROOM, &pad);
+					{
+						s32 wp_padnum3;
+						memcpy(&wp_padnum3, (u8 *)candwaypoints[i] + offsetof(struct waypoint, padnum), sizeof(wp_padnum3));
+						padUnpack(wp_padnum3, PADFIELD_POS | PADFIELD_ROOM, &pad);
+					}
 
 					padrooms[0] = pad.room;
 					padrooms[1] = -1;
@@ -212,19 +235,19 @@ struct waypoint *waypointFindClosestToPos(struct coord *pos, RoomNum *rooms)
 					sp98.z *= mult;
 
 					tmppos.x = sp250[i].f[0] + sp98.f[0];
-					tmppos.y = pos->y;
+					tmppos.y = py;
 					tmppos.z = sp250[i].f[2] + sp98.f[2];
 
-					if (cdTestCylMove04(pos, rooms, &tmppos, tmprooms, CDTYPE_BG | CDTYPE_PATHBLOCKER, 1, 0.0f, 0.0f) != CDRESULT_COLLISION) {
+					if (cdTestCylMove04(&pos_aligned, rooms, &tmppos, tmprooms, CDTYPE_BG | CDTYPE_PATHBLOCKER, 1, 0.0f, 0.0f) != CDRESULT_COLLISION) {
 						closest = candwaypoints[i];
 						break;
 					}
 
 					tmppos.x = sp1d8[i].x - sp98.x;
-					tmppos.y = pos->y;
+					tmppos.y = py;
 					tmppos.z = sp1d8[i].z - sp98.z;
 
-					if (cdTestCylMove04(pos, rooms, &tmppos, tmprooms, CDTYPE_BG | CDTYPE_PATHBLOCKER, 1, 0.0f, 0.0f) != CDRESULT_COLLISION) {
+					if (cdTestCylMove04(&pos_aligned, rooms, &tmppos, tmprooms, CDTYPE_BG | CDTYPE_PATHBLOCKER, 1, 0.0f, 0.0f) != CDRESULT_COLLISION) {
 						closest = candwaypoints[i];
 						break;
 					}
@@ -260,12 +283,18 @@ struct waygroup *waygroupChooseNeighbour(s32 *groupnums, s32 step, u32 ignoremas
 	struct waygroup *groups = g_StageSetup.waygroups;
 	struct waygroup *best = NULL;
 
-	while (*groupnums >= 0) {
-		if ((*groupnums & ignoremask) == 0) {
-			struct waygroup *group = &groups[WPSEG_GET_ID(*groupnums)];
+	for (;;) {
+    s32 seg;
+    memcpy(&seg, groupnums, sizeof(seg));
+    if (seg < 0) break;
 
-			if (group->step == step) {
-				best = group;
+    if ((seg & ignoremask) == 0) {
+        struct waygroup *group = &groups[WPSEG_GET_ID(seg)];
+        s32 gstep;
+        memcpy(&gstep, (u8 *)group + offsetof(struct waygroup, step), sizeof(gstep));
+
+        if (gstep == step) {
+            best = group;
 
 				if (!g_Vars.padrandomroutes) {
 					break;
@@ -285,7 +314,7 @@ struct waygroup *waygroupChooseNeighbour(s32 *groupnums, s32 step, u32 ignoremas
 			}
 		}
 
-		*groupnums++;
+		groupnums++;
 	}
 
 	return best;
@@ -298,16 +327,20 @@ void waygroupSetStepIfUndiscovered(s32 *groupnums, s32 step, u32 ignoremask)
 {
 	struct waygroup *groups = g_StageSetup.waygroups;
 
-	while (*groupnums >= 0) {
-		if ((*groupnums & ignoremask) == 0) {
-			struct waygroup *group = &groups[WPSEG_GET_ID(*groupnums)];
+	for (;;) {
+    s32 seg;
+    memcpy(&seg, groupnums, sizeof(seg));
+    if (seg < 0) break;
 
-			if (group->step < 0) {
-				group->step = step;
-			}
-		}
-
-		groupnums++;
+    if ((seg & ignoremask) == 0) {
+        struct waygroup *group = &groups[WPSEG_GET_ID(seg)];
+        s32 gstep;
+        memcpy(&gstep, (u8 *)group + offsetof(struct waygroup, step), sizeof(gstep));
+        if (gstep < 0) {
+            memcpy((u8 *)group + offsetof(struct waygroup, step), &step, sizeof(step));
+        }
+    }
+    groupnums++;
 	}
 }
 
@@ -319,13 +352,18 @@ bool waygroupDiscoverOneStep(struct waygroup *group, s32 step, u32 ignoremask)
 {
 	bool discovered = false;
 
-	while (group->neighbours) {
-		if (group->step == step) {
-			discovered = true;
-			waygroupSetStepIfUndiscovered(group->neighbours, step + 1, ignoremask);
-		}
+	for (;;) {
+    void *neigh;
+    memcpy(&neigh, (u8 *)group + offsetof(struct waygroup, neighbours), sizeof(neigh));
+    if (neigh == NULL) break;
 
-		group++;
+    s32 gstep;
+    memcpy(&gstep, (u8 *)group + offsetof(struct waygroup, step), sizeof(gstep));
+    if (gstep == step) {
+        discovered = true;
+        waygroupSetStepIfUndiscovered((s32 *)neigh, step + 1, ignoremask);
+    }
+    group = (struct waygroup *)((u8 *)group + sizeof(struct waygroup));
 	}
 
 	return discovered;
@@ -343,21 +381,47 @@ bool waygroupDiscoverOneStep(struct waygroup *group, s32 step, u32 ignoremask)
  */
 bool waygroupDiscoverSteps(struct waygroup *from, struct waygroup *to, struct waygroup *groups, bool discoverall, u32 ignoremask)
 {
-	bool result = true;
-	struct waygroup *group;
-	s32 step;
+    bool result = true;
+    struct waygroup *group;
+    s32 step;
 
-	for (group = groups; group->neighbours; group++) {
-		group->step = -1;
-	}
+    /* Reset all steps to -1 by iterating until neighbours == NULL (unaligned-safe) */
+    group = groups;
+    for (;;) {
+        void *neigh;
+        memcpy(&neigh, (u8 *)group + offsetof(struct waygroup, neighbours), sizeof(neigh));
+        if (neigh == NULL) {
+            break;
+        }
+        {
+            s32 neg1 = -1;
+            memcpy((u8 *)group + offsetof(struct waygroup, step), &neg1, sizeof(neg1));
+        }
+        group = (struct waygroup *)((u8 *)group + sizeof(struct waygroup));
+    }
 
-	from->step = 0;
+    /* from->step = 0 */
+    {
+        s32 zero = 0;
+        memcpy((u8 *)from + offsetof(struct waygroup, step), &zero, sizeof(zero));
+    }
 
-	for (step = 0; (discoverall || to->step < 0) && result; step++) {
-		result = waygroupDiscoverOneStep(groups, step, ignoremask);
-	}
+    /* for (step = 0; (discoverall || to->step < 0) && result; step++) */
+    for (step = 0; ; step++) {
+        if (!discoverall) {
+            s32 tostep;
+            memcpy(&tostep, (u8 *)to + offsetof(struct waygroup, step), sizeof(tostep));
+            if (tostep >= 0) {
+                break;
+            }
+        }
+        if (!result) {
+            break;
+        }
+        result = waygroupDiscoverOneStep(groups, step, ignoremask);
+    }
 
-	return result;
+    return result;
 }
 
 /**
@@ -367,23 +431,41 @@ bool waygroupDiscoverSteps(struct waygroup *from, struct waygroup *to, struct wa
  */
 bool waygroupFindRoute(struct waygroup *from, struct waygroup *to, struct waygroup *groups)
 {
-	u32 stack[2];
-	bool result = waygroupDiscoverSteps(from, to, groups, false, IGNORE_INWARDS);
+    u32 stack[2];
+    bool result = waygroupDiscoverSteps(from, to, groups, false, IGNORE_INWARDS);
 
-	if (result) {
-		struct waygroup *curto = to;
-		s32 step = curto->step - 1;
+    if (result) {
+        struct waygroup *curto = to;
+        s32 step;
+        /* load curto->step safely */
+        memcpy(&step, (u8 *)curto + offsetof(struct waygroup, step), sizeof(step));
+        step -= 1;
 
-		while (step >= 0) {
-			curto->step += 10000;
-			curto = waygroupChooseNeighbour(curto->neighbours, step, IGNORE_OUTWARDS);
-			step--;
-		}
+        while (step >= 0) {
+            /* curto->step += 10000; */
+            s32 curstep;
+            memcpy(&curstep, (u8 *)curto + offsetof(struct waygroup, step), sizeof(curstep));
+            curstep += 10000;
+            memcpy((u8 *)curto + offsetof(struct waygroup, step), &curstep, sizeof(curstep));
 
-		curto->step += 10000;
-	}
+            /* curto = waygroupChooseNeighbour(curto->neighbours, step, IGNORE_OUTWARDS); */
+            void *neigh;
+            memcpy(&neigh, (u8 *)curto + offsetof(struct waygroup, neighbours), sizeof(neigh));
+            curto = waygroupChooseNeighbour((s32 *)neigh, step, IGNORE_OUTWARDS);
 
-	return result;
+            step--;
+        }
+
+        /* final: curto->step += 10000; */
+        {
+            s32 curstep;
+            memcpy(&curstep, (u8 *)curto + offsetof(struct waygroup, step), sizeof(curstep));
+            curstep += 10000;
+            memcpy((u8 *)curto + offsetof(struct waygroup, step), &curstep, sizeof(curstep));
+        }
+    }
+
+    return result;
 }
 
 /**
@@ -404,11 +486,18 @@ struct waypoint *waypointChooseNeighbour(s32 *pointnums, s32 step, s32 groupnum,
 	struct waypoint *points = g_StageSetup.waypoints;
 	struct waypoint *best = NULL;
 
-	while (*pointnums >= 0) {
-		if ((*pointnums & ignoremask) == 0) {
-			struct waypoint *point = &points[WPSEG_GET_ID(*pointnums)];
+	for (;;) {
+		s32 seg;
+		memcpy(&seg, pointnums, sizeof(seg));
+		if (seg < 0) break;
 
-			if (point->groupnum == groupnum && point->step == step) {
+		if ((seg & ignoremask) == 0) {
+			struct waypoint *point = &points[WPSEG_GET_ID(seg)];
+			s32 grpnum_tmp, step_tmp;
+			memcpy(&grpnum_tmp, (u8 *)point + offsetof(struct waypoint, groupnum), sizeof(grpnum_tmp));
+			memcpy(&step_tmp,  (u8 *)point + offsetof(struct waypoint, step), sizeof(step_tmp));
+
+			if (grpnum_tmp == groupnum && step_tmp == step) {
 				best = point;
 
 				if (!g_Vars.padrandomroutes) {
@@ -421,7 +510,6 @@ struct waypoint *waypointChooseNeighbour(s32 *pointnums, s32 step, s32 groupnum,
 					}
 				} else {
 					u64 seed = ((u64)g_NavSeed[0] << 32) | g_NavSeed[1];
-
 					if (rngRotateSeed(&seed) % 2 == 0) {
 						break;
 					}
@@ -429,7 +517,7 @@ struct waypoint *waypointChooseNeighbour(s32 *pointnums, s32 step, s32 groupnum,
 			}
 		}
 
-		*pointnums++;
+		pointnums++;
 	}
 
 	return best;
@@ -442,16 +530,24 @@ void waypointSetStepIfUndiscovered(s32 *pointnums, s32 value, s32 groupnum, u32 
 {
 	struct waypoint *waypoints = g_StageSetup.waypoints;
 
-	while (*pointnums >= 0) {
-		if ((*pointnums & ignoremask) == 0) {
-			struct waypoint *waypoint = &waypoints[WPSEG_GET_ID(*pointnums)];
+	for (;;) {
+    s32 seg;
+    memcpy(&seg, pointnums, sizeof(seg));
+    if (seg < 0) break;
 
-			if (waypoint->groupnum == groupnum && waypoint->step < 0) {
-				waypoint->step = value;
-			}
-		}
+    if ((seg & ignoremask) == 0) {
+        struct waypoint *waypoint = &waypoints[WPSEG_GET_ID(seg)];
+        {
+            s32 grp, stp;
+            memcpy(&grp, (u8 *)waypoint + offsetof(struct waypoint, groupnum), sizeof(grp));
+            memcpy(&stp, (u8 *)waypoint + offsetof(struct waypoint, step), sizeof(stp));
+            if (grp == groupnum && stp < 0) {
+                memcpy((u8 *)waypoint + offsetof(struct waypoint, step), &value, sizeof(value));
+            }
+        }
+    }
 
-		*pointnums++;
+    pointnums++;
 	}
 }
 
@@ -464,16 +560,26 @@ bool waypointDiscoverOneStep(s32 *pointnums, s32 step, s32 groupnum, u32 ignorem
 	bool result = false;
 	struct waypoint *points = g_StageSetup.waypoints;
 
-	while (*pointnums >= 0) {
-		struct waypoint *point = &points[*pointnums];
+for (;;) {
+    s32 seg;
+    memcpy(&seg, pointnums, sizeof(seg));
+    if (seg < 0) break;
 
-		if (step == point->step && point->neighbours) {
-			result = true;
-			waypointSetStepIfUndiscovered(point->neighbours, step + 1, groupnum, ignoremask);
-		}
+    struct waypoint *point = &points[seg];
 
-		pointnums++;
-	}
+    {
+        s32 pstep;
+        void *pneigh;
+        memcpy(&pstep,  (u8 *)point + offsetof(struct waypoint, step), sizeof(pstep));
+        memcpy(&pneigh, (u8 *)point + offsetof(struct waypoint, neighbours), sizeof(pneigh));
+        if (step == pstep && pneigh) {
+            result = true;
+            waypointSetStepIfUndiscovered((s32 *)pneigh, step + 1, groupnum, ignoremask);
+        }
+    }
+
+    pointnums++;
+}
 
 	return result;
 }
@@ -495,22 +601,51 @@ void waypointDiscoverSteps(struct waypoint *from, struct waypoint *to, bool disc
 	struct waygroup *groups = g_StageSetup.waygroups;
 	struct waypoint *points = g_StageSetup.waypoints;
 	struct waypoint *point;
-	s32 *pointnums = groups[from->groupnum].waypoints;
+	s32 from_groupnum;
+	memcpy(&from_groupnum, (const u8 *)from + offsetof(struct waypoint, groupnum), sizeof(from_groupnum));
+	s32 *pointnums; {
+		void *wps_ptr;
+		memcpy(&wps_ptr, (const u8 *)&groups[from_groupnum] + offsetof(struct waygroup, waypoints), sizeof(wps_ptr));
+		pointnums = (s32 *)wps_ptr;
+	}
 	s32 i;
 	bool more;
 
-	while (*pointnums >= 0) {
-		point = &points[*pointnums];
-		point->step = -1;
+	for (;;) {
+		s32 idx;
+		memcpy(&idx, pointnums, sizeof(idx));
+		if (idx < 0) break;
+		point = &points[idx];
+		{
+			s32 neg1 = -1;
+			memcpy((u8 *)point + offsetof(struct waypoint, step), &neg1, sizeof(neg1));
+		}
 		pointnums++;
 	}
 
-	from->step = 0;
+	{
+	    s32 zero = 0;
+	    memcpy((u8 *)from + offsetof(struct waypoint, step), &zero, sizeof(zero));
+	}
 
 	more = true;
 
-	for (i = 0; (discoverall || to->step < 0) && more; i++) {
-		more = waypointDiscoverOneStep(groups[from->groupnum].waypoints, i, from->groupnum, ignoremask);
+	for (i = 0; ; i++) {
+		if (!discoverall) {
+			s32 to_step_val;
+			memcpy(&to_step_val, (const u8 *)to + offsetof(struct waypoint, step), sizeof(to_step_val));
+			if (to_step_val >= 0) {
+				break;
+			}
+		}
+		if (!more) {
+			break;
+		}
+		{
+			void *wps_ptr2;
+			memcpy(&wps_ptr2, (const u8 *)&groups[from_groupnum] + offsetof(struct waygroup, waypoints), sizeof(wps_ptr2));
+			more = waypointDiscoverOneStep((s32 *)wps_ptr2, i, from_groupnum, ignoremask);
+		}
 	}
 }
 
@@ -528,17 +663,37 @@ void waypointFindRoute(struct waypoint *from, struct waypoint *to)
 
 	waypointDiscoverSteps(from, to, false, IGNORE_INWARDS);
 
-	value = to->step - 1;
+	{
+	    s32 to_step;
+	    memcpy(&to_step, (const u8 *)to + offsetof(struct waypoint, step), sizeof(to_step));
+	    value = to_step - 1;
+	}
 	curto = to;
 
 	while (value >= 0) {
-		curto->step += 10000;
-		curto = waypointChooseNeighbour(curto->neighbours, value, from->groupnum, IGNORE_OUTWARDS);
+		{
+    s32 s;
+    memcpy(&s, (u8 *)curto + offsetof(struct waypoint, step), sizeof(s));
+    s += 10000;
+    memcpy((u8 *)curto + offsetof(struct waypoint, step), &s, sizeof(s));
+	}
+		{
+		    void *neigh;
+		    s32 from_groupnum;
+		    memcpy(&neigh, (u8 *)curto + offsetof(struct waypoint, neighbours), sizeof(neigh));
+		    memcpy(&from_groupnum, (u8 *)from + offsetof(struct waypoint, groupnum), sizeof(from_groupnum));
+		    curto = waypointChooseNeighbour((s32 *)neigh, value, from_groupnum, IGNORE_OUTWARDS);
+		}
 
 		value--;
 	}
 
-	curto->step += 10000;
+	{
+    s32 s;
+    memcpy(&s, (u8 *)curto + offsetof(struct waypoint, step), sizeof(s));
+    s += 10000;
+    memcpy((u8 *)curto + offsetof(struct waypoint, step), &s, sizeof(s));
+	}
 }
 
 /**
@@ -560,15 +715,23 @@ s32 waypointCollectLocal(struct waypoint *from, struct waypoint *to, struct wayp
 		arrptr++;
 
 		curfrom = from;
-		arrlen += 9999;
-		step = 10001;
+	arrlen += 9999;
+	step = 10001;
 
-		while (step <= to->step && step < arrlen) {
-			curfrom = waypointChooseNeighbour(curfrom->neighbours, step, from->groupnum, IGNORE_INWARDS);
-			*arrptr = curfrom;
-			arrptr++;
-			step++;
-		}
+	s32 to_step;
+	memcpy(&to_step, (const u8 *)to + offsetof(struct waypoint, step), sizeof(to_step));
+	while (step <= to_step && step < arrlen) {
+   {
+       void *neigh;
+       s32 from_groupnum;
+       memcpy(&neigh, (u8 *)curfrom + offsetof(struct waypoint, neighbours), sizeof(neigh));
+       memcpy(&from_groupnum, (u8 *)from + offsetof(struct waypoint, groupnum), sizeof(from_groupnum));
+       curfrom = waypointChooseNeighbour((s32 *)neigh, step, from_groupnum, IGNORE_INWARDS);
+   }
+    *arrptr = curfrom;
+    arrptr++;
+    step++;
+	}
 	}
 
 	*arrptr = NULL;
@@ -587,21 +750,33 @@ void waypointFindSegmentIntoGroup(struct waygroup *fromgroup, struct waygroup *t
 {
 	struct waypoint *points = g_StageSetup.waypoints;
 	struct waygroup *groups = g_StageSetup.waygroups;
-	s32 *fromwpptr = fromgroup->waypoints;
+	void *wps_ptr;
+	memcpy(&wps_ptr, (u8 *)fromgroup + offsetof(struct waygroup, waypoints), sizeof(wps_ptr));
+	s32 *fromwpptr = (s32 *)wps_ptr;
 	s32 stack;
 
 	*topoint = NULL;
 	*frompoint = NULL;
 
-	while (*fromwpptr >= 0) {
-		struct waypoint *fromwp = &points[*fromwpptr];
-		s32 *neighbournums = fromwp->neighbours;
+	for (;;) {
+    s32 fromidx; memcpy(&fromidx, fromwpptr, sizeof(fromidx));
+    if (fromidx < 0) break;
 
-		while (*neighbournums >= 0) {
-			if ((*neighbournums & IGNORE_INWARDS) == 0) {
-				struct waypoint *neighbour = &points[WPSEG_GET_ID(*neighbournums)];
+    struct waypoint *fromwp = &points[fromidx];
+    void *neigh_ptr;
+    memcpy(&neigh_ptr, (u8 *)fromwp + offsetof(struct waypoint, neighbours), sizeof(neigh_ptr));
+    s32 *neighbournums = (s32 *)neigh_ptr;
 
-				if (togroup == &groups[neighbour->groupnum]) {
+		for (;;) {
+    	s32 seg; memcpy(&seg, neighbournums, sizeof(seg));
+    	if (seg < 0) break;
+
+    	if ((seg & IGNORE_INWARDS) == 0) {
+        struct waypoint *neighbour = &points[WPSEG_GET_ID(seg)];
+
+				              s32 ng;
+              		memcpy(&ng, (u8 *)neighbour + offsetof(struct waypoint, groupnum), sizeof(ng));
+              		if (togroup == &groups[ng]) {
 					*frompoint = fromwp;
 					*topoint = neighbour;
 
@@ -639,52 +814,70 @@ void waypointFindSegmentIntoGroup(struct waygroup *fromgroup, struct waygroup *t
  */
 s32 navFindRoute(struct waypoint *frompoint, struct waypoint *topoint, struct waypoint **arr, s32 arrlen)
 {
-	struct waypoint **arrptr = arr;
-	struct waygroup *groups = g_StageSetup.waygroups;
+    struct waypoint **arrptr = arr;
+    struct waygroup *groups = g_StageSetup.waygroups;
 
-	if (groups && frompoint && topoint) {
-		struct waygroup *fromgroup = &groups[frompoint->groupnum];
-		struct waygroup *togroup = &groups[topoint->groupnum];
+    if (groups && frompoint && topoint) {
+        /* PSP-safe: frompoint/topoint may be unaligned; read groupnum via memcpy */
+        s32 fromgroupnum, togroupnum;
+        memcpy(&fromgroupnum, (const u8 *)frompoint + offsetof(struct waypoint, groupnum), sizeof(fromgroupnum));
+        memcpy(&togroupnum,  (const u8 *)topoint   + offsetof(struct waypoint, groupnum), sizeof(togroupnum));
 
-		if (waygroupFindRoute(fromgroup, togroup, groups)) {
-			struct waypoint *curfrompoint = frompoint;
-			struct waygroup *curfromgroup = fromgroup;
-			s32 step;
+        struct waygroup *fromgroup = &groups[fromgroupnum];
+        struct waygroup *togroup   = &groups[togroupnum];
 
-			for (step = fromgroup->step + 1; step <= togroup->step && arrlen >= 2; step++) {
-				s32 numwritten;
-				struct waygroup *nextfromgroup = waygroupChooseNeighbour(curfromgroup->neighbours, step, IGNORE_INWARDS);
-				struct waypoint *curgrouplastwp;
-				struct waypoint *nextgroupfirstwp;
+        if (waygroupFindRoute(fromgroup, togroup, groups)) {
+            struct waypoint *curfrompoint = frompoint;
+            struct waygroup *curfromgroup = fromgroup;
+            s32 step;
 
-				waypointFindSegmentIntoGroup(curfromgroup, nextfromgroup, &curgrouplastwp, &nextgroupfirstwp);
-				numwritten = waypointCollectLocal(curfrompoint, curgrouplastwp, arrptr, arrlen) - 1;
+            s32 from_step, to_step;
+            memcpy(&from_step, (const u8 *)fromgroup + offsetof(struct waygroup, step), sizeof(from_step));
+            memcpy(&to_step,   (const u8 *)togroup   + offsetof(struct waygroup, step), sizeof(to_step));
+            for (step = from_step + 1; step <= to_step && arrlen >= 2; step++) {
+                struct waygroup *nextfromgroup;
+                struct waypoint *curgrouplastwp;
+                struct waypoint *nextgroupfirstwp;
+                s32 numwritten;
+                {
+                    void *neigh;
+                    memcpy(&neigh, (u8 *)curfromgroup + offsetof(struct waygroup, neighbours), sizeof(neigh));
+                    nextfromgroup = waygroupChooseNeighbour((s32 *)neigh, step, IGNORE_INWARDS);
+                }
 
-				arrlen -= numwritten;
-				arrptr += numwritten;
+                waypointFindSegmentIntoGroup(curfromgroup, nextfromgroup, &curgrouplastwp, &nextgroupfirstwp);
+                numwritten = waypointCollectLocal(curfrompoint, curgrouplastwp, arrptr, arrlen) - 1;
 
-				curfrompoint = nextgroupfirstwp;
-				curfromgroup = nextfromgroup;
-			}
+                arrlen -= numwritten;
+                arrptr += numwritten;
 
-			arrptr += waypointCollectLocal(curfrompoint, topoint, arrptr, arrlen) - 1;
-		}
-	}
+                curfrompoint = nextgroupfirstwp;
+                curfromgroup = nextfromgroup;
+            }
 
-	*arrptr = NULL;
-	arrptr++;
+            arrptr += waypointCollectLocal(curfrompoint, topoint, arrptr, arrlen) - 1;
+        }
+    }
 
-	return arrptr - arr;
+    *arrptr = NULL;
+    arrptr++;
+
+    return arrptr - arr;
 }
 
 void waypointResetAllSteps(void)
 {
-	struct waypoint *waypoint = g_StageSetup.waypoints;
-
-	while (waypoint->padnum >= 0) {
-		waypoint->step = -1;
-		waypoint++;
-	}
+struct waypoint *waypoint = g_StageSetup.waypoints;
+for (;;) {
+    s32 padnum;
+    memcpy(&padnum, (u8 *)waypoint + offsetof(struct waypoint, padnum), sizeof(padnum));
+    if (padnum < 0) break;
+    {
+        s32 neg1 = -1;
+        memcpy((u8 *)waypoint + offsetof(struct waypoint, step), &neg1, sizeof(neg1));
+    }
+    waypoint++;
+}
 }
 
 struct waypoint *waypointFindRandomAtStep(s32 *pointnums, s32 step)
@@ -693,22 +886,26 @@ struct waypoint *waypointFindRandomAtStep(s32 *pointnums, s32 step)
 	s32 randomindex;
 	s32 i;
 
-	while (pointnums[len] >= 0) {
-		len++;
-	}
+for (;;) {
+    s32 seg;
+    memcpy(&seg, pointnums + len, sizeof(seg));
+    if (seg < 0) break;
+    len++;
+}
 
 	randomindex = rngRandom() % len;
 
 	for (i = randomindex; i < len; i++) {
-		struct waypoint *point = &g_StageSetup.waypoints[WPSEG_GET_ID(pointnums[i])];
-
+		s32 seg; memcpy(&seg, pointnums + i, sizeof(seg));
+		struct waypoint *point = &g_StageSetup.waypoints[WPSEG_GET_ID(seg)];
 		if (point->step == step) {
 			return point;
 		}
 	}
 
 	for (i = 0; i < randomindex; i++) {
-		struct waypoint *point = &g_StageSetup.waypoints[WPSEG_GET_ID(pointnums[i])];
+		s32 seg; memcpy(&seg, pointnums + i, sizeof(seg));
+		struct waypoint *point = &g_StageSetup.waypoints[WPSEG_GET_ID(seg)];
 
 		if (point->step == step) {
 			return point;
@@ -724,14 +921,17 @@ struct waygroup *waygroupFindRandomAtStep(s32 *groupnums, s32 step)
 	s32 randomindex;
 	s32 i;
 
-	while (groupnums[len] >= 0) {
-		len++;
+	for (;;) {
+    s32 seg; memcpy(&seg, groupnums + len, sizeof(seg));
+    if (seg < 0) break;
+    len++;
 	}
 
 	randomindex = rngRandom() % len;
 
 	for (i = randomindex; i < len; i++) {
-		struct waygroup *group = &g_StageSetup.waygroups[WPSEG_GET_ID(groupnums[i])];
+		s32 seg; memcpy(&seg, groupnums + i, sizeof(seg));
+		struct waygroup *group = &g_StageSetup.waygroups[WPSEG_GET_ID(seg)];
 
 		if (group->step == step) {
 			return group;
@@ -739,7 +939,8 @@ struct waygroup *waygroupFindRandomAtStep(s32 *groupnums, s32 step)
 	}
 
 	for (i = 0; i < randomindex; i++) {
-		struct waygroup *group = &g_StageSetup.waygroups[WPSEG_GET_ID(groupnums[i])];
+		s32 seg; memcpy(&seg, groupnums + i, sizeof(seg));
+		struct waygroup *group = &g_StageSetup.waygroups[WPSEG_GET_ID(seg)];
 
 		if (group->step == step) {
 			return group;
@@ -755,8 +956,11 @@ struct waygroup *waygroupFindRandomAtStep(s32 *groupnums, s32 step)
 struct waypoint *navChooseRetreatPoint(struct waypoint *chrpoint, struct waypoint *tarpoint)
 {
 	if (g_StageSetup.waygroups) {
-		struct waygroup *chrgroup = &g_StageSetup.waygroups[chrpoint->groupnum];
-		struct waygroup *targroup = &g_StageSetup.waygroups[tarpoint->groupnum];
+		s32 chr_groupnum, tar_groupnum;
+		memcpy(&chr_groupnum, (u8 *)chrpoint + offsetof(struct waypoint, groupnum), sizeof(chr_groupnum));
+		memcpy(&tar_groupnum, (u8 *)tarpoint + offsetof(struct waypoint, groupnum), sizeof(tar_groupnum));
+		struct waygroup *chrgroup = &g_StageSetup.waygroups[chr_groupnum];
+		struct waygroup *targroup = &g_StageSetup.waygroups[tar_groupnum];
 		struct waypoint *result;
 		s32 stack;
 
@@ -774,7 +978,8 @@ struct waypoint *navChooseRetreatPoint(struct waypoint *chrpoint, struct waypoin
 			}
 
 			// Otherwise, choose a waypoint not between the two points
-			result = waypointFindRandomAtStep(chrpoint->neighbours, chrpoint->step + 1);
+			s32 chr_step; memcpy(&chr_step, (u8 *)chrpoint + offsetof(struct waypoint, step), sizeof(chr_step));
+			result = waypointFindRandomAtStep(chrpoint->neighbours, chr_step + 1);
 
 			if (result) {
 				return result;
@@ -782,7 +987,8 @@ struct waypoint *navChooseRetreatPoint(struct waypoint *chrpoint, struct waypoin
 		} else {
 			waygroupDiscoverSteps(targroup, chrgroup, g_StageSetup.waygroups, false, IGNORE_INWARDS);
 
-			if (chrgroup->step >= 0) {
+			s32 chrg_step; memcpy(&chrg_step, (u8 *)chrgroup + offsetof(struct waygroup, step), sizeof(chrg_step));
+			if (chrg_step >= 0) {
 				// Find a neighbouring group not in the route to target
 				struct waygroup *safetygroup = waygroupFindRandomAtStep(chrgroup->neighbours, -1);
 
@@ -807,7 +1013,8 @@ struct waypoint *navChooseRetreatPoint(struct waypoint *chrpoint, struct waypoin
 					// ie. The chr and target are at opposite ends of the level, and the level is mostly linear.
 
 					// Choose a group one step closer to the target
-					struct waygroup *safetygroup = waygroupChooseNeighbour(chrgroup->neighbours, chrgroup->step - 1, IGNORE_INWARDS);
+					s32 chrg_step2; memcpy(&chrg_step2, (u8 *)chrgroup + offsetof(struct waygroup, step), sizeof(chrg_step2));
+					struct waygroup *safetygroup = waygroupChooseNeighbour(chrgroup->neighbours, chrg_step2 - 1, IGNORE_INWARDS);
 
 					if (safetygroup) {
 						struct waypoint *segfrompoint;
@@ -817,7 +1024,10 @@ struct waypoint *navChooseRetreatPoint(struct waypoint *chrpoint, struct waypoin
 						waypointDiscoverSteps(segfrompoint, chrpoint, true, IGNORE_NONE);
 
 						// Return first waypoint towards safetygroup
-						result = waypointChooseNeighbour(chrpoint->neighbours, chrpoint->step + 1, chrpoint->groupnum, IGNORE_INWARDS);
+						s32 chr_step2, chr_groupnum2;
+						memcpy(&chr_step2, (u8 *)chrpoint + offsetof(struct waypoint, step), sizeof(chr_step2));
+						memcpy(&chr_groupnum2, (u8 *)chrpoint + offsetof(struct waypoint, groupnum), sizeof(chr_groupnum2));
+						result = waypointChooseNeighbour(chrpoint->neighbours, chr_step2 + 1, chr_groupnum2, IGNORE_INWARDS);
 
 						if (result) {
 							return result;

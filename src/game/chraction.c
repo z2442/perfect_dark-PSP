@@ -56,6 +56,8 @@
 #include "lib/vi.h"
 #include "data.h"
 #include "types.h"
+#include <stddef.h> 
+#include <string.h> 
 
 s32 g_RecentQuipsPlayed[5];
 u32 var8009cd84;
@@ -5392,7 +5394,12 @@ void chrGoPosGetCurWaypointInfoWithFlags(struct chrdata *chr, struct coord *pos,
 	struct pad pad;
 
 	if (waypoint) {
-		padUnpack(waypoint->padnum, PADFIELD_POS | PADFIELD_ROOM | PADFIELD_FLAGS, &pad);
+		{
+    s32 padnum_safe;
+    /* waypoint->padnum may be unaligned on PSP; memcpy avoids unaligned loads */
+    memcpy(&padnum_safe, (const u8 *)waypoint + offsetof(struct waypoint, padnum), sizeof(padnum_safe));
+    padUnpack(padnum_safe, PADFIELD_POS | PADFIELD_ROOM | PADFIELD_FLAGS, &pad);
+	}
 
 		pos->x = pad.pos.x;
 		pos->y = pad.pos.y;
@@ -12875,7 +12882,13 @@ void chrTickGoPos(struct chrdata *chr)
 		waypoint = chr->act_gopos.waypoints[chr->act_gopos.curindex];
 
 		if (waypoint) {
-			padUnpack(waypoint->padnum, PADFIELD_FLAGS | PADFIELD_POS, &pad);
+			{
+    		s32 padnum_safe;
+   			 memcpy(&padnum_safe,
+           (const u8 *)waypoint + offsetof(struct waypoint, padnum),
+           sizeof(padnum_safe));
+    		padUnpack(padnum_safe, PADFIELD_FLAGS | PADFIELD_POS, &pad);
+			}
 
 			arrivingxyz = posIsArrivingAtPos(&chr->prevpos, &prop->pos, &pad.pos, 30);
 			arrivingxz = posIsArrivingLaterallyAtPos(&chr->prevpos, &prop->pos, &pad.pos, 30);
@@ -12919,7 +12932,13 @@ void chrTickGoPos(struct chrdata *chr)
 			waypoint = chr->act_gopos.waypoints[chr->act_gopos.curindex];
 
 			if (waypoint) {
-				padUnpack(waypoint->padnum, PADFIELD_FLAGS, &pad);
+				{
+    			s32 padnum_safe;
+   				 memcpy(&padnum_safe,
+        		   (const u8 *)waypoint + offsetof(struct waypoint, padnum),
+           		sizeof(padnum_safe));
+   				 padUnpack(padnum_safe, PADFIELD_FLAGS, &pad);
+				}
 
 				if ((pad.flags & PADFLAG_AIWALKDIRECT) == 0) {
 					// The waypoint the chr is running to doesn't have
@@ -12930,7 +12949,13 @@ void chrTickGoPos(struct chrdata *chr)
 					waypoint = chr->act_gopos.waypoints[chr->act_gopos.curindex + 1];
 
 					if (waypoint) {
-						padUnpack(waypoint->padnum, PADFIELD_FLAGS, &pad);
+						{
+    					s32 padnum_safe;
+   						 memcpy(&padnum_safe,
+       			    (const u8 *)waypoint + offsetof(struct waypoint, padnum),
+         			  sizeof(padnum_safe));
+    					padUnpack(padnum_safe, PADFIELD_FLAGS, &pad);
+						}
 
 						if ((pad.flags & PADFLAG_AIWALKDIRECT) == 0) {
 							// And this one doesn't have PADFLAG_AIWALKDIRECT either,
@@ -12938,7 +12963,13 @@ void chrTickGoPos(struct chrdata *chr)
 							waypoint = chr->act_gopos.waypoints[chr->act_gopos.curindex + 2];
 
 							if (waypoint) {
-								padUnpack(waypoint->padnum, PADFIELD_ROOM | PADFIELD_POS, &pad);
+								{
+   								 s32 padnum_safe;
+   								 memcpy(&padnum_safe,
+     						      (const u8 *)waypoint + offsetof(struct waypoint, padnum),
+       							    sizeof(padnum_safe));
+   									 padUnpack(padnum_safe, PADFIELD_ROOM | PADFIELD_POS, &pad);
+								}
 
 								nextpos.x = pad.pos.x;
 								nextpos.y = pad.pos.y;
@@ -12970,12 +13001,24 @@ void chrTickGoPos(struct chrdata *chr)
 
 			if (waypoint) {
 				candosomething = (chr->act_gopos.flags & GOPOSFLAG_INIT) != 0;
-				padUnpack(waypoint->padnum, PADFIELD_FLAGS | PADFIELD_POS, &pad);
+
+				{
+   				 s32 padnum_safe;
+   				 memcpy(&padnum_safe,
+          		 (const u8 *)waypoint + offsetof(struct waypoint, padnum),
+          		 sizeof(padnum_safe));
+   				 padUnpack(padnum_safe, PADFIELD_FLAGS | PADFIELD_POS, &pad);
+				}
 
 				next = chr->act_gopos.waypoints[chr->act_gopos.curindex + 1];
 
 				if (next) {
-					padUnpack(next->padnum, PADFIELD_ROOM | PADFIELD_POS, &pad2);
+   				 /* avoid unaligned access of next->padnum */
+    			s32 padnum_next_safe;
+   				 memcpy(&padnum_next_safe,
+           (const u8 *)next + offsetof(struct waypoint, padnum),
+           sizeof(padnum_next_safe));
+   			 padUnpack(padnum_next_safe, PADFIELD_ROOM | PADFIELD_POS, &pad2);
 
 					if ((pad.flags & (PADFLAG_AIWAITLIFT | PADFLAG_AIONLIFT))
 							&& (pad2.flags & (PADFLAG_AIWAITLIFT | PADFLAG_AIONLIFT))) {
@@ -13034,7 +13077,12 @@ void chrTickGoPos(struct chrdata *chr)
 		waypoint = chr->act_gopos.waypoints[chr->act_gopos.curindex];
 
 		if (waypoint) {
-			padUnpack(waypoint->padnum, PADFIELD_POS, &pad);
+    		s32 padnum_safe;
+    		memcpy(&padnum_safe,
+           (const u8 *)waypoint + offsetof(struct waypoint, padnum),
+           sizeof(padnum_safe));
+   		 padUnpack(padnum_safe, PADFIELD_POS, &pad);
+
 
 			nextpos.x = pad.pos.x;
 			nextpos.y = pad.pos.y;
@@ -14595,7 +14643,13 @@ bool waypointIsWithin90DegreesOfPosAngle(struct waypoint *waypoint, struct coord
 	f32 diffangle;
 	struct pad pad;
 
-	padUnpack(waypoint->padnum, PADFIELD_POS, &pad);
+	{
+	    s32 padnum_safe;
+	    memcpy(&padnum_safe,
+	           (const u8 *)waypoint + offsetof(struct waypoint, padnum),
+	           sizeof(padnum_safe));
+	    padUnpack(padnum_safe, PADFIELD_POS, &pad);
+	}
 
 	diffangle = angle - atan2f(pad.pos.x - pos->x, pad.pos.z - pos->z);
 

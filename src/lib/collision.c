@@ -1,4 +1,5 @@
 #include <ultra64.h>
+#include <string.h>
 #include "constants.h"
 #include "game/prop.h"
 #include "game/game_1531a0.h"
@@ -899,28 +900,43 @@ bool cd00026a04(struct coord *pos, u8 *start, u8 *end, u16 geoflags, s32 room, s
 	bool result = false;
 	struct geo *geo = (struct geo *) start;
 
+	/* Load pos components safely in case 'pos' is unaligned on PSP */
+	float px, py, pz;
+	memcpy(&px, &pos->x, 4);
+	memcpy(&py, &pos->y, 4);
+	memcpy(&pz, &pos->z, 4);
+
 	if (room);
 
 	while (geo < (struct geo *) end) {
 		if (geo->type == GEOTYPE_TILE_I) {
 			struct geotilei *tile = (struct geotilei *) geo;
 
-			if ((geo->flags & geoflags)
-					&& pos->x >= *(s16 *)(tile->xmin + (uintptr_t)tile)
-					&& pos->x <= *(s16 *)(tile->xmax + (uintptr_t)tile)
-					&& pos->z >= *(s16 *)(tile->zmin + (uintptr_t)tile)
-					&& pos->z <= *(s16 *)(tile->zmax + (uintptr_t)tile)) {
-				if ((!ceiling && pos->y >= *(s16 *)(tile->ymin + (uintptr_t)tile))
-						|| (ceiling && pos->y <= *(s16 *)(tile->ymax + (uintptr_t)tile))) {
-					if (cdIs2dPointInIntTile(tile, pos->x, pos->z)) {
-						f32 ground = cdFindGroundInIntTile(tile, pos->x, pos->z);
+			if (geo->flags & geoflags) {
+				s16 xmin, xmax, zmin, zmax, ymin, ymax;
+				memcpy(&xmin, (u8 *)tile + tile->xmin, 2);
+				memcpy(&xmax, (u8 *)tile + tile->xmax, 2);
+				memcpy(&zmin, (u8 *)tile + tile->zmin, 2);
+				memcpy(&zmax, (u8 *)tile + tile->zmax, 2);
+				memcpy(&ymin, (u8 *)tile + tile->ymin, 2);
+				memcpy(&ymax, (u8 *)tile + tile->ymax, 2);
 
-						if ((!ceiling && ground <= pos->y && ground > *groundptr)
-								|| (ceiling && ground >= pos->y && ground < *groundptr)) {
-							*groundptr = ground;
-							*tileptr = geo;
-							*roomptr = room;
-							result = true;
+				if (px >= (f32)xmin
+						&& px <= (f32)xmax
+						&& pz >= (f32)zmin
+						&& pz <= (f32)zmax) {
+					if ((!ceiling && py >= (f32)ymin)
+							|| (ceiling && py <= (f32)ymax)) {
+						if (cdIs2dPointInIntTile(tile, px, pz)) {
+							f32 ground = cdFindGroundInIntTile(tile, px, pz);
+
+							if ((!ceiling && ground <= py && ground > *groundptr)
+									|| (ceiling && ground >= py && ground < *groundptr)) {
+								*groundptr = ground;
+								*tileptr = geo;
+								*roomptr = room;
+								result = true;
+							}
 						}
 					}
 				}
@@ -931,17 +947,17 @@ bool cd00026a04(struct coord *pos, u8 *start, u8 *end, u16 geoflags, s32 room, s
 			struct geotilef *tile = (struct geotilef *) geo;
 
 			if ((geo->flags & geoflags)
-					&& pos->x >= tile->vertices[tile->xmin].x
-					&& pos->x <= tile->vertices[tile->xmax].x
-					&& pos->z >= tile->vertices[tile->zmin].z
-					&& pos->z <= tile->vertices[tile->zmax].z) {
-				if ((!ceiling && pos->y >= tile->vertices[tile->ymin].y)
-						|| (ceiling && pos->y <= tile->vertices[tile->ymax].y)) {
-					if (cdIs2dPointInFltTile(tile, pos->x, pos->z)) {
-						f32 ground = cdFindGroundInFltTile(tile, pos->x, pos->z);
+					&& px >= tile->vertices[tile->xmin].x
+					&& px <= tile->vertices[tile->xmax].x
+					&& pz >= tile->vertices[tile->zmin].z
+					&& pz <= tile->vertices[tile->zmax].z) {
+				if ((!ceiling && py >= tile->vertices[tile->ymin].y)
+						|| (ceiling && py <= tile->vertices[tile->ymax].y)) {
+					if (cdIs2dPointInFltTile(tile, px, pz)) {
+						f32 ground = cdFindGroundInFltTile(tile, px, pz);
 
-						if ((!ceiling && pos->y >= ground && ground > *groundptr)
-								|| (ceiling && pos->y <= ground && ground < *groundptr)) {
+						if ((!ceiling && py >= ground && ground > *groundptr)
+								|| (ceiling && py <= ground && ground < *groundptr)) {
 							*groundptr = ground;
 							*tileptr = geo;
 							*roomptr = room;
