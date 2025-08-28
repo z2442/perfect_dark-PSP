@@ -5753,7 +5753,9 @@ void chrNavTickMagic(struct chrdata *chr, struct waydata *waydata, f32 speed, st
 					} else {
 						if (chr->act_gopos.curindex >= 2) {
 							waypoint = chr->act_gopos.waypoints[chr->act_gopos.curindex - 2];
-							padUnpack(waypoint->padnum, PADFIELD_POS, &pad);
+							s32 padnum_safe;
+							memcpy(&padnum_safe, (const u8 *)waypoint + offsetof(struct waypoint, padnum), sizeof(padnum_safe));
+							padUnpack(padnum_safe, PADFIELD_POS, &pad);
 							chrSetLookAngle(chr, atan2f(prop->pos.x - pad.pos.x, prop->pos.z - pad.pos.z));
 						}
 
