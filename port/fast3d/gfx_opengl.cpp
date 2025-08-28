@@ -198,20 +198,30 @@ static void gfx_opengl_upload_texture(const uint8_t* rgba32_buf, uint32_t width,
     static std::vector<uint16_t> rgba16;
     rgba16.resize(num_pixels);
 
-    for (size_t i = 0; i < num_pixels; ++i) {
-        const uint8_t r = rgba32_buf[i * 4 + 0];
-        const uint8_t g = rgba32_buf[i * 4 + 1];
-        const uint8_t b = rgba32_buf[i * 4 + 2];
-        const uint8_t a = rgba32_buf[i * 4 + 3];
+    const uint8_t* src = rgba32_buf;
+    uint16_t*       dst = rgba16.data();
 
-        /* Pack to 4‑bits each channel: RRRR GGGG BBBB AAAA */
-        rgba16[i] = static_cast<uint16_t>(((r >> 4) << 12) |
-                                          ((g >> 4) << 8)  |
-                                          ((b >> 4) << 4)  |
-                                          (a >> 4));
+    // Light unroll for better throughput on PSP's in-order core.
+    size_t i = 0;
+    const size_t n4 = num_pixels & ~static_cast<size_t>(3);
+    for (; i < n4; i += 4) {
+        uint8_t r0 = src[0], g0 = src[1], b0 = src[2], a0 = src[3];
+        uint8_t r1 = src[4], g1 = src[5], b1 = src[6], a1 = src[7];
+        uint8_t r2 = src[8], g2 = src[9], b2 = src[10], a2 = src[11];
+        uint8_t r3 = src[12],g3 = src[13],b3 = src[14],a3 = src[15];
+        src += 16;
+        dst[0] = static_cast<uint16_t>(((r0 >> 4) << 12) | ((g0 >> 4) << 8) | ((b0 >> 4) << 4) | (a0 >> 4));
+        dst[1] = static_cast<uint16_t>(((r1 >> 4) << 12) | ((g1 >> 4) << 8) | ((b1 >> 4) << 4) | (a1 >> 4));
+        dst[2] = static_cast<uint16_t>(((r2 >> 4) << 12) | ((g2 >> 4) << 8) | ((b2 >> 4) << 4) | (a2 >> 4));
+        dst[3] = static_cast<uint16_t>(((r3 >> 4) << 12) | ((g3 >> 4) << 8) | ((b3 >> 4) << 4) | (a3 >> 4));
+        dst += 4;
+    }
+    for (; i < num_pixels; ++i) {
+        uint8_t r = src[0], g = src[1], b = src[2], a = src[3];
+        src += 4;
+        *dst++ = static_cast<uint16_t>(((r >> 4) << 12) | ((g >> 4) << 8) | ((b >> 4) << 4) | (a >> 4));
     }
 
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);  /* allow arbitrary row‑length */
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,          /* internalformat */
                  width, height, 0,
                  GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4, /* format/type */
