@@ -5,6 +5,9 @@
 #include "lib/dma.h"
 #include "data.h"
 #include "types.h"
+#ifndef PLATFORM_N64
+#include "romdata.h"
+#endif
 
 volatile u32 g_DmaNumSlotsBusy;
 u32 var80094ae4;
@@ -75,7 +78,19 @@ void dmaStart(void *memaddr, romptr_t romaddr, u32 len, bool priority)
 		osPiStartDma(&g_DmaIoMsgs[i], priority, 0, romaddr, memaddr, remainder, &g_DmaMesgQueue);
 	}
 #else // PLATFORM_N64
-	bcopy((const void *)romaddr, memaddr, len);
+	// On non-N64 builds, support streaming from ROM file offsets encoded in romaddr
+    if (ROMPTR_IS_FILE(romaddr)) {
+        u32 off = ROMPTR_TO_OFFSET(romaddr);
+        s32 n = romdataReadFromRom(off, memaddr, len);
+        if (n < 0 || (u32)n < len) {
+            // If short read, zero-fill the remainder to avoid using uninitialized data
+            if (n > 0 && (u32)n < len) {
+                bzero((u8*)memaddr + n, len - (u32)n);
+            }
+        }
+	} else {
+		bcopy((const void *)romaddr, memaddr, len);
+	}
 #endif // PLATFORM_N64
 }
 

@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <stdio.h>
+#include "romdata.h"
 #include <stdarg.h>
 #include <stdint.h>
 #include <string.h>
@@ -436,8 +437,21 @@ void osInvalDCache(void *a, s32 b)
 
 s32 osPiStartDma(OSIoMesg *mb, s32 priority, s32 direction, uintptr_t devAddr, void *vAddr, u32 nbytes, OSMesgQueue *mq)
 {
-	memcpy(vAddr, (const void *)devAddr, nbytes);
-	return 0;
+#ifndef PLATFORM_N64
+    // Support streamed ROM addresses encoded as tagged pointers
+    if (ROMPTR_IS_FILE(devAddr)) {
+        u32 off = ROMPTR_TO_OFFSET(devAddr);
+        s32 n = romdataReadFromRom(off, vAddr, nbytes);
+        if (n < 0 || (u32)n < nbytes) {
+            if (n > 0 && (u32)n < nbytes) {
+                memset((u8*)vAddr + n, 0, nbytes - (u32)n);
+            }
+        }
+        return 0;
+    }
+#endif
+    memcpy(vAddr, (const void *)devAddr, nbytes);
+    return 0;
 }
 
 s32 osPiReadIo(u32 devaddr, u32 *data)

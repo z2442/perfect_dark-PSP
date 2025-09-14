@@ -54,7 +54,7 @@ PSP_MAIN_THREAD_STACK_SIZE_KB(256); // Increase stack size if needed (default is
 
 
 u32 g_OsMemSize = 0;
-s32 g_OsMemSizeMb = 12;
+s32 g_OsMemSizeMb = 9;
 u8 g_Is4Mb = 1;
 s8 g_Resetting = false;
 OSSched g_Sched;
@@ -124,6 +124,7 @@ static void cleanup(void)
 	inputSaveBinds();
 	configSave(CONFIG_PATH);
 	videoShutdown();
+	romdataShutdown();
 	crashShutdown();
 	// TODO: actually shut down all subsystems
 }

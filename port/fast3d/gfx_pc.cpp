@@ -1,7 +1,28 @@
+#include <cstdint>
+#include <cstdint>
+extern "C" volatile uint8_t g_force_two_pass; // controlled per-combiner
+extern "C" volatile uint8_t g_two_pass_mode; // 0=off, 1=decal, 2=modulate, 3=additive, 4=additive-alpha, 5=replace
+extern "C" volatile float g_tex_s_scale[2];
+extern "C" volatile float g_tex_t_scale[2];
+extern "C" volatile float g_tex_s_offset[2];
+extern "C" volatile float g_tex_t_offset[2];
+// GLES 1.1 controls consumed in the backend
+extern "C" volatile uint8_t g_es1_alpha_test_enable;
+extern "C" volatile float   g_es1_alpha_test_ref;
+extern "C" volatile uint8_t g_es1_highp_alpha;
+extern "C" volatile uint8_t g_es1_tex0_in_rgb;
+extern "C" volatile uint8_t g_es1_front_face_cw;
+extern "C" volatile uint8_t g_es1_force_2d;
+extern "C" volatile uint8_t g_es1_base_modulate;
+extern "C" volatile uint8_t g_es1_base_color_mode; // 0=none,1=shade,2=prim,3=env
+extern "C" volatile uint8_t g_es1_prim_rgba[4];
+extern "C" volatile uint8_t g_es1_env_rgba[4];
+// Hint which textures are actually used this draw
+extern "C" volatile uint8_t g_es1_use_tex0;
+extern "C" volatile uint8_t g_es1_use_tex1;
 #define NOMINMAX
 
 #include <cmath>
-#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <cassert>
@@ -95,6 +116,15 @@ struct ColorCombiner {
     bool used_textures[2];
     struct ShaderProgram* prg[16];
     uint8_t shader_input_mapping[2][7];
+    // Hints for two-pass selection
+    bool tex0_in_rgb;
+    bool tex1_in_rgb;
+    bool tex1a_in_rgb;   // TEXEL1 alpha used in RGB combine
+    bool tex1a_in_alpha; // TEXEL1 alpha feeds alpha combine
+    // Hint for base texenv selection (GLES 1.1)
+    bool shade_in_rgb;
+    bool prim_in_rgb;
+    bool env_in_rgb;
 };
 
 static std::map<ColorCombinerKey, struct ColorCombiner> color_combiner_pool;
@@ -117,6 +147,9 @@ static struct RSP {
     float current_lookat_coeffs[2][3]; // lookat_x, lookat_y
     uint8_t current_num_lights;        // includes ambient light
     bool lights_changed;
+    // Normal (inverse-transpose) matrix for transforming normals / lookat
+    float normal_matrix[3][3];
+    bool normal_matrix_valid;
 
     uint32_t geometry_mode;
     int16_t fog_mul, fog_offset;
@@ -240,9 +273,14 @@ volatile uint8_t g_es1_cull_mode = 1;
 
 static bool dropped_frame;
 
-static float buf_vbo[MAX_BUFFERED * (9 * 3)];  // 3 verts × 9 floats/vert
+static float buf_vbo[MAX_BUFFERED * (9 * 3)];  // 3 verts × 9 floats/vert (x,y,z,u,v,r,g,b,a)
 static size_t buf_vbo_len;
 static size_t buf_vbo_num_tris;
+
+// Track the current open batch's color combiner key to know when to flush
+static bool s_batch_has_cc = false;
+static uint64_t s_batch_cc_mode = 0;
+static uint32_t s_batch_cc_opts = 0;
 
 static struct GfxWindowManagerAPI* gfx_wapi;
 static struct GfxRenderingAPI* gfx_rapi;
@@ -269,6 +307,8 @@ static void gfx_flush(void) {
         buf_vbo_len = 0;
         buf_vbo_num_tris = 0;
     }
+    // Reset batch state tracking so next triangles can start a fresh batch
+    s_batch_has_cc = false;
 }
 
 static struct ShaderProgram* gfx_lookup_or_create_shader_program(uint64_t shader_id0, uint32_t shader_id1) {
@@ -330,6 +370,7 @@ static void gfx_generate_cc(struct ColorCombiner* comb, const ColorCombinerKey& 
     uint32_t shader_id1 = key.options;
     uint8_t shader_input_mapping[2][7] = { { 0 } };
     bool used_textures[2] = { false, false };
+    bool tex0_in_rgb = false, tex1_in_rgb = false, tex1a_in_rgb = false, tex1a_in_alpha = false;
     for (int i = 0; i < 2 && (i == 0 || is_2cyc); i++) {
         uint32_t rgb_a = (key.combine_mode >> (i * 28)) & 0xf;
         uint32_t rgb_b = (key.combine_mode >> (i * 28 + 4)) & 0xf;
@@ -410,10 +451,12 @@ static void gfx_generate_cc(struct ColorCombiner* comb, const ColorCombinerKey& 
                     case G_CCMUX_TEXEL0:
                         val = SHADER_TEXEL0;
                         used_textures[0] = true;
+                        tex0_in_rgb = true;
                         break;
                     case G_CCMUX_TEXEL1:
                         val = SHADER_TEXEL1;
                         used_textures[1] = true;
+                        tex1_in_rgb = true;
                         break;
                     case G_CCMUX_TEXEL0_ALPHA:
                         val = SHADER_TEXEL0A;
@@ -422,24 +465,28 @@ static void gfx_generate_cc(struct ColorCombiner* comb, const ColorCombinerKey& 
                     case G_CCMUX_TEXEL1_ALPHA:
                         val = SHADER_TEXEL1A;
                         used_textures[1] = true;
+                        tex1a_in_rgb = true;
                         break;
                     case G_CCMUX_NOISE:
                         val = SHADER_NOISE;
                         break;
                     case G_CCMUX_PRIMITIVE:
-                    case G_CCMUX_PRIMITIVE_ALPHA:
-                    case G_CCMUX_PRIM_LOD_FRAC:
+                        comb->prim_in_rgb = true;
+                        case G_CCMUX_PRIMITIVE_ALPHA:
+                        case G_CCMUX_PRIM_LOD_FRAC:
                     case G_CCMUX_SHADE:
-                    case G_CCMUX_SHADE_ALPHA:
+                        comb->shade_in_rgb = true;
+                        case G_CCMUX_SHADE_ALPHA:
                     case G_CCMUX_ENVIRONMENT:
-                    case G_CCMUX_ENV_ALPHA:
-                    case G_CCMUX_LOD_FRACTION:
-                        if (input_number[c[i][0][j]] == 0) {
-                            shader_input_mapping[0][next_input_number - 1] = c[i][0][j];
-                            input_number[c[i][0][j]] = next_input_number++;
-                        }
-                        val = input_number[c[i][0][j]];
-                        break;
+                        comb->env_in_rgb = true;
+                        case G_CCMUX_ENV_ALPHA:
+                        case G_CCMUX_LOD_FRACTION:
+                            if (input_number[c[i][0][j]] == 0) {
+                                shader_input_mapping[0][next_input_number - 1] = c[i][0][j];
+                                input_number[c[i][0][j]] = next_input_number++;
+                            }
+                            val = input_number[c[i][0][j]];
+                            break;
                     case G_CCMUX_COMBINED:
                         val = SHADER_COMBINED;
                         break;
@@ -468,6 +515,7 @@ static void gfx_generate_cc(struct ColorCombiner* comb, const ColorCombinerKey& 
                     case G_ACMUX_TEXEL1:
                         val = SHADER_TEXEL1;
                         used_textures[1] = true;
+                        tex1a_in_alpha = true;
                         break;
                     case G_ACMUX_LOD_FRACTION:
                         // case G_ACMUX_COMBINED: same numerical value
@@ -504,6 +552,24 @@ static void gfx_generate_cc(struct ColorCombiner* comb, const ColorCombinerKey& 
     comb->used_textures[1] = used_textures[1];
     // comb->prg = gfx_lookup_or_create_shader_program(shader_id0, shader_id1);
     memcpy(comb->shader_input_mapping, shader_input_mapping, sizeof(shader_input_mapping));
+    // Store two-pass and texenv hints
+    comb->tex0_in_rgb = tex0_in_rgb;
+    comb->tex1_in_rgb = tex1_in_rgb;
+    comb->tex1a_in_rgb = tex1a_in_rgb;
+    comb->tex1a_in_alpha = tex1a_in_alpha;
+    // Derive coarse hints from RGB inputs in either cycle
+    bool shade_in_rgb = false, prim_in_rgb = false, env_in_rgb = false;
+    for (int cyc = 0; cyc < (is_2cyc ? 2 : 1); ++cyc) {
+        for (int j = 0; j < 4; ++j) {
+            const uint8_t item = c[cyc][0][j];
+            if (item == G_CCMUX_SHADE || item == G_CCMUX_SHADE_ALPHA) shade_in_rgb = true;
+            if (item == G_CCMUX_PRIMITIVE || item == G_CCMUX_PRIMITIVE_ALPHA) prim_in_rgb = true;
+            if (item == G_CCMUX_ENVIRONMENT || item == G_CCMUX_ENV_ALPHA) env_in_rgb = true;
+        }
+    }
+    comb->shade_in_rgb = shade_in_rgb;
+    comb->prim_in_rgb  = prim_in_rgb;
+    comb->env_in_rgb   = env_in_rgb;
 }
 
 
@@ -579,17 +645,44 @@ static const uint8_t* mirror_texture_rgba32(const uint8_t* src,
 }
 
 static struct ColorCombiner* gfx_lookup_or_create_color_combiner(const ColorCombinerKey& key) {
+    // Try fast-path: same key as previous
     if (prev_combiner != color_combiner_pool.end() && prev_combiner->first == key) {
+        const ColorCombiner &cc = prev_combiner->second;
+        // Update two-pass flags every time according to this combiner
+        uint8_t mode = 0;
+        if (cc.used_textures[0] && cc.used_textures[1]) {
+            if (cc.tex0_in_rgb && cc.tex1_in_rgb && !cc.tex1a_in_rgb) mode = 2;            // MODULATE
+            else if (cc.tex1_in_rgb && (cc.tex1a_in_alpha || cc.tex1a_in_rgb) && !cc.tex0_in_rgb) mode = 4; // ADDITIVE-ALPHA
+            else if (cc.tex1a_in_alpha || cc.tex1a_in_rgb) mode = 1;                          // DECAL
+            else if (cc.tex1_in_rgb && !cc.tex0_in_rgb) mode = 5;                              // REPLACE
+            else mode = 3;                                                                     // ADDITIVE
+        }
+        g_two_pass_mode = mode;
+        g_force_two_pass =  0;
         return &prev_combiner->second;
     }
 
+    // Look up in pool
     prev_combiner = color_combiner_pool.find(key);
-    if (prev_combiner != color_combiner_pool.end()) {
-        return &prev_combiner->second;
+    if (prev_combiner == color_combiner_pool.end()) {
+        // Create new combiner
+        gfx_flush();
+        prev_combiner = color_combiner_pool.insert(std::make_pair(key, ColorCombiner())).first;
+        gfx_generate_cc(&prev_combiner->second, key);
     }
-    gfx_flush();
-    prev_combiner = color_combiner_pool.insert(std::make_pair(key, ColorCombiner())).first;
-    gfx_generate_cc(&prev_combiner->second, key);
+
+    // Compute and publish two-pass decision based on this combiner's usage hints
+    const ColorCombiner &cc = prev_combiner->second;
+    uint8_t mode = 0;
+    if (cc.used_textures[0] && cc.used_textures[1]) {
+        if (cc.tex0_in_rgb && cc.tex1_in_rgb && !cc.tex1a_in_rgb) mode = 2;            // MODULATE
+        else if (cc.tex1_in_rgb && (cc.tex1a_in_alpha || cc.tex1a_in_rgb) && !cc.tex0_in_rgb) mode = 4; // ADDITIVE-ALPHA
+        else if (cc.tex1a_in_alpha || cc.tex1a_in_rgb) mode = 1;                          // DECAL
+        else if (cc.tex1_in_rgb && !cc.tex0_in_rgb) mode = 5;                              // REPLACE
+        else mode = 3;                                                                     // ADDITIVE
+    }
+    g_two_pass_mode = mode;
+    g_force_two_pass =  0;
     return &prev_combiner->second;
 }
 
@@ -645,6 +738,30 @@ static bool gfx_texture_cache_lookup(int i, const TextureCacheKey& key) {
     return false;
 }
 
+// --- Tile transform publisher for OpenGL texture matrix (file-scope) ---
+static inline void publish_tile_transform(int unit, int tile, uint32_t pot_w, uint32_t pot_h) {
+    const auto &ti = rdp.texture_tile[tile];
+    const float uls = ti.uls * 0.25f; // U10.2 -> texels
+    const float ult = ti.ult * 0.25f;
+    const float lrs = ti.lrs * 0.25f;
+    const float lrt = ti.lrt * 0.25f;
+    const float w_texels = fmaxf(1.0f, (lrs - uls));
+    const float h_texels = fmaxf(1.0f, (lrt - ult));
+    // If MIRROR is requested, we've expanded the POT texture to 2x in that axis.
+    // Compensate by doubling the texture-matrix scale so a single 0..1 span covers
+    // the full (original+mirrored) pattern.
+    const bool mirror_s = (ti.cms & G_TX_MIRROR) != 0;
+    const bool mirror_t = (ti.cmt & G_TX_MIRROR) != 0;
+    float s_scale = w_texels / (float)pot_w;
+    float t_scale = h_texels / (float)pot_h;
+    if (mirror_s) s_scale *= 2.0f;
+    if (mirror_t) t_scale *= 2.0f;
+    g_tex_s_scale[unit]  = s_scale;
+    g_tex_t_scale[unit]  = t_scale;
+    g_tex_s_offset[unit] = uls / (float)pot_w;
+    g_tex_t_offset[unit] = ult / (float)pot_h;
+}
+
 void gfx_texture_cache_delete(const uint8_t* orig_addr) {
     gfx_flush();
 
@@ -696,6 +813,7 @@ static void import_texture_rgba16(int unit, int tile, const LoadedTexture& loade
         dest[1] = SCALE_5_8(g);
         dest[2] = SCALE_5_8(b);
         dest[3] = a ? 255 : 0;
+        if (!a) { dest[0] = dest[1] = dest[2] = 0; }
     }
 
     const uint32_t width = rdp.texture_tile[tile].line_size_bytes / 2;
@@ -719,6 +837,7 @@ static void import_texture_rgba16(int unit, int tile, const LoadedTexture& loade
         pot_w, pot_h);      /* may double w/h */
 
     src = src_mirrored;
+    publish_tile_transform(unit, tile, pot_w, pot_h);
     gfx_rapi->upload_texture(src, pot_w, pot_h);
     if (rendering_state.textures[unit]) {
         rendering_state.textures[unit]->second.pot_w = pot_w;
@@ -738,7 +857,11 @@ static void import_texture_rgba32(int unit, int tile, const LoadedTexture& loade
     uint32_t *dest = (uint32_t *)tex_upload_buffer;
     const uint32_t *src = (const uint32_t *)addr;
     for (uint32_t i = 0; i < size_bytes; i += 4, ++dest, ++src) {
-        *dest = PD_BE32(*src);
+        uint32_t v = PD_BE32(*src);   // 0xRRGGBBAA in host order
+        if ((v & 0xFF) == 0) {
+            v &= 0x000000FF;          // keep A, zero RGB
+        }
+        *dest = v;
     }
 
     const uint32_t width = rdp.texture_tile[tile].line_size_bytes / 2;
@@ -760,6 +883,7 @@ static void import_texture_rgba32(int unit, int tile, const LoadedTexture& loade
         mirror_buf,
         pot_w, pot_h);
     src8 = src_mirrored;
+    publish_tile_transform(unit, tile, pot_w, pot_h);
     gfx_rapi->upload_texture(src8, pot_w, pot_h);
     if (rendering_state.textures[unit]) {
         rendering_state.textures[unit]->second.pot_w = pot_w;
@@ -787,6 +911,7 @@ static void import_texture_ia4(int unit, int tile, const LoadedTexture& loaded_t
         dest[1] = c;
         dest[2] = c;
         dest[3] = alpha ? 255 : 0;
+        if (!alpha) { dest[0] = dest[1] = dest[2] = 0; }
     }
 
     const uint32_t width = rdp.texture_tile[tile].line_size_bytes * 2;
@@ -809,6 +934,7 @@ static void import_texture_ia4(int unit, int tile, const LoadedTexture& loaded_t
         mirror_buf,
         pot_w, pot_h);
     src = src_mirrored;
+    publish_tile_transform(unit, tile, pot_w, pot_h);
     gfx_rapi->upload_texture(src, pot_w, pot_h);
     if (rendering_state.textures[unit]) {
         rendering_state.textures[unit]->second.pot_w = pot_w;
@@ -833,6 +959,7 @@ static void import_texture_ia8(int unit, int tile, const LoadedTexture& loaded_t
         dest[1] = intensity;
         dest[2] = intensity;
         dest[3] = alpha;
+        if (alpha == 0) { dest[0] = dest[1] = dest[2] = 0; }
     }
 
     const uint32_t width = rdp.texture_tile[tile].line_size_bytes;
@@ -855,6 +982,7 @@ static void import_texture_ia8(int unit, int tile, const LoadedTexture& loaded_t
         mirror_buf,
         pot_w, pot_h);
     src = src_mirrored;
+    publish_tile_transform(unit, tile, pot_w, pot_h);
     gfx_rapi->upload_texture(src, pot_w, pot_h);
     if (rendering_state.textures[unit]) {
         rendering_state.textures[unit]->second.pot_w = pot_w;
@@ -879,6 +1007,7 @@ static void import_texture_ia16(int unit, int tile, const LoadedTexture& loaded_
         dest[1] = intensity;
         dest[2] = intensity;
         dest[3] = alpha;
+        if (alpha == 0) { dest[0] = dest[1] = dest[2] = 0; }
     }
 
     const uint32_t width = rdp.texture_tile[tile].line_size_bytes / 2;
@@ -901,6 +1030,7 @@ static void import_texture_ia16(int unit, int tile, const LoadedTexture& loaded_
         mirror_buf,
         pot_w, pot_h);
     src = src_mirrored;
+    publish_tile_transform(unit, tile, pot_w, pot_h);
     gfx_rapi->upload_texture(src, pot_w, pot_h);
     if (rendering_state.textures[unit]) {
         rendering_state.textures[unit]->second.pot_w = pot_w;
@@ -948,6 +1078,7 @@ static void import_texture_i4(int unit, int tile, const LoadedTexture& loaded_te
         mirror_buf,
         pot_w, pot_h);
     src = src_mirrored;
+    publish_tile_transform(unit, tile, pot_w, pot_h);
     gfx_rapi->upload_texture(src, pot_w, pot_h);
     if (rendering_state.textures[unit]) {
         rendering_state.textures[unit]->second.pot_w = pot_w;
@@ -993,6 +1124,7 @@ static void import_texture_i8(int unit, int tile, const LoadedTexture& loaded_te
         mirror_buf,
         pot_w, pot_h);
     src = src_mirrored;
+    publish_tile_transform(unit, tile, pot_w, pot_h);
     gfx_rapi->upload_texture(src, pot_w, pot_h);
     if (rendering_state.textures[unit]) {
         rendering_state.textures[unit]->second.pot_w = pot_w;
@@ -1014,10 +1146,15 @@ static inline void palette_to_rgba32(const uint16_t palentry, uint8_t *rgba32_bu
         const uint8_t r = palentry >> 11;
         const uint8_t g = (palentry >> 6) & 0x1f;
         const uint8_t b = (palentry >> 1) & 0x1f;
-        rgba32_buf[0] = SCALE_5_8(r);
-        rgba32_buf[1] = SCALE_5_8(g);
-        rgba32_buf[2] = SCALE_5_8(b);
-        rgba32_buf[3] = a ? 255 : 0;
+        if (a) {
+            rgba32_buf[0] = SCALE_5_8(r);
+            rgba32_buf[1] = SCALE_5_8(g);
+            rgba32_buf[2] = SCALE_5_8(b);
+            rgba32_buf[3] = 255;
+        } else {
+            rgba32_buf[0] = rgba32_buf[1] = rgba32_buf[2] = 0;
+            rgba32_buf[3] = 0;
+        }
     }
 }
 
@@ -1064,6 +1201,7 @@ static void import_texture_ci4(int unit, int tile, const LoadedTexture& loaded_t
         mirror_buf,
         pot_w, pot_h);
     src = src_mirrored;
+    publish_tile_transform(unit, tile, pot_w, pot_h);
     gfx_rapi->upload_texture(src, pot_w, pot_h);
     if (rendering_state.textures[unit]) {
         rendering_state.textures[unit]->second.pot_w = pot_w;
@@ -1111,6 +1249,7 @@ static void import_texture_ci8(int unit, int tile, const LoadedTexture& loaded_t
         mirror_buf,
         pot_w, pot_h);
     src = src_mirrored;
+    publish_tile_transform(unit, tile, pot_w, pot_h);
     gfx_rapi->upload_texture(src, pot_w, pot_h);
     if (rendering_state.textures[unit]) {
         rendering_state.textures[unit]->second.pot_w = pot_w;
@@ -1154,12 +1293,12 @@ static void import_texture(int i, int tile, bool importReplacement) {
     if (fmt == G_IM_FMT_CI) {
         key = TextureCacheKey{ orig_addr, { rdp.palette_addrs[0], rdp.palette_addrs[1] }, fmt, siz, palette_index,
             tileinfo.uls, tileinfo.ult, tileinfo.lrs, tileinfo.lrt,
-            tileinfo.cms, tileinfo.cmt, pot_w, pot_h };
+            tileinfo.cms, tileinfo.cmt, pot_w, pot_h, g_es1_highp_alpha };
     } else {
         // For non-CI formats, palette_index is not meaningful, set to 0 to avoid cache collisions.
         key = TextureCacheKey{ orig_addr, { nullptr, nullptr }, fmt, siz, 0,
             tileinfo.uls, tileinfo.ult, tileinfo.lrs, tileinfo.lrt,
-            tileinfo.cms, tileinfo.cmt, pot_w, pot_h };
+            tileinfo.cms, tileinfo.cmt, pot_w, pot_h, g_es1_highp_alpha };
     }
     if (gfx_texture_cache_lookup(i, key)) {
         return;
@@ -1211,6 +1350,34 @@ static void gfx_normalize_vector(float v[3]) {
     v[2] /= s;
 }
 
+static inline void compute_normal_matrix_from_modelview(const float M[4][4]) {
+    // Build inverse-transpose of the upper-left 3x3 of M
+    const float m00 = M[0][0], m01 = M[0][1], m02 = M[0][2];
+    const float m10 = M[1][0], m11 = M[1][1], m12 = M[1][2];
+    const float m20 = M[2][0], m21 = M[2][1], m22 = M[2][2];
+
+    const float c00 =  (m11 * m22 - m12 * m21);
+    const float c01 = -(m10 * m22 - m12 * m20);
+    const float c02 =  (m10 * m21 - m11 * m20);
+    const float c10 = -(m01 * m22 - m02 * m21);
+    const float c11 =  (m00 * m22 - m02 * m20);
+    const float c12 = -(m00 * m21 - m01 * m20);
+    const float c20 =  (m01 * m12 - m02 * m11);
+    const float c21 = -(m00 * m12 - m02 * m10);
+    const float c22 =  (m00 * m11 - m01 * m10);
+
+    const float det = m00 * c00 + m01 * c01 + m02 * c02;
+    float invdet = 0.0f;
+    if (fabsf(det) > 1e-8f) invdet = 1.0f / det; else invdet = 0.0f;
+
+    // inverse = (1/det) * adjugate; normal matrix = inverse^T
+    rsp.normal_matrix[0][0] = c00 * invdet; rsp.normal_matrix[0][1] = c10 * invdet; rsp.normal_matrix[0][2] = c20 * invdet;
+    rsp.normal_matrix[1][0] = c01 * invdet; rsp.normal_matrix[1][1] = c11 * invdet; rsp.normal_matrix[1][2] = c21 * invdet;
+    rsp.normal_matrix[2][0] = c02 * invdet; rsp.normal_matrix[2][1] = c12 * invdet; rsp.normal_matrix[2][2] = c22 * invdet;
+
+    rsp.normal_matrix_valid = (invdet != 0.0f);
+}
+
 static void gfx_transposed_matrix_mul(float res[3], const float a[3], const float b[4][4]) {
     res[0] = a[0] * b[0][0] + a[1] * b[0][1] + a[2] * b[0][2];
     res[1] = a[0] * b[1][0] + a[1] * b[1][1] + a[2] * b[1][2];
@@ -1219,14 +1386,12 @@ static void gfx_transposed_matrix_mul(float res[3], const float a[3], const floa
 
 static void calculate_normal_dir(const Light_t* light, float coeffs[3]) {
     const float light_dir[3] = { light->dir[0] / 127.f, light->dir[1] / 127.f, light->dir[2] / 127.f };
-
     gfx_transposed_matrix_mul(coeffs, light_dir, rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1]);
     gfx_normalize_vector(coeffs);
 }
 
 static void calculate_normal_dir(const struct NormalColor *vcn, float coeffs[3]) {
     const float light_dir[3] = { vcn->x / 127.f, vcn->y / 127.f, vcn->z / 127.f };
-
     gfx_transposed_matrix_mul(coeffs, light_dir, rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1]);
     gfx_normalize_vector(coeffs);
 }
@@ -1242,12 +1407,10 @@ static void gfx_matrix_mul(float res[4][4], const float a[4][4], const float b[4
 }
 
 static float mat3_det_mv(const float M[4][4]) {
-    // Treat M as column-major (matching how we load into GL without transposing).
-    // Columns are the transformed basis vectors in eye space.
+    // Treat M as column-major (matching how we load into GL without transposing)
     const float c0x = M[0][0], c0y = M[1][0], c0z = M[2][0];
     const float c1x = M[0][1], c1y = M[1][1], c1z = M[2][1];
     const float c2x = M[0][2], c2y = M[1][2], c2z = M[2][2];
-    // det = dot(c0, cross(c1, c2))
     const float cx = c1y * c2z - c1z * c2y;
     const float cy = c1z * c2x - c1x * c2z;
     const float cz = c1x * c2y - c1y * c2x;
@@ -1282,6 +1445,7 @@ static void gfx_sp_matrix(uint8_t parameters, const int32_t* addr) {
         if (parameters & G_MTX_LOAD) {
             memcpy(rsp.P_matrix, matrix, sizeof(matrix));
         } else {
+            // Match desktop path: P = M * P
             gfx_matrix_mul(rsp.P_matrix, matrix, rsp.P_matrix);
         }
     } else { // G_MTX_MODELVIEW
@@ -1293,10 +1457,12 @@ static void gfx_sp_matrix(uint8_t parameters, const int32_t* addr) {
         if (parameters & G_MTX_LOAD) {
             memcpy(rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], matrix, sizeof(matrix));
         } else {
+            // Match desktop path: M = M_new * M_old
             gfx_matrix_mul(rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], matrix,
                            rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1]);
         }
         rsp.lights_changed = 1;
+        rsp.normal_matrix_valid = false;
     }
     gfx_matrix_mul(rsp.MP_matrix, rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], rsp.P_matrix);
 
@@ -1319,6 +1485,8 @@ static void gfx_sp_pop_matrix(uint32_t count) {
                 memcpy(g_es1_P, rsp.P_matrix, sizeof(rsp.P_matrix));
                 memcpy(g_es1_M, rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], sizeof(rsp.P_matrix));
                 g_es1_matrix_dirty = 1;
+                rsp.lights_changed = 1;
+                rsp.normal_matrix_valid = false;
             }
         }
     }
@@ -1350,10 +1518,10 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* verti
         const Vtx* v = &vertices[i];
         struct LoadedVertex* d = &rsp.loaded_vertices[dest_index];
 
+        // Store object-space position; GL fixed pipeline will apply M and P
         float x = (float)v->v[0];
         float y = (float)v->v[1];
         float z = (float)v->v[2];
-        // Homogeneous w stays 1.0 in object space; GL will produce clip w.
         float w = 1.0f;
 
         short U = v->s * rsp.texture_scaling_factor.s >> 16;
@@ -1440,9 +1608,10 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* verti
         d->u = U;
         d->v = V;
 
-        // Let GLES handle clipping
+        // Let GL handle clipping
         d->clip_rej = 0;
 
+        // Store object-space position; GL fixed pipeline will transform
         d->x = x;
         d->y = y;
         d->z = z;
@@ -1454,7 +1623,7 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* verti
                 w = 0.001f;
             }
 
-            float winv = 1.0f / w;
+            float winv = (fabsf(w) < 0.001f) ? (1.0f / 0.001f) : (1.0f / w);
             if (winv < 0.0f) {
                 winv = std::numeric_limits<int16_t>::max();
             }
@@ -1516,6 +1685,10 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
     else if (!want_cull_back && want_cull_front) new_cull = 2;    // front only
     else if (!want_cull_back && !want_cull_front) new_cull = 0;   // no culling
     else /* both set */ new_cull = 1; // prefer back; matches most microcode uses
+    // Honor extra-geometry invert culling flag if set by microcode
+    if (rsp.extra_geometry_mode & G_INVERT_CULLING_EXT) {
+        if (new_cull == 1) new_cull = 2; else if (new_cull == 2) new_cull = 1;
+    }
     if (new_cull != g_es1_cull_mode) {
         gfx_flush();
         g_es1_cull_mode = new_cull;
@@ -1570,6 +1743,16 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
         use_alpha = true;
     }
 
+    // Publish alpha-test intent for GLES 1.1 backend (text edges, threshold compare)
+    {
+        const bool want_alpha_test = texture_edge || alpha_threshold;
+        g_es1_alpha_test_enable = want_alpha_test ? 1 : 0;
+        // Use a mid threshold for crisp binary fonts; refine later if needed
+        g_es1_alpha_test_ref = want_alpha_test ? 0.5f : 0.0f;
+        // Request high-precision alpha uploads only when needed (fonts/UI)
+        g_es1_highp_alpha = want_alpha_test ? 1 : 0;
+    }
+
     if (use_alpha) {
         cc_options |= (uint64_t)SHADER_OPT_ALPHA;
     }
@@ -1607,7 +1790,25 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
     key.combine_mode = rdp.combine_mode;
     key.options = cc_options;
 
+    // Flush if the color combiner key changes to keep batches homogeneous
+    if (!s_batch_has_cc || s_batch_cc_mode != key.combine_mode || s_batch_cc_opts != key.options) {
+        gfx_flush();
+        s_batch_has_cc = true;
+        s_batch_cc_mode = key.combine_mode;
+        s_batch_cc_opts = key.options;
+    }
+
     ColorCombiner* comb = gfx_lookup_or_create_color_combiner(key);
+    // Publish hints to backend for base texenv selection
+    uint8_t base_mode = 0;
+    if (comb->shade_in_rgb) base_mode = 1; else if (comb->prim_in_rgb) base_mode = 2; else if (comb->env_in_rgb) base_mode = 3;
+    g_es1_base_color_mode = base_mode;
+    g_es1_base_modulate = (base_mode != 0) ? 1 : 0;
+    // Publish which textures are used (so GLES can enable/disable texturing correctly)
+    g_es1_use_tex0 = comb->used_textures[0] ? 1 : 0;
+    g_es1_use_tex1 = comb->used_textures[1] ? 1 : 0;
+    // Publish hint whether TEXEL0 contributes to RGB for the current combiner
+    g_es1_tex0_in_rgb = comb->tex0_in_rgb ? 1 : 0;
 
     uint32_t tm = 0;
     uint32_t tex_width[2], tex_height[2], tex_width2[2], tex_height2[2];
@@ -1666,6 +1867,10 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
 
             if (rendering_state.textures[i]) {
                 bool linear_filter = (rdp.other_mode_h & (3U << G_MDSFT_TEXTFILT)) != G_TF_POINT;
+                // Fonts and UI with texture edge / alpha threshold must use point sampling
+                if (texture_edge || alpha_threshold) {
+                    linear_filter = false;
+                }
                 if (linear_filter != rendering_state.textures[i]->second.linear_filter ||
                     cms != rendering_state.textures[i]->second.cms || cmt != rendering_state.textures[i]->second.cmt) {
                     gfx_flush();
@@ -1674,9 +1879,16 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
                     rendering_state.textures[i]->second.cms = cms;
                     rendering_state.textures[i]->second.cmt = cmt;
                 }
+                // Always publish the tile transform, even on cache hits, so cropping/offset is correct.
+                // Use POT sizes recorded in the cache entry.
+                publish_tile_transform(i, tile,
+                                       rendering_state.textures[i]->second.pot_w,
+                                       rendering_state.textures[i]->second.pot_h);
             }
         }
     }
+
+    // No need to clear TEXEL1 here; two-pass path is gated by g_force_two_pass
 
     if (use_alpha != rendering_state.alpha_blend || use_modulate != rendering_state.modulate) {
         gfx_flush();
@@ -1725,7 +1937,7 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
                   vtx->color.b/255.f, vtx->color.a/255.f };
     }
 
-    // --- lambda to push one vertex (9 floats) -------------------------------
+    // --- lambda to push one vertex (9 floats): x,y,z,u,v,r,g,b,a ---------
     auto push9 = [&](const TempV& V){
         buf_vbo[buf_vbo_len++] = V.x;
         buf_vbo[buf_vbo_len++] = V.y;
@@ -2131,6 +2343,10 @@ static void gfx_dp_set_env_color(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
     rdp.env_color.g = g;
     rdp.env_color.b = b;
     rdp.env_color.a = a;
+    g_es1_env_rgba[0] = r;
+    g_es1_env_rgba[1] = g;
+    g_es1_env_rgba[2] = b;
+    g_es1_env_rgba[3] = a;
 }
 
 static void gfx_dp_set_prim_color(uint8_t m, uint8_t l, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
@@ -2139,6 +2355,10 @@ static void gfx_dp_set_prim_color(uint8_t m, uint8_t l, uint8_t r, uint8_t g, ui
     rdp.prim_color.g = g;
     rdp.prim_color.b = b;
     rdp.prim_color.a = a;
+    g_es1_prim_rgba[0] = r;
+    g_es1_prim_rgba[1] = g;
+    g_es1_prim_rgba[2] = b;
+    g_es1_prim_rgba[3] = a;
     rdp.fill_color.r = r;
     rdp.fill_color.g = g;
     rdp.fill_color.b = b;
@@ -2184,7 +2404,7 @@ static void gfx_draw_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lr
     uly += rdp.subpixel_ofs_y;
     lry += rdp.subpixel_ofs_y;
 
-    // U10.2 coordinates
+    // U10.2 coordinates -> NDC, with aspect-correct X as in desktop
     float ulxf = ulx;
     float ulyf = uly;
     float lrxf = lrx;
@@ -2228,14 +2448,22 @@ static void gfx_draw_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lr
     struct XYWidthHeight viewport_saved = rdp.viewport;
     uint32_t geometry_mode_saved = rsp.geometry_mode;
 
+    // Match desktop: texture rectangles bypass the game's current viewport,
+    // but still get transformed to the active window via the same adjustment.
+    // This produces correct centering inside letterboxed views.
     gfx_adjust_viewport_or_scissor(&default_viewport);
 
     rdp.viewport = default_viewport;
     rdp.viewport_or_scissor_changed = true;
     rsp.geometry_mode = 0;
 
+    // Force immediate 2D draw so GL can install identity matrices and disable depth
+    gfx_flush();
+    g_es1_force_2d = 1;
     gfx_sp_tri1(MAX_VERTICES + 0, MAX_VERTICES + 1, MAX_VERTICES + 3, true);
     gfx_sp_tri1(MAX_VERTICES + 1, MAX_VERTICES + 2, MAX_VERTICES + 3, true);
+    gfx_flush();
+    g_es1_force_2d = 0;
 
     rsp.geometry_mode = geometry_mode_saved;
     rdp.viewport = viewport_saved;

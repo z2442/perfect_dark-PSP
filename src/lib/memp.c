@@ -179,12 +179,16 @@ void *mempAllocFromBank(struct memorypool *pool, u32 size, u8 poolnum)
 	}
 
 	if (pool->leftpos > pool->rightpos) {
+		#ifdef PDDEBUG
 		sysLogPrintf(LOG_NOTE, "#warning: memory pool %x is full. Req: %d\n", pool, size);
+		#endif
 		return 0;
 	}
 
 	if (pool->leftpos + size > pool->rightpos) {
+		#ifdef PDDEBUG
 		sysLogPrintf(LOG_NOTE, "#warning: memory pool %x is full. Req: %d\n", pool, size);
+		#endif
 		return 0;
 	}
 

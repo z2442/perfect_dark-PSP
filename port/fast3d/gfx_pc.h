@@ -28,6 +28,7 @@ struct TextureCacheKey {
     uint16_t uls, ult, lrs, lrt;
     uint8_t cms, cmt;
     uint16_t width, height;
+    uint8_t highp_alpha; // differentiate 4444 vs 8888 uploads when needed
 
     bool operator==(const TextureCacheKey&) const noexcept = default;
 
@@ -51,6 +52,7 @@ struct TextureCacheKey {
             hash_combine(h, key.cmt);
             hash_combine(h, key.width);
             hash_combine(h, key.height);
+            hash_combine(h, key.highp_alpha);
             return h;
         }
     };

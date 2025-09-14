@@ -10,6 +10,20 @@
 #include "system.h"
 #include "preprocess.h"
 #include "platform.h"
+#include "types.h"
+#include "preprocess/common.h"
+
+#ifndef PLATFORM_N64
+#include <zlib.h>
+#endif
+
+#define ROM_FSEEK_IF_NEEDED(pos) \
+    do { \
+        if (g_RomFpPos != (u32)(pos)) { \
+            if (fseek(g_RomFp, (long)(pos), SEEK_SET) != 0) return -1; \
+            g_RomFpPos = (u32)(pos); \
+        } \
+    } while (0)
 
 //Used to enable debug on rom streaming. 
 //#define PDDEBUG
@@ -47,9 +61,10 @@
 #define GBC_ROM_NAME "pd.gbc"
 #define GBC_ROM_SIZE 4194304
 
-// u8 *g_RomFile; // REMOVED: We will not load the entire ROM into RAM
 static FILE *g_RomFp = NULL; // NEW: File pointer for the ROM
+static u32 g_RomFpPos = 0; // Track current file position to avoid redundant fseeks
 u32 g_RomFileSize;
+static char g_RomPath[FS_MAXPATH + 1];
 
 static u8 *romDataSeg; // This is the inflated 1173-compressed segment, still needed in RAM
 static u32 romDataSegSize;
@@ -69,6 +84,22 @@ typedef struct {
 
 static StreamedSegmentEntry g_StreamedSegmentCache[MAX_STREAMED_SEGMENTS];
 static u32 g_StreamedSegmentLRU = 0;
+
+// ROM read-ahead cache for streaming (simple ring/LRU)
+#ifndef PLATFORM_N64
+#define ROM_STREAM_CACHE_SLOTS 64
+#define ROM_STREAM_CACHE_CHUNK (16 * 1024)
+typedef struct {
+    u32 base;   // aligned base offset in ROM
+    u32 size;   // valid bytes loaded into buf
+    u8 *buf;    // allocated buffer
+} RomCacheSlot;
+
+static RomCacheSlot g_RomCache[ROM_STREAM_CACHE_SLOTS];
+static u32 g_RomCacheNext = 0;
+// Track sequential access to avoid unnecessary prefetch on random I/O
+static u32 g_RomLastReadEnd = 0;
+#endif
 
 
 enum loadsource {
@@ -197,6 +228,66 @@ static inline void romdataWrongRomError(const char *fmt, ...)
 	sysFatalError("Wrong ROM file.\n%s\nEnsure that you have the correct " ROMDATA_ROM_DESC " ROM in z64 format.", reason);
 }
 
+static inline s32 romdataInflatePartialFromFile(u32 srcOffset, u8 *dst, u32 dstLen)
+{
+#ifndef PLATFORM_N64
+    // Inflate raw DEFLATE (no header) from g_RomFp starting at srcOffset
+    if (!g_RomFp || !dst || dstLen == 0) return 0;
+    if (g_RomFpPos != srcOffset) {
+        if (fseek(g_RomFp, (long)srcOffset, SEEK_SET) != 0) return 0;
+        g_RomFpPos = srcOffset;
+    }
+
+    z_stream strm;
+    memset(&strm, 0, sizeof(strm));
+    int ret = inflateInit2(&strm, -15);
+    if (ret != Z_OK) return 0;
+
+    const size_t INBUFSZ = 64 * 1024;
+    u8 *inbuf = sysMemVolAlloc(INBUFSZ);
+    if (!inbuf) { inflateEnd(&strm); return 0; }
+
+    u32 produced = 0;
+    int zret = Z_OK;
+    while (produced < dstLen && zret != Z_STREAM_END) {
+        size_t nread = fread(inbuf, 1, INBUFSZ, g_RomFp);
+        g_RomFpPos += (u32)nread;
+        if (nread == 0) break; // EOF or error
+        strm.next_in = inbuf;
+        strm.avail_in = (uInt)nread;
+
+        while (strm.avail_in > 0 && produced < dstLen) {
+            uInt outRem = (uInt)(dstLen - produced);
+            strm.next_out = dst + produced;
+            strm.avail_out = outRem;
+            zret = inflate(&strm, Z_SYNC_FLUSH);
+
+            uInt made = outRem - strm.avail_out;
+            produced += made;
+
+            if (zret == Z_STREAM_END) break;
+            if (zret != Z_OK && zret != Z_BUF_ERROR) {
+                // Error
+                sysMemFree(inbuf);
+                inflateEnd(&strm);
+                return 0;
+            }
+            if (made == 0 && zret == Z_BUF_ERROR) {
+                // Need more input
+                break;
+            }
+        }
+    }
+
+    sysMemFree(inbuf);
+    inflateEnd(&strm);
+    return (s32)produced;
+#else
+    (void)srcOffset; (void)dst; (void)dstLen;
+    return 0;
+#endif
+}
+
 static inline void romdataLoadRom(void)
 {
     #ifdef PDDEBUG
@@ -209,8 +300,14 @@ static inline void romdataLoadRom(void)
     }
     g_RomFileSize = (u32)rom_size_check;
 
-    // Open the ROM file
-	g_RomFp = fopen(fsFullPath(romName), "rb");
+    // Resolve full path once and open the ROM file
+    strncpy(g_RomPath, fsFullPath(romName), sizeof(g_RomPath) - 1);
+    g_RomPath[sizeof(g_RomPath) - 1] = '\0';
+    g_RomFp = fopen(g_RomPath, "rb");
+    if (g_RomFp) {
+        /* Use a larger user-space buffer to reduce read syscalls. 128 KiB plays well with 32 KiB cache blocks. */
+        setvbuf(g_RomFp, NULL, _IOFBF, 128 * 1024);
+    }
 	if (!g_RomFp) {
 		sysFatalError("Could not open ROM file %s.\nEnsure that it is in the %s directory.", romName, fsFullPath(""));
 	}
@@ -222,6 +319,7 @@ static inline void romdataLoadRom(void)
         romdataWrongRomError("Could not read initial bytes from ROM.");
     }
     rewind(g_RomFp); // Go back to start
+    g_RomFpPos = 0;
 
 	if (!memcmp(header_check, "PK", 2) || !memcmp(header_check, "Rar", 3) || !memcmp(header_check, "7z", 2)) {
         fclose(g_RomFp); g_RomFp = NULL;
@@ -238,22 +336,37 @@ static inline void romdataLoadRom(void)
     char rom_title_buf[sizeof(ROMDATA_ROM_TITLE) -1];
 
     fseek(g_RomFp, 0x3b, SEEK_SET);
+    g_RomFpPos = 0x3b;
     if (fread(rom_id_buf, 1, 4, g_RomFp) != 4) { /* error */ }
+    g_RomFpPos += 4;
     fseek(g_RomFp, 0x20, SEEK_SET);
+    g_RomFpPos = 0x20;
     if (fread(rom_title_buf, 1, sizeof(rom_title_buf), g_RomFp) != sizeof(rom_title_buf)) { /* error */ }
+    g_RomFpPos += (u32)sizeof(rom_title_buf);
 
 	if (memcmp(rom_id_buf, ROMDATA_ROM_ID, 4) || memcmp(rom_title_buf, ROMDATA_ROM_TITLE, sizeof(ROMDATA_ROM_TITLE) - 1)) {
         fclose(g_RomFp); g_RomFp = NULL;
 		romdataWrongRomError("ROM header does not match.");
 	}
 
-	// Inflate the compressed data segment
+	// Read the compressed data segment header
     u8 zipped_header[5];
+    // Init ROM cache slots
+#ifndef PLATFORM_N64
+    for (u32 i = 0; i < ROM_STREAM_CACHE_SLOTS; ++i) {
+        g_RomCache[i].base = 0xffffffffu;
+        g_RomCache[i].size = 0;
+        g_RomCache[i].buf = NULL;
+    }
+#endif
+
     fseek(g_RomFp, ROMDATA_DATA_OFS, SEEK_SET);
+    g_RomFpPos = ROMDATA_DATA_OFS;
     if (fread(zipped_header, 1, 5, g_RomFp) != 5) {
         fclose(g_RomFp); g_RomFp = NULL;
         sysFatalError("Could not read data segment header from ROM.");
     }
+    g_RomFpPos += 5;
 
 	if (!rzipIs1173(zipped_header)) {
         fclose(g_RomFp); g_RomFp = NULL;
@@ -266,63 +379,176 @@ static inline void romdataLoadRom(void)
 		romdataWrongRomError("Data segment too small (%u), need at least %u for file table.", dataSegLen, ROMDATA_FILES_OFS);
 	}
 
-    // Determine size of zipped data segment to read it fully
-    // The full size is not in the header, but rzipInflate can take the stream.
-    // For simplicity, let's assume the zipped data won't be excessively larger than unzipped.
-    // A better way: rzip needs the compressed stream. We need its length.
-    // This is usually determined by the next entry in a file system or end of ROM.
-    // For now, let's read a large-enough chunk.
-    // The actual compressed size is usually smaller than uncompressed.
-    // Let's find the next segment's offset to determine max compressed size.
-    // Or, often, the compressed data region is well-defined and its size known or derivable.
-    // If ROMDATA_DATA_OFS is where compressed data starts, and we know where it *ends* (e.g. next segment offset).
-    // This info is missing. Let's assume rzip handles partial read or we read a big chunk.
-    // A common pattern is that the first few bytes of zipped data contain its *compressed* length too for some formats.
-    // 1173 format: byte 0,1 = magic. byte 2,3,4 = uncompressed_len. Compressed_len is implicit until end of stream.
-    // We must read from ROMDATA_DATA_OFS until rzipInflate says it's done or an error occurs.
-    // This means rzipInflate might need a way to read from g_RomFp.
-    // Simplification for now: read a large chunk, assuming it covers the compressed data.
-    // Let's assume compressed data is not more than, say, dataSegLen itself (usually much less).
-    u32 max_compressed_read_size = dataSegLen; // Heuristic, could be smaller
-    if (ROMDATA_DATA_OFS + max_compressed_read_size > g_RomFileSize) {
-        max_compressed_read_size = g_RomFileSize - ROMDATA_DATA_OFS;
+    // Only inflate the portion necessary to reach the file offsets table and its entries.
+    u32 need_unzipped = ROMDATA_FILES_OFS + (ROMDATA_MAX_FILES + 2) * sizeof(u32);
+    if (need_unzipped > dataSegLen) need_unzipped = dataSegLen;
+
+    romDataSeg = sysMemVolAlloc(need_unzipped);
+    if (!romDataSeg) {
+        fclose(g_RomFp); g_RomFp = NULL;
+        sysFatalError("Could not allocate %u bytes for partial data segment.", need_unzipped);
     }
-    u8* zipped_buffer = sysMemAlloc(max_compressed_read_size);
-    if (!zipped_buffer) {
+
+    // Inflate starting after the 5-byte 1173 header
+    s32 outbytes = romdataInflatePartialFromFile(ROMDATA_DATA_OFS + 5, romDataSeg, need_unzipped);
+    if (outbytes < (s32)need_unzipped) {
+        sysMemFree(romDataSeg); romDataSeg = NULL;
         fclose(g_RomFp); g_RomFp = NULL;
-        sysFatalError("Could not allocate buffer for zipped data segment.");
+        sysFatalError("Partial inflate failed: needed %u, got %d", need_unzipped, outbytes);
     }
-    fseek(g_RomFp, ROMDATA_DATA_OFS, SEEK_SET);
-    size_t bytes_read = fread(zipped_buffer, 1, max_compressed_read_size, g_RomFp);
-    // Actual compressed size will be determined by rzipInflate's return or by a field in the stream.
-    // rzipInflate returns amount of compressed data consumed.
 
-	romDataSeg = sysMemAlloc(dataSegLen);
-	if (!romDataSeg) {
-        free(zipped_buffer);
-        fclose(g_RomFp); g_RomFp = NULL;
-		sysFatalError("Could not allocate %u bytes for data segment.", dataSegLen);
-	}
-
-	u8 scratch[5 * 1024]; // rzip scratch space
-	s32 rzip_ret = rzipInflate(zipped_buffer, romDataSeg, scratch);
-    free(zipped_buffer);
-
-	if (rzip_ret < 0) {
-		free(romDataSeg); romDataSeg = NULL;
-        fclose(g_RomFp); g_RomFp = NULL;
-		sysFatalError("Could not inflate data segment. Rzip error: %d", rzip_ret);
-	}
-    // rzip_ret is bytes consumed from compressed stream if positive.
-
-	romDataSegSize = dataSegLen; // This is uncompressed size
+    romDataSegSize = need_unzipped;
 }
+
+#ifndef PLATFORM_N64
+// Read from ROM file at byte offset into destination buffer; returns bytes read or -1 on error
+s32 romdataReadFromRom(u32 offset, void *dst, u32 len) {
+    if ((u64)offset + (u64)len > (u64)g_RomFileSize) return -1;
+
+#if !defined(PLATFORM_N64)
+    // Detect simple sequential pattern (new read starts where the previous ended)
+    const int is_seq = (offset == g_RomLastReadEnd);
+
+    /* Fast path for very small reads: go straight to FILE* without touching the cache. */
+    if (len < 256) {
+        if (!g_RomFp) return -1;
+        ROM_FSEEK_IF_NEEDED(offset);
+        size_t n = fread(dst, 1, len, g_RomFp);
+        g_RomFpPos += (u32)n;
+        g_RomLastReadEnd = offset + (u32)n;
+        return (s32)n;
+    }
+    // Try cache first for small aligned reads
+    if (len <= ROM_STREAM_CACHE_CHUNK) {
+        const u32 base = offset & ~(ROM_STREAM_CACHE_CHUNK - 1);
+        const u32 within = offset - base;
+        if (within + len <= ROM_STREAM_CACHE_CHUNK) {
+            for (u32 i = 0; i < ROM_STREAM_CACHE_SLOTS; ++i) {
+                if (g_RomCache[i].buf && g_RomCache[i].base == base && g_RomCache[i].size >= within + len) {
+                    memcpy(dst, g_RomCache[i].buf + within, len);
+                    g_RomLastReadEnd = offset + len;
+                    return (s32)len;
+                }
+            }
+            // Refill cache slot using the already-open g_RomFp
+            u32 idx = g_RomCacheNext++ % ROM_STREAM_CACHE_SLOTS;
+            if (!g_RomCache[idx].buf) {
+                g_RomCache[idx].buf = sysMemVolAlloc(ROM_STREAM_CACHE_CHUNK);
+                if (!g_RomCache[idx].buf) return -1;
+            }
+            if (!g_RomFp) return -1;
+            ROM_FSEEK_IF_NEEDED(base);
+            size_t n2 = fread(g_RomCache[idx].buf, 1, ROM_STREAM_CACHE_CHUNK, g_RomFp);
+            g_RomFpPos += (u32)n2;
+            g_RomCache[idx].base = base;
+            g_RomCache[idx].size = (u32)n2;
+            /* Read-ahead: only prefetch next chunk if we are reading sequentially. */
+            if (is_seq) {
+                const u32 next_base = base + ROM_STREAM_CACHE_CHUNK;
+                if (next_base < g_RomFileSize) {
+                    u32 pidx = g_RomCacheNext++ % ROM_STREAM_CACHE_SLOTS;
+                    if (!g_RomCache[pidx].buf) {
+                        g_RomCache[pidx].buf = sysMemVolAlloc(ROM_STREAM_CACHE_CHUNK);
+                        if (!g_RomCache[pidx].buf) {
+                            g_RomCache[pidx].size = 0; // skip if alloc failed
+                        }
+                    }
+                    if (g_RomCache[pidx].buf) {
+                        ROM_FSEEK_IF_NEEDED(next_base);
+                        size_t pn = fread(g_RomCache[pidx].buf, 1, ROM_STREAM_CACHE_CHUNK, g_RomFp);
+                        g_RomFpPos += (u32)pn;
+                        g_RomCache[pidx].base = next_base;
+                        g_RomCache[pidx].size = (u32)pn;
+                    }
+                }
+            }
+            if (within + len <= g_RomCache[idx].size) {
+                memcpy(dst, g_RomCache[idx].buf + within, len);
+                g_RomLastReadEnd = offset + len;
+                return (s32)len;
+            }
+            // Fall through to direct read if cache insufficient
+        }
+        else {
+            // Request spans two cache blocks; satisfy from two cached chunks to avoid direct read
+            // First block
+            const u32 head_len = ROM_STREAM_CACHE_CHUNK - within;
+            const u32 tail_len = len - head_len;
+            // Ensure first block is cached
+            u32 idx = 0xffffffffu;
+            for (u32 i = 0; i < ROM_STREAM_CACHE_SLOTS; ++i) {
+                if (g_RomCache[i].buf && g_RomCache[i].base == base && g_RomCache[i].size >= ROM_STREAM_CACHE_CHUNK) {
+                    idx = i; break;
+                }
+            }
+            if (idx == 0xffffffffu) {
+                idx = g_RomCacheNext++ % ROM_STREAM_CACHE_SLOTS;
+                if (!g_RomCache[idx].buf) {
+                    g_RomCache[idx].buf = sysMemVolAlloc(ROM_STREAM_CACHE_CHUNK);
+                    if (!g_RomCache[idx].buf) return -1;
+                }
+                ROM_FSEEK_IF_NEEDED(base);
+                size_t nA = fread(g_RomCache[idx].buf, 1, ROM_STREAM_CACHE_CHUNK, g_RomFp);
+                g_RomFpPos += (u32)nA;
+                g_RomCache[idx].base = base;
+                g_RomCache[idx].size = (u32)nA;
+                if (g_RomCache[idx].size < ROM_STREAM_CACHE_CHUNK) {
+                    // Can't satisfy full head; copy what we can and return early
+                    const u32 can = g_RomCache[idx].size > within ? (g_RomCache[idx].size - within) : 0;
+                    if (can) memcpy(dst, g_RomCache[idx].buf + within, can);
+                    g_RomLastReadEnd = offset + can;
+                    return (s32)can;
+                }
+            }
+            // Ensure second block is cached
+            const u32 next_base = base + ROM_STREAM_CACHE_CHUNK;
+            u32 pidx = 0xffffffffu;
+            for (u32 i = 0; i < ROM_STREAM_CACHE_SLOTS; ++i) {
+                if (g_RomCache[i].buf && g_RomCache[i].base == next_base && g_RomCache[i].size > 0) {
+                    pidx = i; break;
+                }
+            }
+            if (pidx == 0xffffffffu) {
+                pidx = g_RomCacheNext++ % ROM_STREAM_CACHE_SLOTS;
+                if (!g_RomCache[pidx].buf) {
+                    g_RomCache[pidx].buf = sysMemVolAlloc(ROM_STREAM_CACHE_CHUNK);
+                    if (!g_RomCache[pidx].buf) return -1;
+                }
+                ROM_FSEEK_IF_NEEDED(next_base);
+                size_t nB = fread(g_RomCache[pidx].buf, 1, ROM_STREAM_CACHE_CHUNK, g_RomFp);
+                g_RomFpPos += (u32)nB;
+                g_RomCache[pidx].base = next_base;
+                g_RomCache[pidx].size = (u32)nB;
+            }
+
+            // Copy from both cached blocks
+            memcpy(dst, g_RomCache[idx].buf + within, head_len);
+            const u32 avail_tail = (tail_len <= g_RomCache[pidx].size) ? tail_len : g_RomCache[pidx].size;
+            memcpy((u8 *)dst + head_len, g_RomCache[pidx].buf, avail_tail);
+            g_RomLastReadEnd = offset + head_len + avail_tail;
+            return (s32)(head_len + avail_tail);
+        }
+    }
+
+    // Direct read using the already-open g_RomFp
+    if (!g_RomFp) return -1;
+    ROM_FSEEK_IF_NEEDED(offset);
+    size_t n = fread(dst, 1, len, g_RomFp);
+    g_RomFpPos += (u32)n;
+    g_RomLastReadEnd = offset + (u32)n;
+    return (s32)n;
+#else
+    // N64 path unused here
+    return -1;
+#endif
+}
+#endif
 
 static inline void romdataUpdateSegStartEnd(struct romfile* seg)
 {
-	if (seg->segstart) {
-		*seg->segstart = seg->data;
-	}
+    if (seg->segstart) {
+        *seg->segstart = seg->data;
+    }
 
 	if (seg->segend) {
 		*seg->segend = seg->data + seg->size;
@@ -345,12 +571,12 @@ static inline void romdataInitSegment(struct romfile *seg)
 	}
 
     // Calculate size if not specified (size == 0)
-	if (seg->size == 0 && seg->source == SRC_ROM_IN_FILE) {
-		if (seg[1].name && seg[1].rom_offset != 0) { // Next segment exists and is valid
-			seg->size = seg[1].rom_offset - seg->rom_offset;
-		} else { // This is the last segment or next is invalid
-			seg->size = g_RomFileSize - seg->rom_offset;
-		}
+    if (seg->size == 0 && seg->source == SRC_ROM_IN_FILE) {
+        if (seg[1].name && seg[1].rom_offset != 0) { // Next segment exists and is valid
+            seg->size = seg[1].rom_offset - seg->rom_offset;
+        } else { // This is the last segment or next is invalid
+            seg->size = g_RomFileSize - seg->rom_offset;
+        }
         if ((s32)seg->size < 0) { // Check for logic error or bad offset
             #ifdef PDDEBUG
             sysLogPrintf(LOG_ERROR, "Segment %s calculated negative size. ROM Offset: 0x%X", seg->name, seg->rom_offset);
@@ -361,11 +587,11 @@ static inline void romdataInitSegment(struct romfile *seg)
         }
 	}
     
-	// Check if we have an external replacement and load it if so
-	char tmp[FS_MAXPATH];
-	snprintf(tmp, sizeof(tmp), ROMDATA_SEGDIR "/%s", seg->name);
-	u32 extFileSize = 0; // fsFileLoad wants u32 for size
-	s32 fs_size_check = fsFileSize(tmp);
+    // Check if we have an external replacement and load it if so
+    char tmp[FS_MAXPATH];
+    snprintf(tmp, sizeof(tmp), ROMDATA_SEGDIR "/%s", seg->name);
+    u32 extFileSize = 0; // fsFileLoad wants u32 for size
+    s32 fs_size_check = fsFileSize(tmp);
 
 	if (fs_size_check > 0) {
         extFileSize = (u32)fs_size_check;
@@ -384,44 +610,92 @@ static inline void romdataInitSegment(struct romfile *seg)
             }
 	}
 
-	if (seg->source == SRC_ROM_IN_FILE) { // Not loaded from external, try ROM
-		if (g_RomFp) {
-            if (seg->size == 0) { // Should have been calculated, but double check
-                #ifdef PDDEBUG
-                 sysLogPrintf(LOG_ERROR, "Segment %s from ROM has zero size. ROM Offset: 0x%X", seg->name, seg->rom_offset);
-                 #endif
-                 seg->source = SRC_UNLOADED; // Cannot load
-                 return;
-            }
-            if (seg->rom_offset + seg->size > g_RomFileSize) {
-                #ifdef PDDEBUG
-                sysLogPrintf(LOG_ERROR, "Segment %s from ROM (offset 0x%X, size %u) exceeds ROM size %u.", 
-                             seg->name, seg->rom_offset, seg->size, g_RomFileSize);
-                #endif
-                seg->source = SRC_UNLOADED;
-                return;
-            }
-
-			seg->data = sysMemAlloc(seg->size);
-            if (!seg->data) {
-                sysFatalError("Could not allocate %u bytes for ROM segment %s.", seg->size, seg->name);
-            }
-            fseek(g_RomFp, seg->rom_offset, SEEK_SET);
-            if (fread(seg->data, 1, seg->size, g_RomFp) != seg->size) {
-                sysMemFree(seg->data); seg->data = NULL;
-                sysFatalError("Could not read %u bytes for ROM segment %s from offset 0x%X.", seg->size, seg->name, seg->rom_offset);
-            }
-			seg->source = SRC_ROM_LOADED;
+    if (seg->source == SRC_ROM_IN_FILE) { // Stream from ROM, or load+preprocess if required
+        if (!g_RomFp || seg->size == 0 || seg->rom_offset + seg->size > g_RomFileSize) {
             #ifdef PDDEBUG
-			sysLogPrintf(LOG_NOTE, "Loading segment %s from ROM (offset %08x, size %u, pointer %p)", seg->name, seg->rom_offset, seg->size, seg->data);
+            sysLogPrintf(LOG_ERROR, "Segment %s invalid for streaming (ROM present: %d, offset: 0x%X, size: %u) size/offset issue.", seg->name, !!g_RomFp, seg->rom_offset, seg->size);
             #endif
-        } else if (seg->source != SRC_EXTERNAL) { // No ROM and not external
-			sysFatalError("No ROM or external file for segment:\n%s", seg->name);
-            return; // Should not reach here due to sysFatalError
-		}
-	}
+            seg->source = SRC_UNLOADED;
+            return;
+        }
+        
+        // If the segment needs preprocessing (eg. textures list, mpconfigs, fonts),
+        // we must load the segment into RAM and preprocess, then expose the RAM pointer via REF_SEG.
+        // Exception: animations uses a tiny metadata table; handle it specially to keep RAM low.
+        // Also: Do NOT preprocess audio banks (sfxctl, seqctl) or sequences here — audio code
+        // expects original ROM layout and does its own runtime patching.
+        const bool is_audio_bank = (strcmp(seg->name, "sfxctl") == 0) || (strcmp(seg->name, "seqctl") == 0);
+        const bool is_sequences   = (strcmp(seg->name, "sequences") == 0);
+        // For audio data tables (sfxtbl/seqtbl), do not force RAM: they stream via audiodma/osPiStartDma.
+        if (seg->preprocess && seg->preprocess != preprocessAnimations) {
+            // Load whole segment to RAM
+            seg->data = sysMemVolAlloc(seg->size);
+            if (!seg->data) {
+                sysFatalError("Could not allocate %u bytes for segment %s preprocess", seg->size, seg->name);
+            }
+            s32 n = romdataReadFromRom(seg->rom_offset, seg->data, seg->size);
+            if (n < (s32)seg->size) {
+                sysMemFree(seg->data); seg->data = NULL;
+                sysFatalError("Failed reading segment %s for preprocess", seg->name);
+            }
+            u8 *processed = seg->preprocess(seg->data, seg->size, &seg->size);
+            if (processed && processed != seg->data) {
+                sysMemFree(seg->data);
+                seg->data = processed;
+            }
+            seg->source = SRC_ROM_LOADED; // Now RAM‑backed
+            romdataUpdateSegStartEnd(seg);
+            seg->preprocessed = 1;
+            return;
+        }
+
+        // Animations: publish small preprocessed metadata table, stream frame/header payloads
+        if (seg->preprocess == preprocessAnimations) {
+            const u32 animtbl_len = 0x38a0; // as per linker script
+            u32 animtbl_off = seg->rom_offset + seg->size - animtbl_len;
+            u8 *tbl = sysMemVolAlloc(animtbl_len);
+            if (!tbl) {
+                sysFatalError("Failed to alloc animations table");
+            }
+            s32 n = romdataReadFromRom(animtbl_off, tbl, animtbl_len);
+            if (n < (s32)animtbl_len) {
+                sysMemFree(tbl);
+                sysFatalError("Failed to read animations table from ROM");
+            }
+            u32 *animtbl = (u32*)tbl;
+            *animtbl = PD_BE32(*animtbl);
+            const u32 count = *animtbl++;
+            struct animtableentry *anim = (struct animtableentry *)animtbl;
+            for (u32 i = 0; i < count; ++i, ++anim) {
+                anim->numframes     = PD_BE16(anim->numframes);
+                anim->bytesperframe = PD_BE16(anim->bytesperframe);
+                anim->headerlen     = PD_BE16(anim->headerlen);
+                anim->data          = PD_BE32(anim->data);
+#ifndef PLATFORM_N64
+                extern s32 modAnimationLoadDescriptor(u16 num, struct animtableentry *anim);
+                if (modAnimationLoadDescriptor((u16)i, anim) > 0) {
+                    anim->data = 0xffffffff;
+                }
+#endif
+            }
+            _animationsTableRomStart = tbl;
+            _animationsTableRomEnd = tbl + animtbl_len;
+            seg->preprocessed = 1;
+            // Stream the actual segment payload
+            if (seg->segstart) *seg->segstart = (u8*)(uintptr_t)ROMPTR_FROM_OFFSET(seg->rom_offset);
+            if (seg->segend)   *seg->segend   = (u8*)(uintptr_t)ROMPTR_FROM_OFFSET(seg->rom_offset + seg->size);
+            seg->data = NULL;
+            return;
+        }
+
+        // Default: stream segment directly via encoded ROM pointers
+        if (seg->segstart) *seg->segstart = (u8*)(uintptr_t)ROMPTR_FROM_OFFSET(seg->rom_offset);
+        if (seg->segend)   *seg->segend   = (u8*)(uintptr_t)ROMPTR_FROM_OFFSET(seg->rom_offset + seg->size);
+        seg->data = NULL;
+        return;
+    }
     
-    if (!seg->data && seg->source != SRC_UNLOADED) { // Failed to load for some reason
+    if (!seg->data && seg->source != SRC_UNLOADED) { // Failed to load for some reason (external load path)
         sysFatalError("Segment %s has no data after load attempt.", seg->name);
         return;
     }
@@ -430,8 +704,8 @@ static inline void romdataInitSegment(struct romfile *seg)
 	romdataUpdateSegStartEnd(seg);
 
 	// Call the post load function if any
-	if (seg->preprocess && !seg->preprocessed && seg->data) {
-		u8* processedData = seg->preprocess(seg->data, seg->size, &seg->size); // seg->size can be updated
+    if (seg->preprocess && !seg->preprocessed && seg->data) {
+        u8* processedData = seg->preprocess(seg->data, seg->size, &seg->size); // seg->size can be updated
 
 		if (processedData) {
 			if (processedData != seg->data) { // New buffer returned
@@ -449,6 +723,7 @@ static inline void romdataInitSegment(struct romfile *seg)
 			#ifdef PDDEBUG
 			sysLogPrintf(LOG_WARNING, "Preprocessing segment %s returned NULL. Segment might be unusable.", seg->name);
 			#endif
+			seg->preprocessed = 1; // Treat as done to avoid repeated attempts
 		}
 	}
 }
@@ -549,7 +824,7 @@ static inline void romdataInitFiles(void)
         u32 num_name_offsets_to_read = actual_num_files + 2; // Read for files 1..N, slot 0, and a terminator
         if (num_name_offsets_to_read > ROMDATA_MAX_FILES) num_name_offsets_to_read = ROMDATA_MAX_FILES;
 
-        u32* temp_name_relative_offsets_from_rom = sysMemAlloc(num_name_offsets_to_read * sizeof(u32));
+        u32* temp_name_relative_offsets_from_rom = sysMemVolAlloc(num_name_offsets_to_read * sizeof(u32));
         if (!temp_name_relative_offsets_from_rom) {
             sysFatalError("Failed to alloc for temp name offsets");
         }
@@ -586,7 +861,7 @@ static inline void romdataInitFiles(void)
         // Step 4: Allocate buffer and read the entire name table block.
         g_RomFileNameBlockSize = end_of_name_block_relative_offset;
         if (g_RomFileNameBlockSize > 0) {
-            g_RomFileNameBlockBuffer = sysMemAlloc(g_RomFileNameBlockSize);
+            g_RomFileNameBlockBuffer = sysMemVolAlloc(g_RomFileNameBlockSize);
             if (!g_RomFileNameBlockBuffer) {
                 sysFatalError("Failed to allocate %u for name block", g_RomFileNameBlockSize);
             }
@@ -730,6 +1005,16 @@ void romdataShutdown(void) {
         fclose(g_RomFp);
         g_RomFp = NULL;
     }
+#ifndef PLATFORM_N64
+    for (u32 i = 0; i < ROM_STREAM_CACHE_SLOTS; ++i) {
+        if (g_RomCache[i].buf) {
+            sysMemFree(g_RomCache[i].buf);
+            g_RomCache[i].buf = NULL;
+            g_RomCache[i].base = 0;
+            g_RomCache[i].size = 0;
+        }
+    }
+#endif
 #ifdef PDDEBUG
     sysLogPrintf(LOG_NOTE, "romdataShutdown: Cleanup complete.");
 #endif
@@ -839,53 +1124,26 @@ u8 *romdataFileLoad(s32 fileNum, u32 *outSize)
         }
 	}
 
-    // If not loaded externally, and it's marked as being in ROM file but not yet in RAM
+    // If not loaded externally, and it's marked as being in ROM file but not yet in RAM,
+    // return a special encoded pointer which represents the ROM file offset. The DMA layer
+    // will detect and stream from disk directly instead of bcopy-ing from memory.
     if (file->source == SRC_ROM_IN_FILE) {
-        if (g_RomFp && file->rom_offset > 0 && file->size > 0) {
-            if (file->rom_offset + file->size > g_RomFileSize) {
-                #ifdef PDDEBUG
-                 sysLogPrintf(LOG_ERROR, "File %d (%s) (offset 0x%X, size %u) exceeds ROM size %u. Cannot load from ROM.", 
-                             fileNum, file->name ? file->name : "N/A", file->rom_offset, file->size, g_RomFileSize);
-                #endif
-                file->source = SRC_UNLOADED; // Mark as invalid for ROM loading
-                if (outSize) *outSize = 0;
-                return NULL;
-            }
-            u8* rom_read_data = sysMemAlloc(file->size);
-            if (!rom_read_data) {
-                #ifdef PDDEBUG
-                sysLogPrintf(LOG_ERROR, "Failed to allocate %u bytes for file %d (%s) from ROM.", file->size, fileNum, file->name);
-                #endif
-                if (outSize) *outSize = 0;
-                return NULL;
-            }
-            fseek(g_RomFp, file->rom_offset, SEEK_SET);
-            if (fread(rom_read_data, 1, file->size, g_RomFp) == file->size) {
-                #ifdef PDDEBUG
-                sysLogPrintf(LOG_NOTE, "File %d (%s) loaded from ROM into RAM (offset 0x%X, size %u)", fileNum, file->name, file->rom_offset, file->size);
-                #endif
-                if (file->data) sysMemFree(file->data); // Should be NULL
-                file->data = rom_read_data;
-                file->source = SRC_ROM_LOADED;
-                // Patches will be applied in romdataFilePreprocess if this data is passed there
-                if (outSize) *outSize = file->size;
-                return file->data;
-            } else {
-                #ifdef PDDEBUG
-                sysLogPrintf(LOG_ERROR, "Failed to read %u bytes for file %d (%s) from ROM offset 0x%X.", file->size, fileNum, file->name, file->rom_offset);
-                #endif
-                sysMemFree(rom_read_data);
-                // Keep source as SRC_ROM_IN_FILE, but it's essentially unloadable
-            }
+        if (g_RomFp && file->rom_offset > 0 && file->size > 0 && file->rom_offset + file->size <= g_RomFileSize) {
+            if (outSize) *outSize = file->size;
+#ifndef PLATFORM_N64
+            return (u8*)(uintptr_t)ROMPTR_FROM_OFFSET(file->rom_offset);
+#else
+            return NULL;
+#endif
         } else {
-            #ifdef PDDEBUG
-             sysLogPrintf(LOG_WARNING, "File %d (%s) marked SRC_ROM_IN_FILE but cannot be loaded (No ROM/Invalid offset/size. ROM Offset: 0x%X, Size: %u)",
-                         fileNum, file->name ? file->name : "N/A", file->rom_offset, file->size);
-            #endif
+#ifdef PDDEBUG
+            sysLogPrintf(LOG_WARNING, "File %d (%s) marked SRC_ROM_IN_FILE but invalid (ROM present: %d, offset: 0x%X, size: %u)",
+                         fileNum, file->name ? file->name : "N/A", !!g_RomFp, file->rom_offset, file->size);
+#endif
         }
     }
 
-    // If we reach here, file was not loaded
+    // If we reach here, file was not loaded or streamable
     // If it was already loaded, we returned earlier.
     // This path means it's UNLOADED and not found externally, or ROM_IN_FILE and failed to load from ROM.
 	if (outSize) *outSize = 0; // Default to 0 if not loaded
@@ -904,9 +1162,9 @@ void romdataFilePreprocess(s32 fileNum, s32 loadType, u8 *data, u32 size, u32 *o
 
     struct romfile *file = &fileSlots[fileNum];
 
-	// Patches are only applied if the data came from ROM (SRC_ROM_LOADED)
+	// Patches are applied if the data came from the ROM (SRC_ROM_LOADED or SRC_ROM_IN_FILE)
     // and has not been preprocessed yet in this load cycle.
-	if (data && size && file->source == SRC_ROM_LOADED /*&& !file->preprocessed (optional: if preprocess is one-time per load)*/) {
+	if (data && size && (file->source == SRC_ROM_LOADED || file->source == SRC_ROM_IN_FILE) /*&& !file->preprocessed*/) {
 		if (loadType > 0 && (u32)loadType < ARRAYCOUNT(filePreprocFuncs) && filePreprocFuncs[loadType]) {
 			// Apply patches
 			for (u32 i = 0; i < file->numpatches; ++i) {

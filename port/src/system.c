@@ -344,19 +344,21 @@ void *sysMemAlloc(const u32 size)
 	return malloc(size);
 }
 
-void *sysMemZeroAlloc(const u32 size)
+void *sysMemVolAlloc(const u32 size)
 {
-	void *ptr = calloc(1, size);
+	void *ptr = malloc(size);
 	if (!ptr) {
 		if (!bVolatileMem) {
 			VolatileMemInit();
 		}
 		ptr = malloc_volatile_PSP(size);
-		if (ptr) {
-			memset(ptr, 0, size);
-		}
 	}
 	return ptr;
+}
+
+void *sysMemZeroAlloc(const u32 size)
+{
+	return calloc(1, size);
 }
 
 void *sysMemRealloc(void *ptr, const u32 newSize)

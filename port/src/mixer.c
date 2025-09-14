@@ -5,6 +5,7 @@
 
 #include "mixer.h"
 #include "platform.h"
+#include "romdata.h"
 
 #define MINIMP3_IMPLEMENTATION
 #include "external/minimp3.h"
@@ -683,33 +684,104 @@ void aSetVolumeImpl(uint8_t flags, int16_t v, int16_t t, int16_t r) {
 
 void aPlayMP3Impl(const void *mp3file, u32 mp3size, void *out, int reset) {
     static mp3dec_t mp3d;
-    static const u8 *curdata = NULL; // pointer to the mp3 we're currently processing
-    static s32 dataptr = 0; // byte index into curdata
+    // Source state: either memory buffer or ROM-backed stream
+    typedef struct {
+        int is_rom;           // 1 if mp3file is an encoded ROM pointer
+        u32 rom_base;         // ROM offset when is_rom == 1
+        const u8 *mem_base;   // memory pointer when is_rom == 0
+        u32 total_size;       // total file size in bytes
+        u32 consumed;         // total bytes consumed so far
+        // Simple input window for minimp3 when streaming from ROM
+        u8  window[64 * 1024];
+        u32 win_valid;        // valid bytes currently in window
+    } mp3_src_t;
 
-    if (mp3file != curdata || reset) {
-        // new mp3, reinit decoder
+    static mp3_src_t src = {0};
+
+    // Detect new stream or reset
+    const int is_rom = ROMPTR_IS_FILE((romptr_t)mp3file) ? 1 : 0;
+    const u32 rom_base = is_rom ? ROMPTR_TO_OFFSET((romptr_t)mp3file) : 0;
+    const u8 *mem_base = is_rom ? NULL : (const u8 *)mp3file;
+
+    if (reset || mp3size != src.total_size || is_rom != src.is_rom || (is_rom && rom_base != src.rom_base) || (!is_rom && mem_base != src.mem_base)) {
         mp3dec_init(&mp3d);
-        curdata = mp3file;
-        dataptr = 0;
+        src.is_rom     = is_rom;
+        src.rom_base   = rom_base;
+        src.mem_base   = mem_base;
+        src.total_size = mp3size;
+        src.consumed   = 0;
+        src.win_valid  = 0;
     }
 
-    // this command is supposed to write one full frame to out
-    // but which frame? we'll just decode sequentially, it'll probably work
-    if (dataptr < mp3size) {
-        // FIXME: decoding straight to out might bite us in the ass because it's only 1160 bytes
-        mp3dec_frame_info_t info;
-        const s32 samples = mp3dec_decode_frame(&mp3d, curdata + dataptr, mp3size - dataptr, out, &info);
-        // fill in the rest of the buffer if frame is smaller
-        const s32 diff = 580 - samples;
-        if (diff > 0) {
-            memset((s16 *)out + samples, 0, diff * 2);
-        } else {
-            assert(diff == 0);
-        }
-        dataptr += info.frame_bytes;
+    // Decode exactly one frame-worth of PCM for the mixer
+    if (src.consumed >= src.total_size) {
+        // No data left: output silence
+        memset(out, 0, 580 * sizeof(s16));
+        return;
+    }
+
+    mp3dec_frame_info_t info;
+    s32 samples = 0;
+
+    if (!src.is_rom) {
+        // Memory-backed: decode from the in-memory buffer
+        samples = mp3dec_decode_frame(&mp3d,
+                                      src.mem_base + src.consumed,
+                                      src.total_size - src.consumed,
+                                      out,
+                                      &info);
+        src.consumed += info.frame_bytes;
     } else {
-        // empty frame
-        memset(out, 0, 580 * 2);
+        // ROM-backed: ensure window has data, then decode from it
+        // Keep trying to fill/consume until we decode a frame or we run out
+        for (int attempts = 0; attempts < 2 && samples == 0; ++attempts) {
+            if (src.win_valid == 0) {
+                // Fill window from ROM starting at current consumed offset
+                const u32 remaining = src.total_size - src.consumed;
+                const u32 to_read = remaining < sizeof(src.window) ? remaining : (u32)sizeof(src.window);
+                if (to_read == 0) break;
+                const s32 n = romdataReadFromRom(src.rom_base + src.consumed, src.window, to_read);
+                if (n <= 0) break; // read error => treat as silence
+                src.win_valid = (u32)n;
+            }
+
+            samples = mp3dec_decode_frame(&mp3d,
+                                          src.window,
+                                          src.win_valid,
+                                          out,
+                                          &info);
+
+            // Advance window and global consumed by the bytes the decoder used
+            const u32 used = (u32)info.frame_bytes;
+            if (used > 0 && used <= src.win_valid) {
+                // Shift remaining bytes to front
+                const u32 left = src.win_valid - used;
+                if (left) memmove(src.window, src.window + used, left);
+                src.win_valid = left;
+                src.consumed += used;
+            } else if (samples == 0 && src.win_valid < sizeof(src.window) && src.consumed + src.win_valid < src.total_size) {
+                // Not enough data for a frame; try to top up the window
+                const u32 remaining_total = src.total_size - (src.consumed + src.win_valid);
+                const u32 can_read = sizeof(src.window) - src.win_valid;
+                const u32 to_read2 = remaining_total < can_read ? remaining_total : can_read;
+                if (to_read2 > 0) {
+                    const s32 n2 = romdataReadFromRom(src.rom_base + src.consumed + src.win_valid, src.window + src.win_valid, to_read2);
+                    if (n2 > 0) src.win_valid += (u32)n2;
+                }
+            } else {
+                // Either decoder didn't consume but window is full, or consumed invalid amount: bail
+                break;
+            }
+        }
+    }
+
+    // Clamp to exactly 580 samples (1160 bytes). Zero-pad if short.
+    const s32 diff = 580 - samples;
+    if (diff > 0) {
+        memset((s16 *)out + samples, 0, (size_t)diff * sizeof(s16));
+    } else {
+        // Expect perfect frame; if more than 580 were returned (shouldn't happen), truncate
+        // No assert in release to avoid audio glitches
     }
 }
 
