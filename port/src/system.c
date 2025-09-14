@@ -9,7 +9,8 @@
 #include <strings.h>
 #include <time.h>
 #include <sys/time.h>
-#include <SDL2/SDL.h>
+/* Removed SDL2 dependency and replaced with POSIX equivalents */
+#include <unistd.h>
 #include <PR/ultratypes.h>
 #include "platform.h"
 #include "system.h"
@@ -236,12 +237,11 @@ void sysLogPrintf(s32 level, const char *fmt, ...)
 	vsnprintf(logmsg, sizeof(logmsg), fmt, ap);
 	va_end(ap);
 
-	if (logPath[0]) {
-		FILE *f = fopen(logPath, "ab");
-		if (f) {
-			fprintf(f, "%s%s\n", prefix[level], logmsg);
-			fclose(f);
-		}
+	// Always write to ms0:/pd_log.txt on the PSP memory stick
+	FILE *f = fopen("ms0:/pd_log.txt", "ab");
+	if (f) {
+		fprintf(f, "%s%s\n", prefix[level], logmsg);
+		fclose(f);
 	}
 
 	FILE *fout = (level == LOG_NOTE) ? stdout : stderr;
@@ -270,73 +270,34 @@ void sysFatalError(const char *fmt, ...)
 	fflush(stdout);
 	fflush(stderr);
 
-	SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Fatal error", errmsg, NULL);
+	fprintf(stderr, "Fatal error: %s\n", errmsg);
 
 	exit(1);
 }
 
 void sysGetExecutablePath(char *outPath, const u32 outLen)
 {
-	// try asking SDL
-	char *sdlPath = SDL_GetBasePath();
-
-	if (sdlPath && *sdlPath) {
-		// -1 to trim trailing slash
-		const u32 len = strlen(sdlPath) - 1;
-		if (len < outLen) {
-			memcpy(outPath, sdlPath, len);
-			outPath[len] = '\0';
-		}
+	if (getcwd(outPath, outLen)) {
+		outPath[outLen - 1] = '\0';
 	} else if (sysArgc && sysArgv[0] && sysArgv[0][0]) {
-		// get exe path from argv[0]
 		strncpy(outPath, sysArgv[0], outLen - 1);
 		outPath[outLen - 1] = '\0';
 	} else if (outLen > 1) {
-		// give up, use working directory instead
 		outPath[0] = '.';
 		outPath[1] = '\0';
 	}
-
-#ifdef PLATFORM_WIN32
-	// replace all backslashes with forward slashes, windows supports both
-	for (u32 i = 0; i < outLen && outPath[i]; ++i) {
-		if (outPath[i] == '\\') {
-			outPath[i] = '/';
-		}
-	}
-#endif
-
-	SDL_free(sdlPath);
 }
 
 void sysGetHomePath(char *outPath, const u32 outLen)
 {
-	// try asking SDL
-	char *sdlPath = SDL_GetPrefPath("", "perfectdark");
-
-	if (sdlPath && *sdlPath) {
-		// -1 to trim trailing slash
-		const u32 len = strlen(sdlPath) - 1;
-		if (len < outLen) {
-			memcpy(outPath, sdlPath, len);
-			outPath[len] = '\0';
-		}
+	const char *home = getenv("HOME");
+	if (home && strlen(home) < outLen) {
+		strncpy(outPath, home, outLen - 1);
+		outPath[outLen - 1] = '\0';
 	} else if (outLen > 1) {
-		// give up, use working directory instead
 		outPath[0] = '.';
 		outPath[1] = '\0';
 	}
-
-#ifdef PLATFORM_WIN32
-	// replace all backslashes with forward slashes, windows supports both
-	for (u32 i = 0; i < outLen && outPath[i]; ++i) {
-		if (outPath[i] == '\\') {
-			outPath[i] = '/';
-		}
-	}
-#endif
-
-	SDL_free(sdlPath);
 }
 
 void *sysMemAlloc(const u32 size)
@@ -358,7 +319,17 @@ void *sysMemVolAlloc(const u32 size)
 
 void *sysMemZeroAlloc(const u32 size)
 {
-	return calloc(1, size);
+	void *ptr = calloc(1, size);
+	if (!ptr) {
+		if (!bVolatileMem) {
+			VolatileMemInit();
+		}
+		ptr = malloc_volatile_PSP(size);
+		if (ptr) {
+			memset(ptr, 0, size);
+		}
+	}
+	return ptr;
 }
 
 void *sysMemRealloc(void *ptr, const u32 newSize)

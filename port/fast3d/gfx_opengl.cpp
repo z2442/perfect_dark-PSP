@@ -20,9 +20,11 @@ static bool s_blend_enabled = true;            // shadow of GL_BLEND enable stat
 #include <string.h>
 #include <math.h>
 #include <vector>
-#include <SDL.h>
-#include <GLES/gl.h>
 
+extern "C"{
+#include <GLES/egl.h>
+#include <GLES/gl.h>
+}
 
 /* GLES 1.1 headers may not define GL_MIRRORED_REPEAT.
    Map it to the OES value or define the constant ourselves so
@@ -887,7 +889,45 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
     // Depth test restored by set_depth_mode elsewhere
 }
 
+static const EGLint attrib_list [] = {
+    EGL_SURFACE_TYPE,   EGL_WINDOW_BIT,
+    EGL_RED_SIZE,       5,
+    EGL_GREEN_SIZE,     6,
+    EGL_BLUE_SIZE,      5,
+    EGL_ALPHA_SIZE,     0,
+    EGL_DEPTH_SIZE,     16,   // request a depth buffer (we use depth test)
+    EGL_STENCIL_SIZE,   0,
+    EGL_NONE
+};
+
+    EGLDisplay dpy;
+	EGLConfig config;
+	EGLint num_configs;
+	EGLContext ctx;
+	EGLSurface surface;
+	GLfloat angle = 0.0f;
+
 static void gfx_opengl_init(void) {
+
+
+	/* pass NativeDisplay=0, we only have one screen... */
+	dpy = eglGetDisplay(0);
+	eglInitialize(dpy, NULL, NULL);
+
+	eglChooseConfig(dpy, attrib_list, &config, 1, &num_configs);
+    const EGLint ctx_attribs[] = {
+        1,  // OpenGL ES 1.x context
+        EGL_NONE
+    };
+    ctx = eglCreateContext(dpy, config, EGL_NO_CONTEXT, ctx_attribs);
+	surface = eglCreateWindowSurface(dpy, config, 0, NULL);
+	eglMakeCurrent(dpy, surface, surface, ctx);
+
+    eglSwapInterval(dpy, 1);
+
+    glViewport(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+    glScissor(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+
     glEnable(GL_TEXTURE_2D);
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_BLEND);
@@ -924,6 +964,9 @@ static void gfx_opengl_init(void) {
     s_current_depth_func = GL_LEQUAL;
     s_texenv_mode = TEXENV_UNKNOWN;
 }
+
+static void gfx_opengl_end_frame(void) { glFlush();
+eglSwapBuffers(dpy, surface); }
 // --- Provide a definition for the two-pass flag so linker finds it if not provided elsewhere ---
 extern "C" volatile uint8_t g_force_two_pass = 0;
 extern "C" volatile uint8_t g_two_pass_mode = 0; // 0=off, 1=decal(alpha), 2=modulate, 3=additive, 4=additive-alpha, 5=replace
@@ -947,7 +990,7 @@ extern "C" volatile uint8_t g_es1_use_tex1          = 0;
 
 
 static void gfx_opengl_start_frame(void) {}
-static void gfx_opengl_end_frame(void) { glFlush(); }
+
 static void gfx_opengl_finish_render(void) {}
 
 static void gfx_opengl_on_resize(void) {}

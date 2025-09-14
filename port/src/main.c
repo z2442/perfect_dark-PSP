@@ -44,6 +44,8 @@
 #include <psppower.h>
 #include <pspsuspend.h>
 
+
+
 // --- PSP Module Info ---
 PSP_MODULE_INFO("PD_PSP", 0, 1, 0); // Changed name slightly, version 1.0
 PSP_HEAP_SIZE_KB(-1024); // Example: Request memory leaving 1MB for kernel/drivers. Adjust as needed.
