@@ -86,6 +86,22 @@ static bool es_depth_write = false;  /* TRUE if glDepthMask(GL_TRUE)      */
 
 static float P_matrix[4][4]; // Global matrix for projection
 
+// Forward state used by GLES1 framebuffer emulation and draw suppression
+static int s_current_draw_fb = 0;           // 0 = default/backbuffer
+static int s_system_game_fb_primary = -1;   // First created FB (used when game redirects main rendering)
+
+// Minimal framebuffer emulation types placed early so they can be referenced
+// from draw paths (e.g., to detect invert_y on bound framebuffer textures).
+struct GLESFramebuffer {
+    GLuint tex = 0;
+    uint32_t w = 0, h = 0;
+    bool invert_y = false;     // whether sampling should flip V
+    bool allocated = false;
+    bool valid = false;        // content up-to-date?
+};
+
+static std::vector<GLESFramebuffer> s_fbs; // index 0 is the default (window) fb
+
 // --- 2D batch helpers: isolate state so 3D path stays untouched ---
 static void begin_2d_batch() {
     // Save PROJECTION and set screen-space ortho
@@ -581,6 +597,13 @@ static inline void es11_apply_tex_transform(int tile) {
 
 
 static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_vbo_num_tris) {
+    // Suppress draws when targeting custom offscreen FBOs we cannot render to.
+    // Allow draws when targeting the system primary offscreen (the game’s main render target),
+    // because that path clears the screen before presenting the resolved texture.
+    if (s_current_draw_fb != 0 && s_current_draw_fb != s_system_game_fb_primary) {
+        return; // pretend we drew offscreen; texture content comes from copy ops
+    }
+
     const int stride_floats = 9; // pos(3) + uv(2) + color(4)
     const int stride_bytes = stride_floats * sizeof(float);
 
@@ -644,7 +667,21 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
     const GLenum prevDepthFunc  = s_current_depth_func;       // from set_depth_mode()
 
     // --- Pass 1: base (TEXEL0) ---
-    if (g_es1_use_tex0 && s_tex_id[0] != 0) glBindTexture(GL_TEXTURE_2D, s_tex_id[0]);
+    if (g_es1_use_tex0 && s_tex_id[0] != 0) {
+        glBindTexture(GL_TEXTURE_2D, s_tex_id[0]);
+        // If TEXEL0 is a framebuffer texture with inverted V, apply via texture matrix
+        bool needs_invert_v = false;
+        for (const auto &fb : s_fbs) {
+            if (fb.allocated && fb.tex == s_tex_id[0] && fb.invert_y) { needs_invert_v = true; break; }
+        }
+        if (needs_invert_v) {
+            glMatrixMode(GL_TEXTURE);
+            glLoadIdentity();
+            glScalef(1.0f, -1.0f, 1.0f);
+            glTranslatef(0.0f, -1.0f, 0.0f);
+            glMatrixMode(GL_MODELVIEW);
+        }
+    }
     // Base pass texenv:
     // - Font/UI glyphs: color = SHADE (primary), alpha = TEXEL0.a
     // - If RGB combine uses SHADE, use MODULATE; if PRIM/ENV, MODULATE with constant; else REPLACE
@@ -930,9 +967,115 @@ static struct GfxClipParameters gfx_opengl_get_clip_parameters(void) {
     return (struct GfxClipParameters){ false, false };
 }
 
-void* gfx_opengl_get_framebuffer_texture_id(int fb_id) { return NULL; }
+// --- Minimal framebuffer emulation for GLES 1.1 ---
+// We do not rely on FBOs (which are not core in GLES 1.1). Instead, we:
+// - Represent each framebuffer as a GL texture (color only)
+// - Copy from the default framebuffer into that texture via glReadPixels
+// - When asked to copy from a framebuffer to the main buffer, draw a screen‑aligned textured quad
+// This is sufficient for Perfect Dark's framebuffer effects (pause blur, lens, etc.).
+
+static void ensure_fb_index(int fb_id) {
+    if (fb_id < 0) fb_id = 0;
+    if ((int)s_fbs.size() <= fb_id) s_fbs.resize(fb_id + 1);
+}
+
+static void allocate_fb_texture(GLESFramebuffer &fb) {
+    if (!fb.allocated) {
+        glGenTextures(1, &fb.tex);
+        fb.allocated = true;
+    }
+    glBindTexture(GL_TEXTURE_2D, fb.tex);
+    // Default sampler suitable for UI copies
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, current_filter_mode == FILTER_LINEAR ? GL_LINEAR : GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, current_filter_mode == FILTER_LINEAR ? GL_LINEAR : GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+}
+
+static void fb_copy_window_into_texture(GLESFramebuffer &dst) {
+    if (!dst.allocated || dst.tex == 0 || dst.w == 0 || dst.h == 0) return;
+    // Read back from the default framebuffer and upload to texture
+    static std::vector<uint8_t> s_readback;
+    const size_t need = (size_t)dst.w * (size_t)dst.h * 4u;
+    if (s_readback.size() < need) s_readback.resize(need);
+
+    // Read lower-left origin; orientation will be handled when drawing (invert_v)
+    glReadPixels(0, 0, (GLsizei)dst.w, (GLsizei)dst.h, GL_RGBA, GL_UNSIGNED_BYTE, s_readback.data());
+    // Ensure opaque alpha; default framebuffer may not carry meaningful alpha
+    for (size_t i = 0; i < need; i += 4) s_readback[i + 3] = 255;
+
+    glBindTexture(GL_TEXTURE_2D, dst.tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, (GLsizei)dst.w, (GLsizei)dst.h, 0, GL_RGBA, GL_UNSIGNED_BYTE, s_readback.data());
+    dst.valid = true;
+}
+
+static void fb_draw_textured_quad(GLuint tex, float x, float y, float w, float h, bool invert_v, bool opaque_replace) {
+    // Render a simple textured quad in screen space (origin top-left)
+    begin_2d_batch();
+
+    glEnable(GL_TEXTURE_2D);
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_ALPHA_TEST);
+    glDisable(GL_DEPTH_TEST);
+    glDepthMask(GL_FALSE);
+    if (opaque_replace) {
+        glDisable(GL_BLEND);
+    } else {
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    }
+
+    glBindTexture(GL_TEXTURE_2D, tex);
+
+    const GLfloat x0 = (GLfloat)x;
+    const GLfloat y0 = (GLfloat)y;
+    const GLfloat x1 = (GLfloat)(x + w);
+    const GLfloat y1 = (GLfloat)(y + h);
+
+    const GLfloat verts[4 * 3] = {
+        x0, y0, 0.0f,
+        x1, y0, 0.0f,
+        x1, y1, 0.0f,
+        x0, y1, 0.0f,
+    };
+
+    const GLfloat t0 = invert_v ? 1.0f : 0.0f;
+    const GLfloat t1 = invert_v ? 0.0f : 1.0f;
+    const GLfloat uvs[4 * 2] = {
+        0.0f, t0,
+        1.0f, t0,
+        1.0f, t1,
+        0.0f, t1,
+    };
+
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+    glVertexPointer(3, GL_FLOAT, 0, verts);
+    glTexCoordPointer(2, GL_FLOAT, 0, uvs);
+
+    glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+
+    glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+    glDisableClientState(GL_VERTEX_ARRAY);
+    glDisable(GL_TEXTURE_2D);
+
+    end_2d_batch();
+}
+
+void* gfx_opengl_get_framebuffer_texture_id(int fb_id) {
+    if (fb_id <= 0) return NULL;
+    ensure_fb_index(fb_id);
+    const GLESFramebuffer &fb = s_fbs[fb_id];
+    if (!fb.allocated || fb.tex == 0) return NULL;
+    // Cast integer id to pointer-sized value expected by the caller
+    return (void*)(uintptr_t)fb.tex;
+}
 
 void gfx_opengl_clear_framebuffer(bool c, bool d) {
+    // Avoid clearing the visible buffer if we are supposedly drawing to a custom offscreen FB
+    if (s_current_draw_fb != 0 && s_current_draw_fb != s_system_game_fb_primary) {
+        return; // no-op for offscreen clears in fallback
+    }
     GLbitfield mask = 0;
     if (c) mask |= GL_COLOR_BUFFER_BIT;
     if (d) { glDepthMask(GL_TRUE); mask |= GL_DEPTH_BUFFER_BIT; }
@@ -940,12 +1083,103 @@ void gfx_opengl_clear_framebuffer(bool c, bool d) {
     glDepthMask(current_depth_mask);
 }
 
-void gfx_opengl_copy_framebuffer(int fb_dst, int fb_src, int l, int t, bool flip_y, bool use_back) {}
-void gfx_opengl_resolve_msaa_color_buffer(int fb_id_target, int fb_id_source) {}
-bool gfx_opengl_start_draw_to_framebuffer(int fb_id, float noise_scale) { return false; }
-int gfx_opengl_create_framebuffer(void) { return 0; }
-void gfx_opengl_update_framebuffer_parameters(int fb, uint32_t w, uint32_t h, uint32_t msaa, bool inv_y, bool rt, bool d, bool extract) {}
-void gfx_opengl_select_texture_fb(int fb_id) {}
+void gfx_opengl_copy_framebuffer(int fb_dst, int fb_src, int l, int t, bool flip_y, bool use_back) {
+    // Three main cases we care about:
+    // 1) src = 0 (main), dst > 0: copy the window into a texture
+    // 2) src > 0, dst = 0: draw the framebuffer texture to the window
+    // 3) src > 0, dst > 0: slow path – draw to window, then copy to dst
+
+    // Ensure entries exist
+    ensure_fb_index(fb_src);
+    ensure_fb_index(fb_dst);
+
+    if (fb_src == 0 && fb_dst > 0) {
+        // Copy the current window backbuffer into the destination texture
+        GLESFramebuffer &dst = s_fbs[fb_dst];
+        if (!dst.allocated || dst.tex == 0 || dst.w == 0 || dst.h == 0) return;
+        // Copy full region; l/t are ignored for full-screen effects
+        fb_copy_window_into_texture(dst);
+        return;
+    }
+
+    if (fb_src > 0 && fb_dst == 0) {
+        // Only present to the window when we're drawing to the main buffer
+        // and the source is the primary game framebuffer.
+        if (s_current_draw_fb == 0 && fb_src == s_system_game_fb_primary) {
+            const GLESFramebuffer &src = s_fbs[fb_src];
+            if (!src.allocated || src.tex == 0 || src.w == 0 || src.h == 0) return;
+            const float x = (float)l;
+            const float y = (float)t;
+            // Copy semantics: replace destination pixels in target region
+            fb_draw_textured_quad(src.tex, x, y, (float)src.w, (float)src.h, src.invert_y, true);
+        }
+        return;
+    }
+
+    if (fb_src > 0 && fb_dst > 0) {
+        // Offscreen-to-offscreen copy not supported without FBOs.
+        // Avoid drawing to the window to prevent artifacts.
+        return;
+    }
+
+    // fb_src == 0 && fb_dst == 0 -> nothing to do
+}
+
+void gfx_opengl_resolve_msaa_color_buffer(int fb_id_target, int fb_id_source) {
+    // No MSAA resolve in GLES1 fallback – noop
+    (void)fb_id_target; (void)fb_id_source;
+}
+
+bool gfx_opengl_start_draw_to_framebuffer(int fb_id, float noise_scale) {
+    // We cannot redirect rendering in GLES1 without FBOs; just remember the target.
+    // fb_id == 0 means draw to default window; non-zero means the game intends offscreen.
+    (void)noise_scale;
+    s_current_draw_fb = fb_id;
+    return true;
+}
+
+int gfx_opengl_create_framebuffer(void) {
+    // Allocate a new framebuffer entry and return its id
+    int id = (int)s_fbs.size();
+    s_fbs.resize(id + 1);
+    // Texture will be created on first parameter update
+    if (s_system_game_fb_primary < 0) {
+        // Heuristic: first created FB is the game’s primary offscreen
+        s_system_game_fb_primary = id;
+    }
+    return id;
+}
+
+void gfx_opengl_update_framebuffer_parameters(int fb, uint32_t w, uint32_t h, uint32_t msaa, bool inv_y, bool rt, bool d, bool extract) {
+    (void)msaa; (void)rt; (void)d; (void)extract;
+    if (fb <= 0) return; // main/window fb is implicit
+    ensure_fb_index(fb);
+    GLESFramebuffer &dst = s_fbs[fb];
+    if (dst.w == w && dst.h == h && dst.allocated) {
+        dst.invert_y = inv_y;
+        return;
+    }
+    dst.w = w; dst.h = h; dst.invert_y = inv_y;
+    allocate_fb_texture(dst);
+    // Allocate storage initialized to black; prefer 16-bit RGBA to save memory
+    {
+        const size_t px = (size_t)w * (size_t)h;
+        static std::vector<uint16_t> zeros;
+        if (zeros.size() < px) zeros.assign(px, 0x0000);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, (GLsizei)w, (GLsizei)h, 0, GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4, zeros.data());
+    }
+    dst.valid = false;
+}
+
+void gfx_opengl_select_texture_fb(int fb_id) {
+    if (fb_id <= 0) { glBindTexture(GL_TEXTURE_2D, 0); s_tex_id[0] = 0; return; }
+    ensure_fb_index(fb_id);
+    const GLESFramebuffer &src = s_fbs[fb_id];
+    if (!src.allocated || src.tex == 0) { glBindTexture(GL_TEXTURE_2D, 0); s_tex_id[0] = 0; return; }
+    glBindTexture(GL_TEXTURE_2D, src.tex);
+    // Ensure subsequent draws using TEXEL0 pick this texture
+    s_tex_id[0] = src.tex;
+}
 
 void gfx_opengl_set_texture_filter(FilteringMode mode) { current_filter_mode = mode; }
 FilteringMode gfx_opengl_get_texture_filter(void) { return current_filter_mode; }
