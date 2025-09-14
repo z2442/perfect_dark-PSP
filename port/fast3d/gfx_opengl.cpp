@@ -98,6 +98,9 @@ struct GLESFramebuffer {
     bool invert_y = false;     // whether sampling should flip V
     bool allocated = false;
     bool valid = false;        // content up-to-date?
+#if defined(__PSP__)
+    uint32_t pot_w = 0, pot_h = 0; // power-of-two backing size on PSP
+#endif
 };
 
 static std::vector<GLESFramebuffer> s_fbs; // index 0 is the default (window) fb
@@ -348,73 +351,66 @@ static void gfx_opengl_select_texture(int tile, GLuint texture_id, bool linear_f
 
 static void gfx_opengl_upload_texture(const uint8_t* rgba32_buf, uint32_t width, uint32_t height) {
     const size_t num_pixels = static_cast<size_t>(width) * static_cast<size_t>(height);
+#if defined(__PSP__)
+    // PSP: avoid ALPHA/LA formats; upload RGBA4444 with cheap PMA
+    static std::vector<uint16_t> rgba16;
+    rgba16.resize(num_pixels);
+    const uint8_t* src = rgba32_buf;
+    uint16_t*      dst = rgba16.data();
+    size_t i = 0;
+    const size_t n4 = num_pixels & ~static_cast<size_t>(3);
+    for (; i < n4; i += 4) {
+        uint8_t r0 = src[0],  g0 = src[1],  b0 = src[2],  a0 = src[3];
+        uint8_t r1 = src[4],  g1 = src[5],  b1 = src[6],  a1 = src[7];
+        uint8_t r2 = src[8],  g2 = src[9],  b2 = src[10], a2 = src[11];
+        uint8_t r3 = src[12], g3 = src[13], b3 = src[14], a3 = src[15];
+        src += 16;
+        r0 = (uint8_t)((r0 * a0 + 128) >> 8); g0 = (uint8_t)((g0 * a0 + 128) >> 8); b0 = (uint8_t)((b0 * a0 + 128) >> 8);
+        r1 = (uint8_t)((r1 * a1 + 128) >> 8); g1 = (uint8_t)((g1 * a1 + 128) >> 8); b1 = (uint8_t)((b1 * a1 + 128) >> 8);
+        r2 = (uint8_t)((r2 * a2 + 128) >> 8); g2 = (uint8_t)((g2 * a2 + 128) >> 8); b2 = (uint8_t)((b2 * a2 + 128) >> 8);
+        r3 = (uint8_t)((r3 * a3 + 128) >> 8); g3 = (uint8_t)((g3 * a3 + 128) >> 8); b3 = (uint8_t)((b3 * a3 + 128) >> 8);
+        dst[0] = (uint16_t)(((r0 >> 4) << 12) | ((g0 >> 4) << 8) | ((b0 >> 4) << 4) | (a0 >> 4));
+        dst[1] = (uint16_t)(((r1 >> 4) << 12) | ((g1 >> 4) << 8) | ((b1 >> 4) << 4) | (a1 >> 4));
+        dst[2] = (uint16_t)(((r2 >> 4) << 12) | ((g2 >> 4) << 8) | ((b2 >> 4) << 4) | (a2 >> 4));
+        dst[3] = (uint16_t)(((r3 >> 4) << 12) | ((g3 >> 4) << 8) | ((b3 >> 4) << 4) | (a3 >> 4));
+        dst += 4;
+    }
+    for (; i < num_pixels; ++i) {
+        uint8_t r = src[0], g = src[1], b = src[2], a = src[3];
+        src += 4;
+        r = (uint8_t)((r * a + 128) >> 8);
+        g = (uint8_t)((g * a + 128) >> 8);
+        b = (uint8_t)((b * a + 128) >> 8);
+        *dst++ = (uint16_t)(((r >> 4) << 12) | ((g >> 4) << 8) | ((b >> 4) << 4) | (a >> 4));
+    }
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
+                 width, height, 0,
+                 GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4,
+                 rgba16.data());
+#else
     if (g_es1_highp_alpha) {
         if (s_has_texenv_combine) {
-            // Premultiplied RGBA8888 for high-precision alpha (fonts/UI)
-            static std::vector<uint8_t> pma;
-            pma.resize(num_pixels * 4);
+            // Fast font/UI: alpha-only, color from PRIMARY
+            static std::vector<uint8_t> alpha8;
+            alpha8.resize(num_pixels);
             const uint8_t* src = rgba32_buf;
-            uint8_t*       dst = pma.data();
-            size_t i = 0;
-            const size_t n4 = num_pixels & ~static_cast<size_t>(3);
-            for (; i < n4; i += 4) {
-                uint8_t r0 = src[0],  g0 = src[1],  b0 = src[2],  a0 = src[3];
-                uint8_t r1 = src[4],  g1 = src[5],  b1 = src[6],  a1 = src[7];
-                uint8_t r2 = src[8],  g2 = src[9],  b2 = src[10], a2 = src[11];
-                uint8_t r3 = src[12], g3 = src[13], b3 = src[14], a3 = src[15];
-                src += 16;
-                r0 = (uint8_t)((r0 * a0 + 127) / 255); g0 = (uint8_t)((g0 * a0 + 127) / 255); b0 = (uint8_t)((b0 * a0 + 127) / 255);
-                r1 = (uint8_t)((r1 * a1 + 127) / 255); g1 = (uint8_t)((g1 * a1 + 127) / 255); b1 = (uint8_t)((b1 * a1 + 127) / 255);
-                r2 = (uint8_t)((r2 * a2 + 127) / 255); g2 = (uint8_t)((g2 * a2 + 127) / 255); b2 = (uint8_t)((b2 * a2 + 127) / 255);
-                r3 = (uint8_t)((r3 * a3 + 127) / 255); g3 = (uint8_t)((g3 * a3 + 127) / 255); b3 = (uint8_t)((b3 * a3 + 127) / 255);
-                dst[0]  = r0; dst[1]  = g0; dst[2]  = b0; dst[3]  = a0;
-                dst[4]  = r1; dst[5]  = g1; dst[6]  = b1; dst[7]  = a1;
-                dst[8]  = r2; dst[9]  = g2; dst[10] = b2; dst[11] = a2;
-                dst[12] = r3; dst[13] = g3; dst[14] = b3; dst[15] = a3;
-                dst += 16;
-            }
-            for (; i < num_pixels; ++i) {
-                uint8_t r = src[0], g = src[1], b = src[2], a = src[3];
-                src += 4;
-                r = (uint8_t)((r * a + 127) / 255);
-                g = (uint8_t)((g * a + 127) / 255);
-                b = (uint8_t)((b * a + 127) / 255);
-                *dst++ = r; *dst++ = g; *dst++ = b; *dst++ = a;
-            }
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
+            uint8_t*       dst = alpha8.data();
+            for (size_t i = 0; i < num_pixels; ++i) dst[i] = src[i * 4 + 3];
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_ALPHA,
                          width, height, 0,
-                         GL_RGBA, GL_UNSIGNED_BYTE,
-                         pma.data());
+                         GL_ALPHA, GL_UNSIGNED_BYTE,
+                         alpha8.data());
         } else {
-            // No combine available: keep RGB as white, carry alpha only.
-            // This lets GL_MODULATE produce color=PRIMARY and alpha=TEX.alpha.
-            static std::vector<uint8_t> alpha_rgba;
-            alpha_rgba.resize(num_pixels * 4);
+            // No COMBINE: use LA
+            static std::vector<uint8_t> la;
+            la.resize(num_pixels * 2);
             const uint8_t* src = rgba32_buf;
-            uint8_t*       dst = alpha_rgba.data();
-            size_t i = 0;
-            const size_t n4 = num_pixels & ~static_cast<size_t>(3);
-            for (; i < n4; i += 4) {
-                uint8_t a0 = src[3];
-                uint8_t a1 = src[7];
-                uint8_t a2 = src[11];
-                uint8_t a3 = src[15];
-                src += 16;
-                dst[0]  = 255; dst[1]  = 255; dst[2]  = 255; dst[3]  = a0;
-                dst[4]  = 255; dst[5]  = 255; dst[6]  = 255; dst[7]  = a1;
-                dst[8]  = 255; dst[9]  = 255; dst[10] = 255; dst[11] = a2;
-                dst[12] = 255; dst[13] = 255; dst[14] = 255; dst[15] = a3;
-                dst += 16;
-            }
-            for (; i < num_pixels; ++i) {
-                uint8_t a = src[3];
-                src += 4;
-                *dst++ = 255; *dst++ = 255; *dst++ = 255; *dst++ = a;
-            }
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
+            uint8_t*       dst = la.data();
+            for (size_t i = 0; i < num_pixels; ++i) { dst[i * 2 + 0] = 255; dst[i * 2 + 1] = src[i * 4 + 3]; }
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE_ALPHA,
                          width, height, 0,
-                         GL_RGBA, GL_UNSIGNED_BYTE,
-                         alpha_rgba.data());
+                         GL_LUMINANCE_ALPHA, GL_UNSIGNED_BYTE,
+                         la.data());
         }
     } else {
         // Premultiplied RGBA4444 — faster, smaller; good for most scene textures
@@ -430,10 +426,10 @@ static void gfx_opengl_upload_texture(const uint8_t* rgba32_buf, uint32_t width,
             uint8_t r2 = src[8],  g2 = src[9],  b2 = src[10], a2 = src[11];
             uint8_t r3 = src[12], g3 = src[13], b3 = src[14], a3 = src[15];
             src += 16;
-            r0 = (uint8_t)((r0 * a0 + 127) / 255); g0 = (uint8_t)((g0 * a0 + 127) / 255); b0 = (uint8_t)((b0 * a0 + 127) / 255);
-            r1 = (uint8_t)((r1 * a1 + 127) / 255); g1 = (uint8_t)((g1 * a1 + 127) / 255); b1 = (uint8_t)((b1 * a1 + 127) / 255);
-            r2 = (uint8_t)((r2 * a2 + 127) / 255); g2 = (uint8_t)((g2 * a2 + 127) / 255); b2 = (uint8_t)((b2 * a2 + 127) / 255);
-            r3 = (uint8_t)((r3 * a3 + 127) / 255); g3 = (uint8_t)((g3 * a3 + 127) / 255); b3 = (uint8_t)((b3 * a3 + 127) / 255);
+            r0 = (uint8_t)((r0 * a0 + 128) >> 8); g0 = (uint8_t)((g0 * a0 + 128) >> 8); b0 = (uint8_t)((b0 * a0 + 128) >> 8);
+            r1 = (uint8_t)((r1 * a1 + 128) >> 8); g1 = (uint8_t)((g1 * a1 + 128) >> 8); b1 = (uint8_t)((b1 * a1 + 128) >> 8);
+            r2 = (uint8_t)((r2 * a2 + 128) >> 8); g2 = (uint8_t)((g2 * a2 + 128) >> 8); b2 = (uint8_t)((b2 * a2 + 128) >> 8);
+            r3 = (uint8_t)((r3 * a3 + 128) >> 8); g3 = (uint8_t)((g3 * a3 + 128) >> 8); b3 = (uint8_t)((b3 * a3 + 128) >> 8);
             dst[0] = (uint16_t)(((r0 >> 4) << 12) | ((g0 >> 4) << 8) | ((b0 >> 4) << 4) | (a0 >> 4));
             dst[1] = (uint16_t)(((r1 >> 4) << 12) | ((g1 >> 4) << 8) | ((b1 >> 4) << 4) | (a1 >> 4));
             dst[2] = (uint16_t)(((r2 >> 4) << 12) | ((g2 >> 4) << 8) | ((b2 >> 4) << 4) | (a2 >> 4));
@@ -443,9 +439,9 @@ static void gfx_opengl_upload_texture(const uint8_t* rgba32_buf, uint32_t width,
         for (; i < num_pixels; ++i) {
             uint8_t r = src[0], g = src[1], b = src[2], a = src[3];
             src += 4;
-            r = (uint8_t)((r * a + 127) / 255);
-            g = (uint8_t)((g * a + 127) / 255);
-            b = (uint8_t)((b * a + 127) / 255);
+            r = (uint8_t)((r * a + 128) >> 8);
+            g = (uint8_t)((g * a + 128) >> 8);
+            b = (uint8_t)((b * a + 128) >> 8);
             *dst++ = (uint16_t)(((r >> 4) << 12) | ((g >> 4) << 8) | ((b >> 4) << 4) | (a >> 4));
         }
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
@@ -453,6 +449,7 @@ static void gfx_opengl_upload_texture(const uint8_t* rgba32_buf, uint32_t width,
                      GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4,
                      rgba16.data());
     }
+#endif
 }
 
 static uint32_t gfx_cm_to_opengl(uint32_t val) {
@@ -990,23 +987,34 @@ static void allocate_fb_texture(GLESFramebuffer &fb) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, current_filter_mode == FILTER_LINEAR ? GL_LINEAR : GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    // Allocate backing storage
+#if defined(__PSP__)
+    auto next_pot = [](uint32_t v) -> uint32_t { uint32_t p = 1; while (p < v) p <<= 1; return p; };
+    fb.pot_w = next_pot(fb.w ? fb.w : 1);
+    fb.pot_h = next_pot(fb.h ? fb.h : 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, (GLsizei)fb.pot_w, (GLsizei)fb.pot_h, 0, GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4, NULL);
+#endif
 }
 
 static void fb_copy_window_into_texture(GLESFramebuffer &dst) {
     if (!dst.allocated || dst.tex == 0 || dst.w == 0 || dst.h == 0) return;
-    // Read back from the default framebuffer and upload to texture
+    glBindTexture(GL_TEXTURE_2D, dst.tex);
+#ifndef __PSP__
+    // Prefer GPU-side copy on non-PSP targets
+    glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, (GLsizei)dst.w, (GLsizei)dst.h);
+    dst.valid = true;
+#else
+    // PSP fallback: read back and upload only the used sub-rect of the POT texture
     static std::vector<uint8_t> s_readback;
     const size_t need = (size_t)dst.w * (size_t)dst.h * 4u;
     if (s_readback.size() < need) s_readback.resize(need);
-
-    // Read lower-left origin; orientation will be handled when drawing (invert_v)
+    // Ensure rendering has completed before reading back
+    glFinish();
     glReadPixels(0, 0, (GLsizei)dst.w, (GLsizei)dst.h, GL_RGBA, GL_UNSIGNED_BYTE, s_readback.data());
-    // Ensure opaque alpha; default framebuffer may not carry meaningful alpha
     for (size_t i = 0; i < need; i += 4) s_readback[i + 3] = 255;
-
-    glBindTexture(GL_TEXTURE_2D, dst.tex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, (GLsizei)dst.w, (GLsizei)dst.h, 0, GL_RGBA, GL_UNSIGNED_BYTE, s_readback.data());
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, (GLsizei)dst.w, (GLsizei)dst.h, GL_RGBA, GL_UNSIGNED_BYTE, s_readback.data());
     dst.valid = true;
+#endif
 }
 
 static void fb_draw_textured_quad(GLuint tex, float x, float y, float w, float h, bool invert_v, bool opaque_replace) {
@@ -1035,17 +1043,30 @@ static void fb_draw_textured_quad(GLuint tex, float x, float y, float w, float h
     const GLfloat verts[4 * 3] = {
         x0, y0, 0.0f,
         x1, y0, 0.0f,
-        x1, y1, 0.0f,
         x0, y1, 0.0f,
+        x1, y1, 0.0f,
     };
 
-    const GLfloat t0 = invert_v ? 1.0f : 0.0f;
-    const GLfloat t1 = invert_v ? 0.0f : 1.0f;
+    // On PSP when using POT textures, only sample the valid sub-rect
+    GLfloat s_max = 1.0f, t_max = 1.0f;
+#if defined(__PSP__)
+    for (const auto &fb : s_fbs) {
+        if (fb.allocated && fb.tex == tex) {
+            const float pw = (float)(fb.pot_w ? fb.pot_w : fb.w);
+            const float ph = (float)(fb.pot_h ? fb.pot_h : fb.h);
+            if (pw > 0.0f) s_max = (GLfloat)((float)fb.w / pw);
+            if (ph > 0.0f) t_max = (GLfloat)((float)fb.h / ph);
+            break;
+        }
+    }
+#endif
+    const GLfloat t0 = invert_v ? t_max : 0.0f;
+    const GLfloat t1 = invert_v ? 0.0f : t_max;
     const GLfloat uvs[4 * 2] = {
         0.0f, t0,
-        1.0f, t0,
-        1.0f, t1,
+        s_max, t0,
         0.0f, t1,
+        s_max, t1,
     };
 
     glEnableClientState(GL_VERTEX_ARRAY);
@@ -1053,7 +1074,7 @@ static void fb_draw_textured_quad(GLuint tex, float x, float y, float w, float h
     glVertexPointer(3, GL_FLOAT, 0, verts);
     glTexCoordPointer(2, GL_FLOAT, 0, uvs);
 
-    glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
     glDisableClientState(GL_TEXTURE_COORD_ARRAY);
     glDisableClientState(GL_VERTEX_ARRAY);
