@@ -1,3 +1,4 @@
+
 #include <cstdint>
 #include <GLES/gl.h>
 
@@ -20,10 +21,134 @@ static bool s_blend_enabled = true;            // shadow of GL_BLEND enable stat
 #include <string.h>
 #include <math.h>
 #include <vector>
+#include <unordered_map>
 
 extern "C"{
 #include <GLES/egl.h>
 #include <GLES/gl.h>
+}
+
+// ---- CPU-side texture copies & compositor for two-cycle emulation ----
+struct CpuTex {
+    int w = 0, h = 0;
+    uint32_t version = 0;           // increments on each upload to this GL tex id
+    std::vector<uint16_t> rgba4444; // premultiplied RGBA4444 data, size = w*h
+};
+
+static std::unordered_map<GLuint, CpuTex> s_cpu_tex;   // GL tex id -> CPU copy
+static uint32_t s_cpu_tex_generation = 1;              // global monotonically increasing version
+
+struct CompositeKey { GLuint a, b; uint8_t mode; };
+struct CompositeVal { GLuint gl_tex = 0; int w = 0, h = 0; uint32_t ver_a = 0, ver_b = 0; };
+
+struct CompositeKeyHash {
+    size_t operator()(const CompositeKey &k) const noexcept {
+        return (size_t)k.a * 1315423911u ^ (size_t)k.b * 2654435761u ^ (size_t)k.mode;
+    }
+};
+struct CompositeKeyEq {
+    bool operator()(const CompositeKey &x, const CompositeKey &y) const noexcept {
+        return x.a==y.a && x.b==y.b && x.mode==y.mode;
+    }
+};
+
+static std::unordered_map<CompositeKey, CompositeVal, CompositeKeyHash, CompositeKeyEq> s_composites;
+
+static inline uint16_t pack_rgba4444_pma(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+    // Inputs expected premultiplied (r,g,b already scaled by a)
+    return (uint16_t)(((r >> 4) << 12) | ((g >> 4) << 8) | ((b >> 4) << 4) | (a >> 4));
+}
+static inline void unpack_rgba4444_pma(uint16_t p, uint8_t &r, uint8_t &g, uint8_t &b, uint8_t &a) {
+    uint8_t R = (uint8_t)((p >> 12) & 0xF);
+    uint8_t G = (uint8_t)((p >> 8)  & 0xF);
+    uint8_t B = (uint8_t)((p >> 4)  & 0xF);
+    uint8_t A = (uint8_t)( p        & 0xF);
+    r = (uint8_t)((R << 4) | R);
+    g = (uint8_t)((G << 4) | G);
+    b = (uint8_t)((B << 4) | B);
+    a = (uint8_t)((A << 4) | A);
+}
+
+// Blend two PMA RGBA8888 samples according to g_two_pass_mode. Returns PMA.
+static inline void blend_two_pass_sample(uint8_t r0, uint8_t g0, uint8_t b0, uint8_t a0,
+                                         uint8_t r1, uint8_t g1, uint8_t b1, uint8_t a1,
+                                         uint8_t mode,
+                                         uint8_t &r, uint8_t &g, uint8_t &b, uint8_t &a) {
+    switch (mode) {
+        default: // 1: decal PMA => src1 over src0
+        case 1: {
+            uint16_t inv = 255 - a1;
+            r = (uint8_t)std::min(255, (int)r1 + ((int)r0 * inv + 127)/255);
+            g = (uint8_t)std::min(255, (int)g1 + ((int)g0 * inv + 127)/255);
+            b = (uint8_t)std::min(255, (int)b1 + ((int)b0 * inv + 127)/255);
+            a = (uint8_t)std::min(255, (int)a1 + ((int)a0 * inv + 127)/255);
+            break;
+        }
+        case 2: { // modulate (multiply)
+            r = (uint8_t)(((int)r0 * (int)r1 + 127)/255);
+            g = (uint8_t)(((int)g0 * (int)g1 + 127)/255);
+            b = (uint8_t)(((int)b0 * (int)b1 + 127)/255);
+            a = (uint8_t)(((int)a0 * (int)a1 + 127)/255);
+            break;
+        }
+        case 3: // additive
+        case 4: { // additive-alpha (weight baked into tex1)
+            int rr = r0 + r1; if (rr>255) rr=255;
+            int gg = g0 + g1; if (gg>255) gg=255;
+            int bb = b0 + b1; if (bb>255) bb=255;
+            int aa = a0 + a1; if (aa>255) aa=255;
+            r = (uint8_t)rr; g = (uint8_t)gg; b = (uint8_t)bb; a = (uint8_t)aa;
+            break;
+        }
+        case 5: { // replace
+            r = r1; g = g1; b = b1; a = a1; break;
+        }
+    }
+}
+
+// Build or fetch a composite GL texture for (tex0, tex1, mode). Returns 0 on failure.
+static GLuint get_or_build_composite(GLuint tex0, GLuint tex1, uint8_t mode) {
+    if (!tex0 || !tex1) return 0;
+    auto it0 = s_cpu_tex.find(tex0), it1 = s_cpu_tex.find(tex1);
+    if (it0 == s_cpu_tex.end() || it1 == s_cpu_tex.end()) return 0; // need CPU copies
+    const CpuTex &A = it0->second, &B = it1->second;
+    if (A.w == 0 || A.h == 0 || B.w == 0 || B.h == 0) return 0;
+    if (A.w != B.w || A.h != B.h) return 0; // equal-size only
+
+    CompositeKey key{tex0, tex1, mode};
+    auto itC = s_composites.find(key);
+    if (itC != s_composites.end()) {
+        CompositeVal &cv = itC->second;
+        if (cv.ver_a == A.version && cv.ver_b == B.version && cv.gl_tex != 0)
+            return cv.gl_tex;
+    }
+
+    // Build composite
+    const int W = A.w, H = A.h;
+    static std::vector<uint16_t> out4444; out4444.resize((size_t)W * (size_t)H);
+    for (int i = 0; i < W*H; ++i) {
+        uint8_t r0,g0,b0,a0, r1,g1,b1,a1, r,g,b,a;
+        unpack_rgba4444_pma(A.rgba4444[(size_t)i], r0,g0,b0,a0);
+        unpack_rgba4444_pma(B.rgba4444[(size_t)i], r1,g1,b1,a1);
+        blend_two_pass_sample(r0,g0,b0,a0, r1,g1,b1,a1, mode, r,g,b,a);
+        out4444[(size_t)i] = pack_rgba4444_pma(r,g,b,a);
+    }
+
+    // Upload composite
+    CompositeVal cv{}; if (itC != s_composites.end()) cv = itC->second;
+    if (cv.gl_tex == 0) glGenTextures(1, &cv.gl_tex);
+    cv.w = W; cv.h = H; cv.ver_a = A.version; cv.ver_b = B.version;
+
+    glBindTexture(GL_TEXTURE_2D, cv.gl_tex);
+    // Default to linear filtering for composites to avoid dependency on undeclared globals.
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, (GLsizei)W, (GLsizei)H, 0, GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4, out4444.data());
+
+    s_composites[key] = cv;
+    return cv.gl_tex;
 }
 
 /* GLES 1.1 headers may not define GL_MIRRORED_REPEAT.
@@ -80,6 +205,8 @@ static bool s_has_texenv_combine = false;
 #include <PR/gbi.h>
 #include "gfx_rendering_api.h"
 
+static FilteringMode current_filter_mode = FILTER_LINEAR;
+
 #define SCREEN_WIDTH  480  // Set the screen width (example value)
 #define SCREEN_HEIGHT 272  // Set the screen height (example value)
 
@@ -87,6 +214,10 @@ static bool es_depth_test  = false; /* GL_DEPTH_TEST currently enabled? */
 static bool es_depth_write = false;  /* TRUE if glDepthMask(GL_TRUE)      */
 
 static float P_matrix[4][4]; // Global matrix for projection
+
+static bool s_supports_depth_clamp = false;
+static bool s_emulate_depth_clamp = true;
+static const float kDepthClampScale = 0.3f; // matches desktop fallback when depth clamp is unavailable
 
 // Forward state used by GLES1 framebuffer emulation and draw suppression
 static int s_current_draw_fb = 0;           // 0 = default/backbuffer
@@ -164,6 +295,19 @@ static void glLoadRowMajorMatrixf(const float m[4][4]) {
     glLoadMatrixf(&m[0][0]);
 }
 
+static void load_projection_matrix_with_depth_clamp(const float m[4][4]) {
+    if (s_emulate_depth_clamp) {
+        float adjusted[4][4];
+        memcpy(adjusted, m, sizeof(adjusted));
+        for (int i = 0; i < 4; ++i) {
+            adjusted[i][2] *= kDepthClampScale;
+        }
+        glLoadMatrixf(&adjusted[0][0]);
+    } else {
+        glLoadMatrixf(&m[0][0]);
+    }
+}
+
 // --- 2D/3D projection helpers and UV mirroring ---
 static bool s_is_2d_mode = false; // tracks currently selected projection mode
 
@@ -203,7 +347,7 @@ static void gfx_opengl_set_projection_for_2d() {
 static void gfx_opengl_set_projection_for_3d() {
     // Load external matrices provided by the engine
     glMatrixMode(GL_PROJECTION);
-    glLoadRowMajorMatrixf(g_es1_P);
+    load_projection_matrix_with_depth_clamp(g_es1_P);
     glMatrixMode(GL_MODELVIEW);
     glLoadRowMajorMatrixf(g_es1_M);
 }
@@ -231,7 +375,6 @@ struct ShaderProgram {
     GLint three_point_filter_locations[2];
 };
 
-static FilteringMode current_filter_mode = FILTER_LINEAR;
 static bool current_textures_linear_filter[2] = {false, false};
 
 static bool current_depth_mask = true;
@@ -452,6 +595,32 @@ static void gfx_opengl_upload_texture(const uint8_t* rgba32_buf, uint32_t width,
                      rgba16.data());
     }
 #endif
+
+    // --- Record/update CPU copy for compositor ---
+    GLint bound = 0;
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &bound);
+    if (bound != 0) {
+        CpuTex &ct = s_cpu_tex[(GLuint)bound];
+        ct.w = (int)width; ct.h = (int)height;
+        ct.version = ++s_cpu_tex_generation;
+        ct.rgba4444.resize((size_t)width * (size_t)height);
+#if defined(__PSP__)
+        // We already have RGBA4444 premultiplied in `rgba16`
+        memcpy(ct.rgba4444.data(), rgba16.data(), (size_t)width * (size_t)height * sizeof(uint16_t));
+#else
+        // Ensure a PMA RGBA4444 copy regardless of upload path
+        const size_t num_pixels = (size_t)width * (size_t)height;
+        const uint8_t* src = rgba32_buf;
+        for (size_t i = 0; i < num_pixels; ++i) {
+            uint8_t r = src[i*4+0], g = src[i*4+1], b = src[i*4+2], a = src[i*4+3];
+            r = (uint8_t)((r * a + 128) >> 8);
+            g = (uint8_t)((g * a + 128) >> 8);
+            b = (uint8_t)((b * a + 128) >> 8);
+            ct.rgba4444[i] = pack_rgba4444_pma(r,g,b,a);
+        }
+#endif
+    }
+
 }
 
 static uint32_t gfx_cm_to_opengl(uint32_t val) {
@@ -627,7 +796,7 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
     } else {
         if (g_es1_matrix_dirty) {
             glMatrixMode(GL_PROJECTION);
-            glLoadRowMajorMatrixf(g_es1_P);
+            load_projection_matrix_with_depth_clamp(g_es1_P);
             glMatrixMode(GL_MODELVIEW);
             glLoadRowMajorMatrixf(g_es1_M);
             g_es1_matrix_dirty = 0;
@@ -742,10 +911,22 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
 
     // For two-pass emulation we draw the base unblended; otherwise honor current blend state
     // Never run two-pass overlay for fonts/UI (alpha-tested + highp alpha)
-    bool using_two_pass = (g_force_two_pass != 0) && g_es1_use_tex1 && (s_tex_id[1] != 0) && !(g_es1_highp_alpha && g_es1_alpha_test_enable);
-    if (using_two_pass) {
-        glDisable(GL_BLEND);
-    } else {
+// Prefer CPU-side composite to avoid second pass when possible
+bool want_two_pass = (g_force_two_pass != 0) && g_es1_use_tex1 && (s_tex_id[1] != 0) && !(g_es1_highp_alpha && g_es1_alpha_test_enable);
+bool using_two_pass = want_two_pass;
+GLuint composite_tex = 0;
+if (want_two_pass) {
+    composite_tex = get_or_build_composite(s_tex_id[0], s_tex_id[1], (uint8_t)g_two_pass_mode);
+    if (composite_tex != 0) {
+        glBindTexture(GL_TEXTURE_2D, composite_tex);
+        s_tex_id[0] = composite_tex; // ensure later code sees the bound texture
+        using_two_pass = false;
+    }
+}
+
+if (using_two_pass) {
+    glDisable(GL_BLEND);
+} else {
         // For fonts/UI, prefer alpha-test only without blending for speed and crisp edges
         if (g_es1_highp_alpha && g_es1_alpha_test_enable) {
             glDisable(GL_BLEND);
@@ -956,6 +1137,20 @@ static void gfx_opengl_init(void) {
             strstr(ext, "GL_APPLE_texture_env_combine")) {
             s_has_texenv_combine = true;
         }
+
+        if (strstr(ext, "GL_NV_depth_clamp") ||
+            strstr(ext, "GL_EXT_depth_clamp") ||
+            strstr(ext, "GL_ARB_depth_clamp") ||
+            strstr(ext, "GL_OES_depth_clamp")) {
+            s_supports_depth_clamp = true;
+        }
+    }
+
+    if (s_supports_depth_clamp) {
+#ifdef GL_DEPTH_CLAMP
+        glEnable(GL_DEPTH_CLAMP);
+#endif
+        s_emulate_depth_clamp = false;
     }
 
     // Set state trackers to match initial GL state

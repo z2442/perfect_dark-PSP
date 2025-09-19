@@ -1931,10 +1931,13 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
         float v = ((float)(vtx->v - ult) / 32.0f) / (float)orig_h;
         v *= (float)orig_h / (float)pot_h;
 
+        const float alpha = vtx->color.a / 255.0f;
         TV[i] = { vtx->x, vtx->y, vtx->z, w,
                   u, v,
-                  vtx->color.r/255.f, vtx->color.g/255.f,
-                  vtx->color.b/255.f, vtx->color.a/255.f };
+                  (vtx->color.r / 255.0f) * alpha,
+                  (vtx->color.g / 255.0f) * alpha,
+                  (vtx->color.b / 255.0f) * alpha,
+                  alpha };
     }
 
     // --- lambda to push one vertex (9 floats): x,y,z,u,v,r,g,b,a ---------
