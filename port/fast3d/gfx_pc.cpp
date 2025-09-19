@@ -1396,6 +1396,65 @@ static void calculate_normal_dir(const struct NormalColor *vcn, float coeffs[3])
     gfx_normalize_vector(coeffs);
 }
 
+#if defined(PLATFORM_PSP)
+static inline void psp_vfpu_dot_pair(const struct NormalColor *normal,
+                                     const float (*coeffs)[3],
+                                     float *out_x,
+                                     float *out_y) {
+    float normal_vec[4] = {
+        static_cast<float>(normal->x),
+        static_cast<float>(normal->y),
+        static_cast<float>(normal->z),
+        0.0f
+    };
+    const float *look0 = coeffs[0];
+    const float *look1 = coeffs[1];
+    float dots[2];
+
+    __asm__ volatile (
+        "lv.s   S000, 0(%1)\n"  // normal.x
+        "lv.s   S001, 4(%1)\n"  // normal.y
+        "lv.s   S002, 8(%1)\n"  // normal.z
+        "lv.s   S010, 0(%2)\n"  // look0.x
+        "lv.s   S011, 4(%2)\n"  // look0.y
+        "lv.s   S012, 8(%2)\n"  // look0.z
+        "lv.s   S020, 0(%3)\n"  // look1.x
+        "lv.s   S021, 4(%3)\n"  // look1.y
+        "lv.s   S022, 8(%3)\n"  // look1.z
+        "vdot.t S003, C000, C010\n" // dot(normal, look0)
+        "vdot.t S013, C000, C020\n" // dot(normal, look1)
+        "sv.s   S003, 0(%0)\n"
+        "sv.s   S013, 4(%0)\n"
+        :
+        : "r"(dots), "r"(normal_vec), "r"(look0), "r"(look1)
+        : "memory"
+    );
+
+    *out_x = dots[0];
+    *out_y = dots[1];
+}
+#endif
+
+static inline void compute_lookat_dots(const struct NormalColor *normal,
+                                       const float (*coeffs)[3],
+                                       float *out_x,
+                                       float *out_y) {
+#if defined(PLATFORM_PSP)
+    psp_vfpu_dot_pair(normal, coeffs, out_x, out_y);
+#else
+    float dotx = 0.0f;
+    float doty = 0.0f;
+    dotx += normal->x * coeffs[0][0];
+    dotx += normal->y * coeffs[0][1];
+    dotx += normal->z * coeffs[0][2];
+    doty += normal->x * coeffs[1][0];
+    doty += normal->y * coeffs[1][1];
+    doty += normal->z * coeffs[1][2];
+    *out_x = dotx;
+    *out_y = doty;
+#endif
+}
+
 static void gfx_matrix_mul(float res[4][4], const float a[4][4], const float b[4][4]) {
     float tmp[4][4];
     for (int i = 0; i < 4; i++) {
@@ -1565,12 +1624,7 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* verti
             if (rsp.geometry_mode & G_TEXTURE_GEN) {
                 float dotx = 0, doty = 0;
                 if (rsp.lookat_enabled) {
-                    dotx += vcn->x * rsp.current_lookat_coeffs[0][0];
-                    dotx += vcn->y * rsp.current_lookat_coeffs[0][1];
-                    dotx += vcn->z * rsp.current_lookat_coeffs[0][2];
-                    doty += vcn->x * rsp.current_lookat_coeffs[1][0];
-                    doty += vcn->y * rsp.current_lookat_coeffs[1][1];
-                    doty += vcn->z * rsp.current_lookat_coeffs[1][2];
+                    compute_lookat_dots(vcn, rsp.current_lookat_coeffs, &dotx, &doty);
                     dotx /= 127.0f;
                     doty /= 127.0f;
                 } else {

@@ -806,7 +806,7 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
     // Depth test state is managed by set_depth_mode; do not toggle here.
 
     // Keep CCW winding; CPU flips per-limb if mirrored.
-    glFrontFace(GL_CCW);
+    //glFrontFace(GL_CCW);
     // Apply N64 cull mode (was disabled above for forced 2D)
     if (!forced2D && g_es1_cull_mode == 0) {
         glDisable(GL_CULL_FACE);
