@@ -10,6 +10,7 @@ extern "C" volatile float g_tex_t_scale[2];
 extern "C" volatile float g_tex_s_offset[2];
 extern "C" volatile float g_tex_t_offset[2];
 static GLuint s_tex_id[2] = {0,0};            // last selected GL textures for tile 0/1
+static GLuint s_last_bound_tex = 0;           // tracks most recent texture bound via select_texture
 static bool s_last_use_alpha = true;           // last requested blend enable from set_use_alpha
 static bool s_last_modulate  = false;          // last requested modulate flag from set_use_alpha
 static GLenum s_current_depth_func = GL_LEQUAL; // tracked from set_depth_mode
@@ -27,6 +28,27 @@ extern "C"{
 #include <GLES/egl.h>
 #include <GLES/gl.h>
 }
+
+#include "system.h"
+
+#if defined(__PSP__)
+static inline void psp_clear_gl_errors(void) {
+    while (glGetError() != GL_NO_ERROR) {}
+}
+
+static inline GLenum psp_check_gl_error(const char* op, int w, int h, GLenum fmt, GLenum type) {
+    GLenum err = glGetError();
+    if (err != GL_NO_ERROR) {
+        const s32 level = (err == GL_OUT_OF_MEMORY) ? LOG_ERROR : LOG_WARNING;
+        sysLogPrintf(level, "F3D PSP: %s failed (size=%dx%d fmt=0x%04x type=0x%04x, err=0x%04x)",
+                     op, w, h, (unsigned)fmt, (unsigned)type, (unsigned)err);
+    }
+    return err;
+}
+#else
+static inline void psp_clear_gl_errors(void) {}
+static inline GLenum psp_check_gl_error(const char*, int, int, GLenum, GLenum) { return GL_NO_ERROR; }
+#endif
 
 // ---- CPU-side texture copies & compositor for two-cycle emulation ----
 struct CpuTex {
@@ -140,12 +162,22 @@ static GLuint get_or_build_composite(GLuint tex0, GLuint tex1, uint8_t mode) {
     cv.w = W; cv.h = H; cv.ver_a = A.version; cv.ver_b = B.version;
 
     glBindTexture(GL_TEXTURE_2D, cv.gl_tex);
+    s_last_bound_tex = cv.gl_tex;
     // Default to linear filtering for composites to avoid dependency on undeclared globals.
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    psp_clear_gl_errors();
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, (GLsizei)W, (GLsizei)H, 0, GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4, out4444.data());
+    if (psp_check_gl_error("glTexImage2D composite", W, H, GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4) != GL_NO_ERROR) {
+        if (cv.gl_tex != 0) {
+            glDeleteTextures(1, &cv.gl_tex);
+            cv.gl_tex = 0;
+        }
+        return 0;
+    }
 
     s_composites[key] = cv;
     return cv.gl_tex;
@@ -491,47 +523,77 @@ static void gfx_opengl_select_texture(int tile, GLuint texture_id, bool linear_f
     if (tile > 1) tile = 1;
     s_tex_id[tile] = texture_id;        // remember per "tile" index from RDP
     glBindTexture(GL_TEXTURE_2D, texture_id);
+    s_last_bound_tex = texture_id;
     current_textures_linear_filter[tile] = linear_filter;
 }
 
 static void gfx_opengl_upload_texture(const uint8_t* rgba32_buf, uint32_t width, uint32_t height) {
+    if (width == 0 || height == 0) {
+#if defined(__PSP__)
+        sysLogPrintf(LOG_WARNING, "F3D PSP: skipped texture upload with zero dimension (%ux%u)", (unsigned)width, (unsigned)height);
+#endif
+        return;
+    }
     const size_t num_pixels = static_cast<size_t>(width) * static_cast<size_t>(height);
 #if defined(__PSP__)
-    // PSP: avoid ALPHA/LA formats; upload RGBA4444 with cheap PMA
-    static std::vector<uint16_t> rgba16;
-    rgba16.resize(num_pixels);
+    // PSP: prefer RGBA4444 uploads; fall back to RGBA8888 if required.
+    static std::vector<uint16_t> rgba4444;
+    static std::vector<uint8_t>  rgba8888;
+    static bool psp_warned_8888 = false;
+
+    rgba4444.resize(num_pixels);
+
     const uint8_t* src = rgba32_buf;
-    uint16_t*      dst = rgba16.data();
-    size_t i = 0;
-    const size_t n4 = num_pixels & ~static_cast<size_t>(3);
-    for (; i < n4; i += 4) {
-        uint8_t r0 = src[0],  g0 = src[1],  b0 = src[2],  a0 = src[3];
-        uint8_t r1 = src[4],  g1 = src[5],  b1 = src[6],  a1 = src[7];
-        uint8_t r2 = src[8],  g2 = src[9],  b2 = src[10], a2 = src[11];
-        uint8_t r3 = src[12], g3 = src[13], b3 = src[14], a3 = src[15];
-        src += 16;
-        r0 = (uint8_t)((r0 * a0 + 128) >> 8); g0 = (uint8_t)((g0 * a0 + 128) >> 8); b0 = (uint8_t)((b0 * a0 + 128) >> 8);
-        r1 = (uint8_t)((r1 * a1 + 128) >> 8); g1 = (uint8_t)((g1 * a1 + 128) >> 8); b1 = (uint8_t)((b1 * a1 + 128) >> 8);
-        r2 = (uint8_t)((r2 * a2 + 128) >> 8); g2 = (uint8_t)((g2 * a2 + 128) >> 8); b2 = (uint8_t)((b2 * a2 + 128) >> 8);
-        r3 = (uint8_t)((r3 * a3 + 128) >> 8); g3 = (uint8_t)((g3 * a3 + 128) >> 8); b3 = (uint8_t)((b3 * a3 + 128) >> 8);
-        dst[0] = (uint16_t)(((r0 >> 4) << 12) | ((g0 >> 4) << 8) | ((b0 >> 4) << 4) | (a0 >> 4));
-        dst[1] = (uint16_t)(((r1 >> 4) << 12) | ((g1 >> 4) << 8) | ((b1 >> 4) << 4) | (a1 >> 4));
-        dst[2] = (uint16_t)(((r2 >> 4) << 12) | ((g2 >> 4) << 8) | ((b2 >> 4) << 4) | (a2 >> 4));
-        dst[3] = (uint16_t)(((r3 >> 4) << 12) | ((g3 >> 4) << 8) | ((b3 >> 4) << 4) | (a3 >> 4));
-        dst += 4;
-    }
-    for (; i < num_pixels; ++i) {
-        uint8_t r = src[0], g = src[1], b = src[2], a = src[3];
+    for (size_t i = 0; i < num_pixels; ++i) {
+        uint8_t r = src[0];
+        uint8_t g = src[1];
+        uint8_t b = src[2];
+        uint8_t a = src[3];
         src += 4;
-        r = (uint8_t)((r * a + 128) >> 8);
-        g = (uint8_t)((g * a + 128) >> 8);
-        b = (uint8_t)((b * a + 128) >> 8);
-        *dst++ = (uint16_t)(((r >> 4) << 12) | ((g >> 4) << 8) | ((b >> 4) << 4) | (a >> 4));
+
+        uint8_t pm_r = (uint8_t)((r * a + 128) >> 8);
+        uint8_t pm_g = (uint8_t)((g * a + 128) >> 8);
+        uint8_t pm_b = (uint8_t)((b * a + 128) >> 8);
+
+        rgba4444[i] = (uint16_t)(((pm_r >> 4) << 12) | ((pm_g >> 4) << 8) | ((pm_b >> 4) << 4) | (a >> 4));
     }
+
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    psp_clear_gl_errors();
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
-                 width, height, 0,
+                 (GLsizei)width, (GLsizei)height, 0,
                  GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4,
-                 rgba16.data());
+                 rgba4444.data());
+    GLenum upload_err = psp_check_gl_error("glTexImage2D upload (PSP RGBA4444)", (int)width, (int)height, GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4);
+    if (upload_err != GL_NO_ERROR) {
+        // Fall back to RGBA8888 (premultiplied) if 16-bit upload fails
+        rgba8888.resize(num_pixels * 4u);
+        const uint16_t* src4444 = rgba4444.data();
+        for (size_t i = 0; i < num_pixels; ++i) {
+            uint16_t p = src4444[i];
+            uint8_t r4 = (uint8_t)((p >> 12) & 0xF);
+            uint8_t g4 = (uint8_t)((p >> 8)  & 0xF);
+            uint8_t b4 = (uint8_t)((p >> 4)  & 0xF);
+            uint8_t a4 = (uint8_t)(p & 0xF);
+            rgba8888[i*4 + 0] = (uint8_t)((r4 << 4) | r4);
+            rgba8888[i*4 + 1] = (uint8_t)((g4 << 4) | g4);
+            rgba8888[i*4 + 2] = (uint8_t)((b4 << 4) | b4);
+            rgba8888[i*4 + 3] = (uint8_t)((a4 << 4) | a4);
+        }
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        psp_clear_gl_errors();
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
+                     (GLsizei)width, (GLsizei)height, 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE,
+                     rgba8888.data());
+        if (psp_check_gl_error("glTexImage2D upload fallback (PSP RGBA8888)", (int)width, (int)height, GL_RGBA, GL_UNSIGNED_BYTE) != GL_NO_ERROR) {
+            return;
+        }
+        if (!psp_warned_8888) {
+            sysLogPrintf(LOG_WARNING, "F3D PSP: falling back to RGBA8888 textures; expect higher memory usage");
+            psp_warned_8888 = true;
+        }
+    }
 #else
     if (g_es1_highp_alpha) {
         if (s_has_texenv_combine) {
@@ -541,6 +603,7 @@ static void gfx_opengl_upload_texture(const uint8_t* rgba32_buf, uint32_t width,
             const uint8_t* src = rgba32_buf;
             uint8_t*       dst = alpha8.data();
             for (size_t i = 0; i < num_pixels; ++i) dst[i] = src[i * 4 + 3];
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_ALPHA,
                          width, height, 0,
                          GL_ALPHA, GL_UNSIGNED_BYTE,
@@ -552,6 +615,7 @@ static void gfx_opengl_upload_texture(const uint8_t* rgba32_buf, uint32_t width,
             const uint8_t* src = rgba32_buf;
             uint8_t*       dst = la.data();
             for (size_t i = 0; i < num_pixels; ++i) { dst[i * 2 + 0] = 255; dst[i * 2 + 1] = src[i * 4 + 3]; }
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE_ALPHA,
                          width, height, 0,
                          GL_LUMINANCE_ALPHA, GL_UNSIGNED_BYTE,
@@ -589,24 +653,35 @@ static void gfx_opengl_upload_texture(const uint8_t* rgba32_buf, uint32_t width,
             b = (uint8_t)((b * a + 128) >> 8);
             *dst++ = (uint16_t)(((r >> 4) << 12) | ((g >> 4) << 8) | ((b >> 4) << 4) | (a >> 4));
         }
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        psp_clear_gl_errors();
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
-                     width, height, 0,
+                     (GLsizei)width, (GLsizei)height, 0,
                      GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4,
                      rgba16.data());
+        if (psp_check_gl_error("glTexImage2D upload (RGBA4444)", (int)width, (int)height, GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4) != GL_NO_ERROR) {
+            return;
+        }
     }
 #endif
 
     // --- Record/update CPU copy for compositor ---
-    GLint bound = 0;
-    glGetIntegerv(GL_TEXTURE_BINDING_2D, &bound);
-    if (bound != 0) {
-        CpuTex &ct = s_cpu_tex[(GLuint)bound];
+    GLuint bound_tex = 0;
+#if defined(__PSP__)
+    bound_tex = s_last_bound_tex;
+#else
+    GLint current_binding = 0;
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &current_binding);
+    bound_tex = (GLuint)current_binding;
+#endif
+    if (bound_tex != 0) {
+        CpuTex &ct = s_cpu_tex[bound_tex];
         ct.w = (int)width; ct.h = (int)height;
         ct.version = ++s_cpu_tex_generation;
         ct.rgba4444.resize((size_t)width * (size_t)height);
 #if defined(__PSP__)
-        // We already have RGBA4444 premultiplied in `rgba16`
-        memcpy(ct.rgba4444.data(), rgba16.data(), (size_t)width * (size_t)height * sizeof(uint16_t));
+        // We already have RGBA4444 premultiplied in `rgba4444`
+        memcpy(ct.rgba4444.data(), rgba4444.data(), (size_t)width * (size_t)height * sizeof(uint16_t));
 #else
         // Ensure a PMA RGBA4444 copy regardless of upload path
         const size_t num_pixels = (size_t)width * (size_t)height;
@@ -1115,6 +1190,9 @@ static void gfx_opengl_init(void) {
     // Default to PMA-friendly blending; set_use_alpha will override as needed
     glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+
     // Default to CCW so front faces aren't culled
     glEnable(GL_CULL_FACE);
     glFrontFace(GL_CCW);
@@ -1193,9 +1271,14 @@ static void gfx_opengl_on_resize(void) {}
 static const char* gfx_opengl_get_name(void) { return "OpenGL 1.1"; }
 
 static int gfx_opengl_get_max_texture_size(void) {
+#if defined(__PSP__)
+    return 256;
+#else
     GLint size = 0;
     glGetIntegerv(GL_MAX_TEXTURE_SIZE, &size);
+    if (size <= 0) size = 512;
     return size;
+#endif
 }
 
 static struct GfxClipParameters gfx_opengl_get_clip_parameters(void) {
@@ -1220,6 +1303,7 @@ static void allocate_fb_texture(GLESFramebuffer &fb) {
         fb.allocated = true;
     }
     glBindTexture(GL_TEXTURE_2D, fb.tex);
+    s_last_bound_tex = fb.tex;
     // Default sampler suitable for UI copies
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, current_filter_mode == FILTER_LINEAR ? GL_LINEAR : GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, current_filter_mode == FILTER_LINEAR ? GL_LINEAR : GL_NEAREST);
@@ -1227,9 +1311,14 @@ static void allocate_fb_texture(GLESFramebuffer &fb) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     // Allocate backing storage
 #if defined(__PSP__)
+    const uint32_t max_tex = (uint32_t)gfx_opengl_get_max_texture_size();
+    if (fb.w > max_tex) fb.w = max_tex;
+    if (fb.h > max_tex) fb.h = max_tex;
     auto next_pot = [](uint32_t v) -> uint32_t { uint32_t p = 1; while (p < v) p <<= 1; return p; };
     fb.pot_w = next_pot(fb.w ? fb.w : 1);
     fb.pot_h = next_pot(fb.h ? fb.h : 1);
+    if (fb.pot_w > max_tex) fb.pot_w = max_tex;
+    if (fb.pot_h > max_tex) fb.pot_h = max_tex;
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, (GLsizei)fb.pot_w, (GLsizei)fb.pot_h, 0, GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4, NULL);
 #endif
 }
@@ -1237,21 +1326,15 @@ static void allocate_fb_texture(GLESFramebuffer &fb) {
 static void fb_copy_window_into_texture(GLESFramebuffer &dst) {
     if (!dst.allocated || dst.tex == 0 || dst.w == 0 || dst.h == 0) return;
     glBindTexture(GL_TEXTURE_2D, dst.tex);
+    s_last_bound_tex = dst.tex;
 #ifndef __PSP__
     // Prefer GPU-side copy on non-PSP targets
     glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, (GLsizei)dst.w, (GLsizei)dst.h);
     dst.valid = true;
 #else
-    // PSP fallback: read back and upload only the used sub-rect of the POT texture
-    static std::vector<uint8_t> s_readback;
-    const size_t need = (size_t)dst.w * (size_t)dst.h * 4u;
-    if (s_readback.size() < need) s_readback.resize(need);
-    // Ensure rendering has completed before reading back
-    glFinish();
-    glReadPixels(0, 0, (GLsizei)dst.w, (GLsizei)dst.h, GL_RGBA, GL_UNSIGNED_BYTE, s_readback.data());
-    for (size_t i = 0; i < need; i += 4) s_readback[i + 3] = 255;
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, (GLsizei)dst.w, (GLsizei)dst.h, GL_RGBA, GL_UNSIGNED_BYTE, s_readback.data());
-    dst.valid = true;
+    // PSP: framebuffer readback is disabled; mark invalid and return.
+    (void)dst;
+    return;
 #endif
 }
 
@@ -1420,24 +1503,33 @@ void gfx_opengl_update_framebuffer_parameters(int fb, uint32_t w, uint32_t h, ui
     }
     dst.w = w; dst.h = h; dst.invert_y = inv_y;
     allocate_fb_texture(dst);
+    const uint32_t alloc_w = (dst.pot_w ? dst.pot_w : (dst.w ? dst.w : 1));
+    const uint32_t alloc_h = (dst.pot_h ? dst.pot_h : (dst.h ? dst.h : 1));
     // Allocate storage initialized to black; prefer 16-bit RGBA to save memory
     {
-        const size_t px = (size_t)w * (size_t)h;
+        const size_t px = (size_t)alloc_w * (size_t)alloc_h;
         static std::vector<uint16_t> zeros;
         if (zeros.size() < px) zeros.assign(px, 0x0000);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, (GLsizei)w, (GLsizei)h, 0, GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4, zeros.data());
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        psp_clear_gl_errors();
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, (GLsizei)alloc_w, (GLsizei)alloc_h, 0, GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4, zeros.data());
+        if (psp_check_gl_error("glTexImage2D framebuffer alloc", (int)alloc_w, (int)alloc_h, GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4) != GL_NO_ERROR) {
+            dst.valid = false;
+            return;
+        }
     }
     dst.valid = false;
 }
 
 void gfx_opengl_select_texture_fb(int fb_id) {
-    if (fb_id <= 0) { glBindTexture(GL_TEXTURE_2D, 0); s_tex_id[0] = 0; return; }
+    if (fb_id <= 0) { glBindTexture(GL_TEXTURE_2D, 0); s_tex_id[0] = 0; s_last_bound_tex = 0; return; }
     ensure_fb_index(fb_id);
     const GLESFramebuffer &src = s_fbs[fb_id];
-    if (!src.allocated || src.tex == 0) { glBindTexture(GL_TEXTURE_2D, 0); s_tex_id[0] = 0; return; }
+    if (!src.allocated || src.tex == 0) { glBindTexture(GL_TEXTURE_2D, 0); s_tex_id[0] = 0; s_last_bound_tex = 0; return; }
     glBindTexture(GL_TEXTURE_2D, src.tex);
     // Ensure subsequent draws using TEXEL0 pick this texture
     s_tex_id[0] = src.tex;
+    s_last_bound_tex = src.tex;
 }
 
 void gfx_opengl_set_texture_filter(FilteringMode mode) { current_filter_mode = mode; }

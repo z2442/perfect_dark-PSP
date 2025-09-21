@@ -67,6 +67,8 @@ struct TextureCacheValue {
     bool linear_filter;
     uint32_t pot_w = 1;
     uint32_t pot_h = 1;
+    bool mirror_s_expanded = false;
+    bool mirror_t_expanded = false;
 
     std::list<struct TextureCacheMapIter>::iterator lru_location;
 };

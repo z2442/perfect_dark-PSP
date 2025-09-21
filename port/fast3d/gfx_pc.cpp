@@ -80,7 +80,11 @@ uintptr_t gfxFramebuffer;
 #define MAX_VERTICES 128
 #define MAX_VERTEX_COLORS 64
 
+#ifdef PLATFORM_PSP
+#define TEXTURE_CACHE_MAX_SIZE 256
+#else
 #define TEXTURE_CACHE_MAX_SIZE 1024
+#endif
 
 #define C0(pos, width) ((cmd->words.w0 >> (pos)) & ((1U << width) - 1))
 #define C1(pos, width) ((cmd->words.w1 >> (pos)) & ((1U << width) - 1))
@@ -284,6 +288,94 @@ static uint32_t s_batch_cc_opts = 0;
 
 static struct GfxWindowManagerAPI* gfx_wapi;
 static struct GfxRenderingAPI* gfx_rapi;
+
+#if defined(PLATFORM_PSP)
+static std::vector<uint8_t> s_psp_downscale_buf_a;
+static std::vector<uint8_t> s_psp_downscale_buf_b;
+
+static uint32_t get_psp_max_texture_size() {
+    int size = (gfx_rapi != nullptr) ? gfx_rapi->get_max_texture_size() : 512;
+    if (size <= 0) size = 512;
+    return static_cast<uint32_t>(size);
+}
+
+static void downsample_rgba32(const uint8_t* src,
+                              uint32_t src_w,
+                              uint32_t src_h,
+                              int x_factor,
+                              int y_factor,
+                              uint8_t* dst,
+                              uint32_t dst_w,
+                              uint32_t dst_h) {
+    const uint32_t src_stride = src_w * 4;
+    const int samples = x_factor * y_factor;
+    for (uint32_t y = 0; y < dst_h; ++y) {
+        for (uint32_t x = 0; x < dst_w; ++x) {
+            uint32_t sum_r = 0, sum_g = 0, sum_b = 0, sum_a = 0;
+            for (int iy = 0; iy < y_factor; ++iy) {
+                const uint8_t* src_row = src + (size_t)(y * y_factor + iy) * src_stride;
+                for (int ix = 0; ix < x_factor; ++ix) {
+                    const uint8_t* px = src_row + (size_t)(x * x_factor + ix) * 4;
+                    sum_r += px[0];
+                    sum_g += px[1];
+                    sum_b += px[2];
+                    sum_a += px[3];
+                }
+            }
+            uint8_t* out = dst + (size_t)(y * dst_w + x) * 4;
+            out[0] = static_cast<uint8_t>(sum_r / samples);
+            out[1] = static_cast<uint8_t>(sum_g / samples);
+            out[2] = static_cast<uint8_t>(sum_b / samples);
+            out[3] = static_cast<uint8_t>(sum_a / samples);
+        }
+    }
+}
+
+static const uint8_t* psp_downscale_texture(const uint8_t* src,
+                                            uint32_t& width,
+                                            uint32_t& height,
+                                            uint32_t limit_w,
+                                            uint32_t limit_h) {
+    if (limit_w == 0) limit_w = 1;
+    if (limit_h == 0) limit_h = 1;
+
+    uint32_t cur_w = width;
+    uint32_t cur_h = height;
+    const uint8_t* current = src;
+    std::vector<uint8_t>* cur_buf = nullptr;
+    std::vector<uint8_t>* next_buf = &s_psp_downscale_buf_b;
+
+    auto ensure_buffer = [&](void) {
+        if (cur_buf == nullptr) {
+            s_psp_downscale_buf_a.assign(current, current + (size_t)cur_w * cur_h * 4);
+            cur_buf = &s_psp_downscale_buf_a;
+            current = cur_buf->data();
+        }
+    };
+
+    while (cur_w > limit_w || cur_h > limit_h) {
+        ensure_buffer();
+        const int x_factor = (cur_w > limit_w) ? 2 : 1;
+        const int y_factor = (cur_h > limit_h) ? 2 : 1;
+        uint32_t new_w = cur_w / static_cast<uint32_t>(x_factor);
+        uint32_t new_h = cur_h / static_cast<uint32_t>(y_factor);
+        if (new_w == 0) new_w = 1;
+        if (new_h == 0) new_h = 1;
+        next_buf->resize((size_t)new_w * new_h * 4);
+        downsample_rgba32(cur_buf->data(), cur_w, cur_h, x_factor, y_factor,
+                          next_buf->data(), new_w, new_h);
+        cur_w = new_w;
+        cur_h = new_h;
+        cur_buf = next_buf;
+        current = cur_buf->data();
+        next_buf = (next_buf == &s_psp_downscale_buf_b) ? &s_psp_downscale_buf_a : &s_psp_downscale_buf_b;
+    }
+
+    width = cur_w;
+    height = cur_h;
+    return (cur_buf != nullptr) ? current : src;
+}
+#endif
 
 static uintptr_t segmentPointers[16];
 
@@ -602,42 +694,51 @@ static const uint8_t* mirror_texture_rgba32(const uint8_t* src,
                                             bool mirror_t,
                                             std::vector<uint8_t>& temp_out,
                                             uint32_t& dst_w,
-                                            uint32_t& dst_h)
+                                            uint32_t& dst_h,
+                                            bool& applied_mirror_s,
+                                            bool& applied_mirror_t)
 {
-    dst_w = mirror_s ? src_w * 2 : src_w;
-    dst_h = mirror_t ? src_h * 2 : src_h;
+    applied_mirror_s = mirror_s;
+    applied_mirror_t = mirror_t;
+#if defined(PLATFORM_PSP)
+    const uint32_t max_tex = get_psp_max_texture_size();
+    if (applied_mirror_s && src_w > max_tex / 2) applied_mirror_s = false;
+    if (applied_mirror_t && src_h > max_tex / 2) applied_mirror_t = false;
+#endif
 
-    if (!mirror_s && !mirror_t) {
+    dst_w = src_w * (applied_mirror_s ? 2u : 1u);
+    dst_h = src_h * (applied_mirror_t ? 2u : 1u);
+
+    if (!applied_mirror_s && !applied_mirror_t) {
         temp_out.clear();
-        return src;                             // no change
+        return src;
     }
 
-    temp_out.resize(dst_w * dst_h * 4);
+    temp_out.resize((size_t)dst_w * dst_h * 4);
+    uint8_t* dst = temp_out.data();
 
-    // Copy / mirror rows
     for (uint32_t y = 0; y < src_h; ++y) {
-        const uint8_t* src_row = src + (y * src_w) * 4;
-        uint8_t* dst_row       = &temp_out[(y) * dst_w * 4];
-
-        // 1) left half = original row
-        memcpy(dst_row, src_row, src_w * 4);
-
-        // 2) mirror horizontally if requested
-        if (mirror_s) {
+        const uint8_t* src_row = src + (size_t)y * src_w * 4;
+        uint8_t* dst_row = dst + (size_t)y * dst_w * 4;
+        memcpy(dst_row, src_row, (size_t)src_w * 4);
+        if (applied_mirror_s) {
             for (uint32_t x = 0; x < src_w; ++x) {
-                const uint8_t* p = src_row + (src_w - 1 - x) * 4;
-                uint8_t*       q = dst_row + (src_w + x) * 4;
-                q[0] = p[0]; q[1] = p[1]; q[2] = p[2]; q[3] = p[3];
+                const uint8_t* p = src_row + (size_t)(src_w - 1 - x) * 4;
+                uint8_t* q = dst_row + (size_t)(src_w + x) * 4;
+                q[0] = p[0];
+                q[1] = p[1];
+                q[2] = p[2];
+                q[3] = p[3];
             }
         }
     }
 
-    // 3) mirror vertically if requested
-    if (mirror_t) {
+    if (applied_mirror_t) {
+        const size_t row_bytes = (size_t)dst_w * 4;
         for (uint32_t y = 0; y < src_h; ++y) {
-            const uint8_t* src_row = &temp_out[(src_h - 1 - y) * dst_w * 4];
-            uint8_t*       dst_row = &temp_out[(src_h + y)     * dst_w * 4];
-            memcpy(dst_row, src_row, dst_w * 4);
+            const uint8_t* src_row = dst + (size_t)(src_h - 1 - y) * row_bytes;
+            uint8_t* dst_row = dst + (size_t)(src_h + y) * row_bytes;
+            memcpy(dst_row, src_row, row_bytes);
         }
     }
 
@@ -739,7 +840,7 @@ static bool gfx_texture_cache_lookup(int i, const TextureCacheKey& key) {
 }
 
 // --- Tile transform publisher for OpenGL texture matrix (file-scope) ---
-static inline void publish_tile_transform(int unit, int tile, uint32_t pot_w, uint32_t pot_h) {
+static inline void publish_tile_transform(int unit, int tile, uint32_t pot_w, uint32_t pot_h, bool mirror_s_expanded, bool mirror_t_expanded) {
     const auto &ti = rdp.texture_tile[tile];
     const float uls = ti.uls * 0.25f; // U10.2 -> texels
     const float ult = ti.ult * 0.25f;
@@ -747,15 +848,10 @@ static inline void publish_tile_transform(int unit, int tile, uint32_t pot_w, ui
     const float lrt = ti.lrt * 0.25f;
     const float w_texels = fmaxf(1.0f, (lrs - uls));
     const float h_texels = fmaxf(1.0f, (lrt - ult));
-    // If MIRROR is requested, we've expanded the POT texture to 2x in that axis.
-    // Compensate by doubling the texture-matrix scale so a single 0..1 span covers
-    // the full (original+mirrored) pattern.
-    const bool mirror_s = (ti.cms & G_TX_MIRROR) != 0;
-    const bool mirror_t = (ti.cmt & G_TX_MIRROR) != 0;
     float s_scale = w_texels / (float)pot_w;
     float t_scale = h_texels / (float)pot_h;
-    if (mirror_s) s_scale *= 2.0f;
-    if (mirror_t) t_scale *= 2.0f;
+    if (mirror_s_expanded) s_scale *= 2.0f;
+    if (mirror_t_expanded) t_scale *= 2.0f;
     g_tex_s_scale[unit]  = s_scale;
     g_tex_t_scale[unit]  = t_scale;
     g_tex_s_offset[unit] = uls / (float)pot_w;
@@ -828,20 +924,35 @@ static void import_texture_rgba16(int unit, int tile, const LoadedTexture& loade
     const bool mirror_s = rdp.texture_tile[tile].cms & G_TX_MIRROR;
     const bool mirror_t = rdp.texture_tile[tile].cmt & G_TX_MIRROR;
 
+#if defined(PLATFORM_PSP)
+    {
+        const uint32_t max_tex = get_psp_max_texture_size();
+        const uint32_t limit_w = mirror_s ? (max_tex >> 1) : max_tex;
+        const uint32_t limit_h = mirror_t ? (max_tex >> 1) : max_tex;
+        src = psp_downscale_texture(src, pot_w, pot_h, limit_w, limit_h);
+    }
+#endif
+
     std::vector<uint8_t> mirror_buf;   // keeps data alive until upload
+    bool mirror_s_applied = false;
+    bool mirror_t_applied = false;
     const uint8_t* src_mirrored = mirror_texture_rgba32(
         src,                /* POT‑corrected source pixels     */
         pot_w, pot_h,
         mirror_s, mirror_t,
         mirror_buf,
-        pot_w, pot_h);      /* may double w/h */
+        pot_w, pot_h,
+        mirror_s_applied, mirror_t_applied);      /* may double w/h */
 
     src = src_mirrored;
-    publish_tile_transform(unit, tile, pot_w, pot_h);
+    publish_tile_transform(unit, tile, pot_w, pot_h, mirror_s_applied, mirror_t_applied);
     gfx_rapi->upload_texture(src, pot_w, pot_h);
     if (rendering_state.textures[unit]) {
-        rendering_state.textures[unit]->second.pot_w = pot_w;
-        rendering_state.textures[unit]->second.pot_h = pot_h;
+        auto &entry = rendering_state.textures[unit]->second;
+        entry.pot_w = pot_w;
+        entry.pot_h = pot_h;
+        entry.mirror_s_expanded = mirror_s_applied;
+        entry.mirror_t_expanded = mirror_t_applied;
     }
 }
 
@@ -875,19 +986,34 @@ static void import_texture_rgba32(int unit, int tile, const LoadedTexture& loade
     const bool mirror_s = rdp.texture_tile[tile].cms & G_TX_MIRROR;
     const bool mirror_t = rdp.texture_tile[tile].cmt & G_TX_MIRROR;
 
+#if defined(PLATFORM_PSP)
+    {
+        const uint32_t max_tex = get_psp_max_texture_size();
+        const uint32_t limit_w = mirror_s ? (max_tex >> 1) : max_tex;
+        const uint32_t limit_h = mirror_t ? (max_tex >> 1) : max_tex;
+        src8 = psp_downscale_texture(src8, pot_w, pot_h, limit_w, limit_h);
+    }
+#endif
+
     std::vector<uint8_t> mirror_buf;
+    bool mirror_s_applied = false;
+    bool mirror_t_applied = false;
     const uint8_t* src_mirrored = mirror_texture_rgba32(
         src8,
         pot_w, pot_h,
         mirror_s, mirror_t,
         mirror_buf,
-        pot_w, pot_h);
+        pot_w, pot_h,
+        mirror_s_applied, mirror_t_applied);
     src8 = src_mirrored;
-    publish_tile_transform(unit, tile, pot_w, pot_h);
+    publish_tile_transform(unit, tile, pot_w, pot_h, mirror_s_applied, mirror_t_applied);
     gfx_rapi->upload_texture(src8, pot_w, pot_h);
     if (rendering_state.textures[unit]) {
-        rendering_state.textures[unit]->second.pot_w = pot_w;
-        rendering_state.textures[unit]->second.pot_h = pot_h;
+        auto &entry = rendering_state.textures[unit]->second;
+        entry.pot_w = pot_w;
+        entry.pot_h = pot_h;
+        entry.mirror_s_expanded = mirror_s_applied;
+        entry.mirror_t_expanded = mirror_t_applied;
     }
 }
 
@@ -926,19 +1052,34 @@ static void import_texture_ia4(int unit, int tile, const LoadedTexture& loaded_t
     const bool mirror_s = rdp.texture_tile[tile].cms & G_TX_MIRROR;
     const bool mirror_t = rdp.texture_tile[tile].cmt & G_TX_MIRROR;
 
+#if defined(PLATFORM_PSP)
+    {
+        const uint32_t max_tex = get_psp_max_texture_size();
+        const uint32_t limit_w = mirror_s ? (max_tex >> 1) : max_tex;
+        const uint32_t limit_h = mirror_t ? (max_tex >> 1) : max_tex;
+        src = psp_downscale_texture(src, pot_w, pot_h, limit_w, limit_h);
+    }
+#endif
+
     std::vector<uint8_t> mirror_buf;
+    bool mirror_s_applied = false;
+    bool mirror_t_applied = false;
     const uint8_t* src_mirrored = mirror_texture_rgba32(
         src,
         pot_w, pot_h,
         mirror_s, mirror_t,
         mirror_buf,
-        pot_w, pot_h);
+        pot_w, pot_h,
+        mirror_s_applied, mirror_t_applied);
     src = src_mirrored;
-    publish_tile_transform(unit, tile, pot_w, pot_h);
+    publish_tile_transform(unit, tile, pot_w, pot_h, mirror_s_applied, mirror_t_applied);
     gfx_rapi->upload_texture(src, pot_w, pot_h);
     if (rendering_state.textures[unit]) {
-        rendering_state.textures[unit]->second.pot_w = pot_w;
-        rendering_state.textures[unit]->second.pot_h = pot_h;
+        auto &entry = rendering_state.textures[unit]->second;
+        entry.pot_w = pot_w;
+        entry.pot_h = pot_h;
+        entry.mirror_s_expanded = mirror_s_applied;
+        entry.mirror_t_expanded = mirror_t_applied;
     }
 }
 
@@ -974,19 +1115,34 @@ static void import_texture_ia8(int unit, int tile, const LoadedTexture& loaded_t
     const bool mirror_s = rdp.texture_tile[tile].cms & G_TX_MIRROR;
     const bool mirror_t = rdp.texture_tile[tile].cmt & G_TX_MIRROR;
 
+#if defined(PLATFORM_PSP)
+    {
+        const uint32_t max_tex = get_psp_max_texture_size();
+        const uint32_t limit_w = mirror_s ? (max_tex >> 1) : max_tex;
+        const uint32_t limit_h = mirror_t ? (max_tex >> 1) : max_tex;
+        src = psp_downscale_texture(src, pot_w, pot_h, limit_w, limit_h);
+    }
+#endif
+
     std::vector<uint8_t> mirror_buf;
+    bool mirror_s_applied = false;
+    bool mirror_t_applied = false;
     const uint8_t* src_mirrored = mirror_texture_rgba32(
         src,
         pot_w, pot_h,
         mirror_s, mirror_t,
         mirror_buf,
-        pot_w, pot_h);
+        pot_w, pot_h,
+        mirror_s_applied, mirror_t_applied);
     src = src_mirrored;
-    publish_tile_transform(unit, tile, pot_w, pot_h);
+    publish_tile_transform(unit, tile, pot_w, pot_h, mirror_s_applied, mirror_t_applied);
     gfx_rapi->upload_texture(src, pot_w, pot_h);
     if (rendering_state.textures[unit]) {
-        rendering_state.textures[unit]->second.pot_w = pot_w;
-        rendering_state.textures[unit]->second.pot_h = pot_h;
+        auto &entry = rendering_state.textures[unit]->second;
+        entry.pot_w = pot_w;
+        entry.pot_h = pot_h;
+        entry.mirror_s_expanded = mirror_s_applied;
+        entry.mirror_t_expanded = mirror_t_applied;
     }
 }
 
@@ -1022,19 +1178,34 @@ static void import_texture_ia16(int unit, int tile, const LoadedTexture& loaded_
     const bool mirror_s = rdp.texture_tile[tile].cms & G_TX_MIRROR;
     const bool mirror_t = rdp.texture_tile[tile].cmt & G_TX_MIRROR;
 
+#if defined(PLATFORM_PSP)
+    {
+        const uint32_t max_tex = get_psp_max_texture_size();
+        const uint32_t limit_w = mirror_s ? (max_tex >> 1) : max_tex;
+        const uint32_t limit_h = mirror_t ? (max_tex >> 1) : max_tex;
+        src = psp_downscale_texture(src, pot_w, pot_h, limit_w, limit_h);
+    }
+#endif
+
     std::vector<uint8_t> mirror_buf;
+    bool mirror_s_applied = false;
+    bool mirror_t_applied = false;
     const uint8_t* src_mirrored = mirror_texture_rgba32(
         src,
         pot_w, pot_h,
         mirror_s, mirror_t,
         mirror_buf,
-        pot_w, pot_h);
+        pot_w, pot_h,
+        mirror_s_applied, mirror_t_applied);
     src = src_mirrored;
-    publish_tile_transform(unit, tile, pot_w, pot_h);
+    publish_tile_transform(unit, tile, pot_w, pot_h, mirror_s_applied, mirror_t_applied);
     gfx_rapi->upload_texture(src, pot_w, pot_h);
     if (rendering_state.textures[unit]) {
-        rendering_state.textures[unit]->second.pot_w = pot_w;
-        rendering_state.textures[unit]->second.pot_h = pot_h;
+        auto &entry = rendering_state.textures[unit]->second;
+        entry.pot_w = pot_w;
+        entry.pot_h = pot_h;
+        entry.mirror_s_expanded = mirror_s_applied;
+        entry.mirror_t_expanded = mirror_t_applied;
     }
 }
 
@@ -1070,19 +1241,34 @@ static void import_texture_i4(int unit, int tile, const LoadedTexture& loaded_te
     const bool mirror_s = rdp.texture_tile[tile].cms & G_TX_MIRROR;
     const bool mirror_t = rdp.texture_tile[tile].cmt & G_TX_MIRROR;
 
+#if defined(PLATFORM_PSP)
+    {
+        const uint32_t max_tex = get_psp_max_texture_size();
+        const uint32_t limit_w = mirror_s ? (max_tex >> 1) : max_tex;
+        const uint32_t limit_h = mirror_t ? (max_tex >> 1) : max_tex;
+        src = psp_downscale_texture(src, pot_w, pot_h, limit_w, limit_h);
+    }
+#endif
+
     std::vector<uint8_t> mirror_buf;
+    bool mirror_s_applied = false;
+    bool mirror_t_applied = false;
     const uint8_t* src_mirrored = mirror_texture_rgba32(
         src,
         pot_w, pot_h,
         mirror_s, mirror_t,
         mirror_buf,
-        pot_w, pot_h);
+        pot_w, pot_h,
+        mirror_s_applied, mirror_t_applied);
     src = src_mirrored;
-    publish_tile_transform(unit, tile, pot_w, pot_h);
+    publish_tile_transform(unit, tile, pot_w, pot_h, mirror_s_applied, mirror_t_applied);
     gfx_rapi->upload_texture(src, pot_w, pot_h);
     if (rendering_state.textures[unit]) {
-        rendering_state.textures[unit]->second.pot_w = pot_w;
-        rendering_state.textures[unit]->second.pot_h = pot_h;
+        auto &entry = rendering_state.textures[unit]->second;
+        entry.pot_w = pot_w;
+        entry.pot_h = pot_h;
+        entry.mirror_s_expanded = mirror_s_applied;
+        entry.mirror_t_expanded = mirror_t_applied;
     }
 }
 
@@ -1116,19 +1302,34 @@ static void import_texture_i8(int unit, int tile, const LoadedTexture& loaded_te
     const bool mirror_s = rdp.texture_tile[tile].cms & G_TX_MIRROR;
     const bool mirror_t = rdp.texture_tile[tile].cmt & G_TX_MIRROR;
 
+#if defined(PLATFORM_PSP)
+    {
+        const uint32_t max_tex = get_psp_max_texture_size();
+        const uint32_t limit_w = mirror_s ? (max_tex >> 1) : max_tex;
+        const uint32_t limit_h = mirror_t ? (max_tex >> 1) : max_tex;
+        src = psp_downscale_texture(src, pot_w, pot_h, limit_w, limit_h);
+    }
+#endif
+
     std::vector<uint8_t> mirror_buf;
+    bool mirror_s_applied = false;
+    bool mirror_t_applied = false;
     const uint8_t* src_mirrored = mirror_texture_rgba32(
         src,
         pot_w, pot_h,
         mirror_s, mirror_t,
         mirror_buf,
-        pot_w, pot_h);
+        pot_w, pot_h,
+        mirror_s_applied, mirror_t_applied);
     src = src_mirrored;
-    publish_tile_transform(unit, tile, pot_w, pot_h);
+    publish_tile_transform(unit, tile, pot_w, pot_h, mirror_s_applied, mirror_t_applied);
     gfx_rapi->upload_texture(src, pot_w, pot_h);
     if (rendering_state.textures[unit]) {
-        rendering_state.textures[unit]->second.pot_w = pot_w;
-        rendering_state.textures[unit]->second.pot_h = pot_h;
+        auto &entry = rendering_state.textures[unit]->second;
+        entry.pot_w = pot_w;
+        entry.pot_h = pot_h;
+        entry.mirror_s_expanded = mirror_s_applied;
+        entry.mirror_t_expanded = mirror_t_applied;
     }
 }
 
@@ -1193,19 +1394,34 @@ static void import_texture_ci4(int unit, int tile, const LoadedTexture& loaded_t
     const bool mirror_s = rdp.texture_tile[tile].cms & G_TX_MIRROR;
     const bool mirror_t = rdp.texture_tile[tile].cmt & G_TX_MIRROR;
 
+#if defined(PLATFORM_PSP)
+    {
+        const uint32_t max_tex = get_psp_max_texture_size();
+        const uint32_t limit_w = mirror_s ? (max_tex >> 1) : max_tex;
+        const uint32_t limit_h = mirror_t ? (max_tex >> 1) : max_tex;
+        src = psp_downscale_texture(src, pot_w, pot_h, limit_w, limit_h);
+    }
+#endif
+
     std::vector<uint8_t> mirror_buf;
+    bool mirror_s_applied = false;
+    bool mirror_t_applied = false;
     const uint8_t* src_mirrored = mirror_texture_rgba32(
         src,
         pot_w, pot_h,
         mirror_s, mirror_t,
         mirror_buf,
-        pot_w, pot_h);
+        pot_w, pot_h,
+        mirror_s_applied, mirror_t_applied);
     src = src_mirrored;
-    publish_tile_transform(unit, tile, pot_w, pot_h);
+    publish_tile_transform(unit, tile, pot_w, pot_h, mirror_s_applied, mirror_t_applied);
     gfx_rapi->upload_texture(src, pot_w, pot_h);
     if (rendering_state.textures[unit]) {
-        rendering_state.textures[unit]->second.pot_w = pot_w;
-        rendering_state.textures[unit]->second.pot_h = pot_h;
+        auto &entry = rendering_state.textures[unit]->second;
+        entry.pot_w = pot_w;
+        entry.pot_h = pot_h;
+        entry.mirror_s_expanded = mirror_s_applied;
+        entry.mirror_t_expanded = mirror_t_applied;
     }
 }
 
@@ -1241,19 +1457,34 @@ static void import_texture_ci8(int unit, int tile, const LoadedTexture& loaded_t
     const bool mirror_s = rdp.texture_tile[tile].cms & G_TX_MIRROR;
     const bool mirror_t = rdp.texture_tile[tile].cmt & G_TX_MIRROR;
 
+#if defined(PLATFORM_PSP)
+    {
+        const uint32_t max_tex = get_psp_max_texture_size();
+        const uint32_t limit_w = mirror_s ? (max_tex >> 1) : max_tex;
+        const uint32_t limit_h = mirror_t ? (max_tex >> 1) : max_tex;
+        src = psp_downscale_texture(src, pot_w, pot_h, limit_w, limit_h);
+    }
+#endif
+
     std::vector<uint8_t> mirror_buf;
+    bool mirror_s_applied = false;
+    bool mirror_t_applied = false;
     const uint8_t* src_mirrored = mirror_texture_rgba32(
         src,
         pot_w, pot_h,
         mirror_s, mirror_t,
         mirror_buf,
-        pot_w, pot_h);
+        pot_w, pot_h,
+        mirror_s_applied, mirror_t_applied);
     src = src_mirrored;
-    publish_tile_transform(unit, tile, pot_w, pot_h);
+    publish_tile_transform(unit, tile, pot_w, pot_h, mirror_s_applied, mirror_t_applied);
     gfx_rapi->upload_texture(src, pot_w, pot_h);
     if (rendering_state.textures[unit]) {
-        rendering_state.textures[unit]->second.pot_w = pot_w;
-        rendering_state.textures[unit]->second.pot_h = pot_h;
+        auto &entry = rendering_state.textures[unit]->second;
+        entry.pot_w = pot_w;
+        entry.pot_h = pot_h;
+        entry.mirror_s_expanded = mirror_s_applied;
+        entry.mirror_t_expanded = mirror_t_applied;
     }
 }
 
@@ -1937,7 +2168,9 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
                 // Use POT sizes recorded in the cache entry.
                 publish_tile_transform(i, tile,
                                        rendering_state.textures[i]->second.pot_w,
-                                       rendering_state.textures[i]->second.pot_h);
+                                       rendering_state.textures[i]->second.pot_h,
+                                       rendering_state.textures[i]->second.mirror_s_expanded,
+                                       rendering_state.textures[i]->second.mirror_t_expanded);
             }
         }
     }
