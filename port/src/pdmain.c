@@ -268,7 +268,7 @@ void mainInit(void)
 	bodiesInit();
 	titleInit();
 
-	modelSetDistanceChecksDisabled(true); // don't use LODs
+	modelSetDistanceChecksDisabled(false); // don't use LODs
 
 	g_MainIsBooting = 0;
 }
