@@ -251,6 +251,8 @@ static bool s_supports_depth_clamp = false;
 static bool s_emulate_depth_clamp = true;
 static const float kDepthClampScale = 0.3f; // matches desktop fallback when depth clamp is unavailable
 
+extern "C" volatile uint8_t g_es1_depth_clamp_active;
+
 // Forward state used by GLES1 framebuffer emulation and draw suppression
 static int s_current_draw_fb = 0;           // 0 = default/backbuffer
 static int s_system_game_fb_primary = -1;   // First created FB (used when game redirects main rendering)
@@ -272,6 +274,7 @@ static std::vector<GLESFramebuffer> s_fbs; // index 0 is the default (window) fb
 
 // --- 2D batch helpers: isolate state so 3D path stays untouched ---
 static void begin_2d_batch() {
+    g_es1_depth_clamp_active = 0;
     // Save PROJECTION and set screen-space ortho
     glMatrixMode(GL_PROJECTION);
     glPushMatrix();
@@ -321,6 +324,7 @@ extern "C" volatile uint8_t g_es1_env_rgba[4];
 extern "C" volatile uint8_t g_es1_use_tex0;          // 0/1: whether TEXEL0 is used in this draw
 extern "C" volatile uint8_t g_es1_use_tex1;          // 0/1: whether TEXEL1 is used in this draw
 extern "C" volatile uint8_t g_es1_front_face_cw;     // 0/1: front faces are CW when mirrored
+extern "C" volatile uint8_t g_es1_depth_clamp_active; // 0/1: projection currently applies depth clamp
 
 static void glLoadRowMajorMatrixf(const float m[4][4]) {
     // Our matrices are laid out the way OpenGL expects already; load directly.
@@ -328,6 +332,11 @@ static void glLoadRowMajorMatrixf(const float m[4][4]) {
 }
 
 static void load_projection_matrix_with_depth_clamp(const float m[4][4]) {
+    if (s_supports_depth_clamp) {
+        g_es1_depth_clamp_active = 1;
+    } else if (!s_emulate_depth_clamp) {
+        g_es1_depth_clamp_active = 0;
+    }
     if (s_emulate_depth_clamp) {
         float adjusted[4][4];
         memcpy(adjusted, m, sizeof(adjusted));
@@ -335,8 +344,12 @@ static void load_projection_matrix_with_depth_clamp(const float m[4][4]) {
             adjusted[i][2] *= kDepthClampScale;
         }
         glLoadMatrixf(&adjusted[0][0]);
+        g_es1_depth_clamp_active = 1;
     } else {
         glLoadMatrixf(&m[0][0]);
+        if (!s_supports_depth_clamp) {
+            g_es1_depth_clamp_active = 0;
+        }
     }
 }
 
@@ -1253,6 +1266,7 @@ extern "C" volatile uint8_t g_es1_highp_alpha       = 0;
 extern "C" volatile uint8_t g_es1_tex0_in_rgb       = 1;
 extern "C" volatile uint8_t g_es1_front_face_cw     = 0;
 extern "C" volatile uint8_t g_es1_force_2d          = 0;
+extern "C" volatile uint8_t g_es1_depth_clamp_active = 0;
 extern "C" volatile uint8_t g_es1_base_modulate     = 1;
 extern "C" volatile uint8_t g_es1_base_color_mode   = 0;
 extern "C" volatile uint8_t g_es1_prim_rgba[4]      = {255,255,255,255};

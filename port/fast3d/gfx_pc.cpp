@@ -13,6 +13,7 @@ extern "C" volatile uint8_t g_es1_highp_alpha;
 extern "C" volatile uint8_t g_es1_tex0_in_rgb;
 extern "C" volatile uint8_t g_es1_front_face_cw;
 extern "C" volatile uint8_t g_es1_force_2d;
+extern "C" volatile uint8_t g_es1_depth_clamp_active;
 extern "C" volatile uint8_t g_es1_base_modulate;
 extern "C" volatile uint8_t g_es1_base_color_mode; // 0=none,1=shade,2=prim,3=env
 extern "C" volatile uint8_t g_es1_prim_rgba[4];
@@ -1949,6 +1950,7 @@ struct TempV {
     float x,y,z,w;
     float u,v;
     float r,g,b,a;
+    float clip_x, clip_y, clip_z, clip_w;
 };
 
 static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bool is_rect) {
@@ -2219,16 +2221,27 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
         v *= (float)orig_h / (float)pot_h;
 
         const float alpha = vtx->color.a / 255.0f;
-        TV[i] = { vtx->x, vtx->y, vtx->z, w,
-                  u, v,
-                  (vtx->color.r / 255.0f) * alpha,
-                  (vtx->color.g / 255.0f) * alpha,
-                  (vtx->color.b / 255.0f) * alpha,
-                  alpha };
+        TempV &tv = TV[i];
+        tv.x = vtx->x;
+        tv.y = vtx->y;
+        tv.z = vtx->z;
+        tv.w = w;
+        tv.u = u;
+        tv.v = v;
+        tv.a = alpha;
+        tv.r = (vtx->color.r / 255.0f) * alpha;
+        tv.g = (vtx->color.g / 255.0f) * alpha;
+        tv.b = (vtx->color.b / 255.0f) * alpha;
+
+        const float (*MP)[4] = rsp.MP_matrix;
+        // Multiply by columns so the clip vector matches the GPU's column-major transform.
+        tv.clip_x = tv.x * MP[0][0] + tv.y * MP[1][0] + tv.z * MP[2][0] + tv.w * MP[3][0];
+        tv.clip_y = tv.x * MP[0][1] + tv.y * MP[1][1] + tv.z * MP[2][1] + tv.w * MP[3][1];
+        tv.clip_z = tv.x * MP[0][2] + tv.y * MP[1][2] + tv.z * MP[2][2] + tv.w * MP[3][2];
+        tv.clip_w = tv.x * MP[0][3] + tv.y * MP[1][3] + tv.z * MP[2][3] + tv.w * MP[3][3];
     }
 
-    // --- lambda to push one vertex (9 floats): x,y,z,u,v,r,g,b,a ---------
-    auto push9 = [&](const TempV& V){
+        auto push9 = [&](const TempV& V){
         buf_vbo[buf_vbo_len++] = V.x;
         buf_vbo[buf_vbo_len++] = V.y;
         buf_vbo[buf_vbo_len++] = V.z;
@@ -2240,30 +2253,180 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
         buf_vbo[buf_vbo_len++] = V.a;
     };
 
-    // --- leaf‑emit function --------------------------------------------------
-    auto emit_tri = [&](const TempV&A,const TempV&B,const TempV&C){
+    auto emit_tri = [&](const TempV& A, const TempV& B, const TempV& C){
         push9(A); push9(B); push9(C);
         if (++buf_vbo_num_tris == MAX_BUFFERED) gfx_flush();
     };
 
-  /* ------------------------------------------------------------
-   Only subdivide when at least one vertex is outside the clip cube
-------------------------------------------------------------- */
-const bool offscreen =
-    (v1->clip_rej | v2->clip_rej | v3->clip_rej) != 0;
+    if (g_es1_force_2d || is_rect || g_force_two_pass) {
+        // Screen-space batches and two-pass composites rely on GPU-side clipping/depth handling.
+        if (mv_mirrored) {
+            emit_tri(TV[0], TV[2], TV[1]);
+        } else {
+            emit_tri(TV[0], TV[1], TV[2]);
+        }
+        return;
+    }
 
-float dx1 = TV[1].x - TV[0].x;
-float dy1 = TV[1].y - TV[0].y;
-float dx2 = TV[2].x - TV[0].x;
-float dy2 = TV[2].y - TV[0].y;
-float area = fabsf(dx1 * dy2 - dx2 * dy1);
+    auto lerp_tempv = [](const TempV& A, const TempV& B, float t) {
+        TempV R;
+        R.x = A.x + (B.x - A.x) * t;
+        R.y = A.y + (B.y - A.y) * t;
+        R.z = A.z + (B.z - A.z) * t;
+        R.w = A.w + (B.w - A.w) * t;
+        R.u = A.u + (B.u - A.u) * t;
+        R.v = A.v + (B.v - A.v) * t;
+        R.r = A.r + (B.r - A.r) * t;
+        R.g = A.g + (B.g - A.g) * t;
+        R.b = A.b + (B.b - A.b) * t;
+        R.a = A.a + (B.a - A.a) * t;
+        R.clip_x = A.clip_x + (B.clip_x - A.clip_x) * t;
+        R.clip_y = A.clip_y + (B.clip_y - A.clip_y) * t;
+        R.clip_z = A.clip_z + (B.clip_z - A.clip_z) * t;
+        R.clip_w = A.clip_w + (B.clip_w - A.clip_w) * t;
+        return R;
+    };
+    constexpr float kPlaneEpsilon = 1e-5f;
+    constexpr int kMaxClipVerts = 12;
 
-if (mv_mirrored) {
-    emit_tri(TV[0], TV[2], TV[1]);
-} else {
-    emit_tri(TV[0], TV[1], TV[2]);
-}
+    auto is_fully_inside = [&](auto plane_eval) {
+        for (int i = 0; i < 3; ++i) {
+            if (plane_eval(TV[i]) < -kPlaneEpsilon) {
+                return false;
+            }
+        }
+        return true;
+    };
 
+    auto is_fully_outside = [&](auto plane_eval) {
+        bool any_inside = false;
+        for (int i = 0; i < 3; ++i) {
+            if (plane_eval(TV[i]) >= -kPlaneEpsilon) {
+                any_inside = true;
+                break;
+            }
+        }
+        return !any_inside;
+    };
+
+    bool all_inside = true;
+    bool culled = false;
+
+    auto test_plane = [&](auto plane_eval) {
+        if (culled) {
+            return;
+        }
+        if (is_fully_outside(plane_eval)) {
+            culled = true;
+            all_inside = false;
+            return;
+        }
+        if (!is_fully_inside(plane_eval)) {
+            all_inside = false;
+        }
+    };
+
+    test_plane([&](const TempV& V) { return V.clip_w + V.clip_x; });
+    test_plane([&](const TempV& V) { return V.clip_w - V.clip_x; });
+    test_plane([&](const TempV& V) { return V.clip_w + V.clip_y; });
+    test_plane([&](const TempV& V) { return V.clip_w - V.clip_y; });
+    if (!g_es1_depth_clamp_active) {
+        if (clip_parameters.z_is_from_0_to_1) {
+            test_plane([&](const TempV& V) { return V.clip_z; });
+        } else {
+            test_plane([&](const TempV& V) { return V.clip_w + V.clip_z; });
+        }
+        test_plane([&](const TempV& V) { return V.clip_w - V.clip_z; });
+    }
+
+    if (culled) {
+        return;
+    }
+
+    if (all_inside) {
+        if (mv_mirrored) {
+            emit_tri(TV[0], TV[2], TV[1]);
+        } else {
+            emit_tri(TV[0], TV[1], TV[2]);
+        }
+        return;
+    }
+
+    TempV poly[kMaxClipVerts];
+    for (int i = 0; i < 3; ++i) {
+        poly[i] = TV[i];
+    }
+    int poly_count = 3;
+
+    auto clip_against = [&](auto plane_eval) {
+        if (poly_count == 0) {
+            return;
+        }
+
+        TempV result[kMaxClipVerts];
+        TempV prev = poly[poly_count - 1];
+        float prev_eval = plane_eval(prev);
+        bool prev_inside = prev_eval >= -kPlaneEpsilon;
+        int out_count = 0;
+
+        for (int i = 0; i < poly_count; ++i) {
+            const TempV& curr = poly[i];
+            float curr_eval = plane_eval(curr);
+            bool curr_inside = curr_eval >= -kPlaneEpsilon;
+
+            if (prev_inside != curr_inside) {
+                float denom = prev_eval - curr_eval;
+                float t = 0.0f;
+                if (fabsf(denom) > 1e-7f) {
+                    t = prev_eval / denom;
+                }
+                t = clampf(t, 0.0f, 1.0f);
+                if (out_count < kMaxClipVerts) {
+                    result[out_count++] = lerp_tempv(prev, curr, t);
+                }
+            }
+
+            if (curr_inside) {
+                if (out_count < kMaxClipVerts) {
+                    result[out_count++] = curr;
+                }
+            }
+
+            prev = curr;
+            prev_eval = curr_eval;
+            prev_inside = curr_inside;
+        }
+
+        poly_count = out_count;
+        for (int i = 0; i < poly_count; ++i) {
+            poly[i] = result[i];
+        }
+    };
+
+    clip_against([&](const TempV& V) { return V.clip_w + V.clip_x; }); // left plane
+    clip_against([&](const TempV& V) { return V.clip_w - V.clip_x; }); // right plane
+    clip_against([&](const TempV& V) { return V.clip_w + V.clip_y; }); // bottom plane
+    clip_against([&](const TempV& V) { return V.clip_w - V.clip_y; }); // top plane
+    if (!g_es1_depth_clamp_active) {
+        if (clip_parameters.z_is_from_0_to_1) {
+            clip_against([&](const TempV& V) { return V.clip_z; }); // near plane (z in [0, w])
+        } else {
+            clip_against([&](const TempV& V) { return V.clip_w + V.clip_z; }); // near plane (z in [-w, w])
+        }
+        clip_against([&](const TempV& V) { return V.clip_w - V.clip_z; }); // far plane
+    }
+
+    if (poly_count < 3) {
+        return;
+    }
+
+    for (int i = 1; i < poly_count - 1; ++i) {
+        if (mv_mirrored) {
+            emit_tri(poly[0], poly[i + 1], poly[i]);
+        } else {
+            emit_tri(poly[0], poly[i], poly[i + 1]);
+        }
+    }
 
 }
 
@@ -2336,28 +2499,79 @@ static void gfx_sp_extra_geometry_mode(uint32_t clear, uint32_t set) {
 }
 
 static void gfx_adjust_viewport_or_scissor(XYWidthHeight* area, bool preserve_aspect = false) {
-    // HACK: assume all target framebuffers have the same aspect
-    area->width *= RATIO_X;
-    area->x *= RATIO_X;
-    area->height *= RATIO_Y;
-    area->y = SCREEN_HEIGHT - area->y;
-    area->y *= RATIO_Y;
+    auto round_nearest = [](float v) -> int32_t {
+        return static_cast<int32_t>(std::floor(v + 0.5f));
+    };
+
+    float x = static_cast<float>(area->x) * RATIO_X;
+    float width = static_cast<float>(area->width) * RATIO_X;
+    float height = static_cast<float>(area->height) * RATIO_Y;
+    float y = (static_cast<float>(SCREEN_HEIGHT) - static_cast<float>(area->y)) * RATIO_Y;
+
     if (preserve_aspect) {
         // preserve native aspect ratio
         const float ratio = gfx_current_native_aspect / gfx_current_dimensions.aspect_ratio;
         const float midx = gfx_current_dimensions.width * 0.5f;
-        area->x = midx + (area->x - midx) * ratio;
-        area->x += rsp.aspect_ofs * gfx_current_dimensions.width * 0.5f;
-        area->width *= ratio;
+        x = midx + (x - midx) * ratio;
+        x += rsp.aspect_ofs * gfx_current_dimensions.width * 0.5f;
+        width *= ratio;
     }
 
     if (!game_renders_to_framebuffer ||
         (gfx_msaa_level > 1 && gfx_current_dimensions.width == gfx_current_game_window_viewport.width &&
             gfx_current_dimensions.height == gfx_current_game_window_viewport.height)) {
-        area->x += gfx_current_game_window_viewport.x;
-        area->y += gfx_current_window_dimensions.height -
-                    (gfx_current_game_window_viewport.y + gfx_current_game_window_viewport.height);
+        x += gfx_current_game_window_viewport.x;
+        y += gfx_current_window_dimensions.height -
+             (gfx_current_game_window_viewport.y + gfx_current_game_window_viewport.height);
     }
+
+    int32_t max_w = gfx_current_window_dimensions.width ? static_cast<int32_t>(gfx_current_window_dimensions.width)
+                                                         : SCREEN_WIDTH;
+    int32_t max_h = gfx_current_window_dimensions.height ? static_cast<int32_t>(gfx_current_window_dimensions.height)
+                                                          : SCREEN_HEIGHT;
+    if (max_w <= 0) max_w = SCREEN_WIDTH;
+    if (max_h <= 0) max_h = SCREEN_HEIGHT;
+
+    int32_t new_x = round_nearest(x);
+    int32_t new_y = round_nearest(y);
+    int32_t new_w = round_nearest(width);
+    int32_t new_h = round_nearest(height);
+
+    if (new_w < 1) new_w = 1;
+    if (new_h < 1) new_h = 1;
+
+    if (new_x < 0) {
+        new_w += new_x;
+        new_x = 0;
+    }
+    if (new_y < 0) {
+        new_h += new_y;
+        new_y = 0;
+    }
+
+    if (new_x >= max_w) {
+        new_x = max_w - 1;
+        new_w = 1;
+    }
+    if (new_y >= max_h) {
+        new_y = max_h - 1;
+        new_h = 1;
+    }
+
+    if (new_x + new_w > max_w) {
+        new_w = max_w - new_x;
+    }
+    if (new_y + new_h > max_h) {
+        new_h = max_h - new_y;
+    }
+
+    if (new_w < 1) new_w = 1;
+    if (new_h < 1) new_h = 1;
+
+    area->x = static_cast<int16_t>(new_x);
+    area->y = static_cast<int16_t>(new_y);
+    area->width = static_cast<uint32_t>(new_w);
+    area->height = static_cast<uint32_t>(new_h);
 }
 
 static void gfx_calc_and_set_viewport(const Vp_t* viewport) {
@@ -3362,7 +3576,7 @@ extern "C" void gfx_run(Gfx* commands) {
     gfx_rapi->start_frame();
     gfx_rapi->start_draw_to_framebuffer(game_renders_to_framebuffer ? game_framebuffer : 0,
                                         (float)gfx_current_dimensions.height / SCREEN_HEIGHT);
-    gfx_rapi->clear_framebuffer(true, false);
+    gfx_rapi->clear_framebuffer(true, true);
     rdp.viewport_or_scissor_changed = true;
     rendering_state.viewport = {};
     rendering_state.scissor = {};
