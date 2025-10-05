@@ -395,11 +395,14 @@ static constexpr float clampf(const float x, const float min, const float max) {
 }
 
 static void gfx_flush(void) {
-    if (buf_vbo_len > 0) {
-        gfx_rapi->draw_triangles(buf_vbo, buf_vbo_len, buf_vbo_num_tris);
-        buf_vbo_len = 0;
-        buf_vbo_num_tris = 0;
+    if (buf_vbo_len == 0) {
+        return;
     }
+
+    gfx_rapi->draw_triangles(buf_vbo, buf_vbo_len, buf_vbo_num_tris);
+    buf_vbo_len = 0;
+    buf_vbo_num_tris = 0;
+
     // Reset batch state tracking so next triangles can start a fresh batch
     s_batch_has_cc = false;
 }
@@ -584,7 +587,7 @@ static void gfx_generate_cc(struct ColorCombiner* comb, const ColorCombinerKey& 
                         val = SHADER_COMBINED;
                         break;
                     default:
-                        sysLogPrintf(LOG_WARNING, "Unsupported ccmux: %d", c[i][0][j]);
+                        //sysLogPrintf(LOG_WARNING, "Unsupported ccmux: %d", c[i][0][j]);
                         break;
                 }
                 shader_id0 |= (uint64_t)val << (i * 32 + j * 4);
@@ -1582,33 +1585,7 @@ static void gfx_normalize_vector(float v[3]) {
     v[2] /= s;
 }
 
-static inline void compute_normal_matrix_from_modelview(const float M[4][4]) {
-    // Build inverse-transpose of the upper-left 3x3 of M
-    const float m00 = M[0][0], m01 = M[0][1], m02 = M[0][2];
-    const float m10 = M[1][0], m11 = M[1][1], m12 = M[1][2];
-    const float m20 = M[2][0], m21 = M[2][1], m22 = M[2][2];
 
-    const float c00 =  (m11 * m22 - m12 * m21);
-    const float c01 = -(m10 * m22 - m12 * m20);
-    const float c02 =  (m10 * m21 - m11 * m20);
-    const float c10 = -(m01 * m22 - m02 * m21);
-    const float c11 =  (m00 * m22 - m02 * m20);
-    const float c12 = -(m00 * m21 - m01 * m20);
-    const float c20 =  (m01 * m12 - m02 * m11);
-    const float c21 = -(m00 * m12 - m02 * m10);
-    const float c22 =  (m00 * m11 - m01 * m10);
-
-    const float det = m00 * c00 + m01 * c01 + m02 * c02;
-    float invdet = 0.0f;
-    if (fabsf(det) > 1e-8f) invdet = 1.0f / det; else invdet = 0.0f;
-
-    // inverse = (1/det) * adjugate; normal matrix = inverse^T
-    rsp.normal_matrix[0][0] = c00 * invdet; rsp.normal_matrix[0][1] = c10 * invdet; rsp.normal_matrix[0][2] = c20 * invdet;
-    rsp.normal_matrix[1][0] = c01 * invdet; rsp.normal_matrix[1][1] = c11 * invdet; rsp.normal_matrix[1][2] = c21 * invdet;
-    rsp.normal_matrix[2][0] = c02 * invdet; rsp.normal_matrix[2][1] = c12 * invdet; rsp.normal_matrix[2][2] = c22 * invdet;
-
-    rsp.normal_matrix_valid = (invdet != 0.0f);
-}
 
 static void gfx_transposed_matrix_mul(float res[3], const float a[3], const float b[4][4]) {
     res[0] = a[0] * b[0][0] + a[1] * b[0][1] + a[2] * b[0][2];
@@ -1753,7 +1730,6 @@ static void gfx_sp_matrix(uint8_t parameters, const int32_t* addr) {
                            rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1]);
         }
         rsp.lights_changed = 1;
-        rsp.normal_matrix_valid = false;
     }
     gfx_matrix_mul(rsp.MP_matrix, rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], rsp.P_matrix);
 
@@ -1777,7 +1753,6 @@ static void gfx_sp_pop_matrix(uint32_t count) {
                 memcpy(g_es1_M, rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], sizeof(rsp.P_matrix));
                 g_es1_matrix_dirty = 1;
                 rsp.lights_changed = 1;
-                rsp.normal_matrix_valid = false;
             }
         }
     }
@@ -2079,7 +2054,9 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
 
     // Flush if the color combiner key changes to keep batches homogeneous
     if (!s_batch_has_cc || s_batch_cc_mode != key.combine_mode || s_batch_cc_opts != key.options) {
-        gfx_flush();
+        if (buf_vbo_len > 0) {
+            gfx_flush();
+        }
         s_batch_has_cc = true;
         s_batch_cc_mode = key.combine_mode;
         s_batch_cc_opts = key.options;
@@ -3457,7 +3434,7 @@ extern "C" void gfx_init(const GfxInitSettings *settings) {
     game_framebuffer_msaa_resolved = gfx_rapi->create_framebuffer();
 
     if (gfx_msaa_level > 1 && !gfx_framebuffers_enabled) {
-        sysLogPrintf(LOG_WARNING, "F3D: MSAA set to %d, but framebuffers are not available; disabling", gfx_msaa_level);
+        //sysLogPrintf(LOG_WARNING, "F3D: MSAA set to %d, but framebuffers are not available; disabling", gfx_msaa_level);
         gfx_msaa_level = 1;
     }
 
