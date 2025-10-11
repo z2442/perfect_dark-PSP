@@ -2065,7 +2065,15 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
     ColorCombiner* comb = gfx_lookup_or_create_color_combiner(key);
     // Publish hints to backend for base texenv selection
     uint8_t base_mode = 0;
-    if (comb->shade_in_rgb) base_mode = 1; else if (comb->prim_in_rgb) base_mode = 2; else if (comb->env_in_rgb) base_mode = 3;
+    if (comb->shade_in_rgb) {
+        base_mode = 1;
+    } else if (comb->env_in_rgb && (!comb->prim_in_rgb || (comb->tex1a_in_rgb && !comb->tex1_in_rgb))) {
+        base_mode = 3;
+    } else if (comb->prim_in_rgb) {
+        base_mode = 2;
+    } else if (comb->env_in_rgb) {
+        base_mode = 3;
+    }
     g_es1_base_color_mode = base_mode;
     g_es1_base_modulate = (base_mode != 0) ? 1 : 0;
     // Publish which textures are used (so GLES can enable/disable texturing correctly)

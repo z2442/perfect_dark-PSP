@@ -981,7 +981,8 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
                     uint8_t b8 = (g_es1_base_color_mode == 2) ? g_es1_prim_rgba[2] : g_es1_env_rgba[2];
                     uint8_t a8 = (g_es1_base_color_mode == 2) ? g_es1_prim_rgba[3] : g_es1_env_rgba[3];
                     glColor4f(r8 / 255.0f, g8 / 255.0f, b8 / 255.0f, a8 / 255.0f);
-                    set_texenv_texture_modulate_with_constant(true);
+                    const bool font_like = g_es1_highp_alpha && g_es1_alpha_test_enable;
+                    set_texenv_texture_modulate_with_constant(!font_like);
                 } else {
                     // Constant color only; pre-multiply for PMA blending.
                     glDisableClientState(GL_COLOR_ARRAY);
@@ -1015,12 +1016,27 @@ if (want_two_pass) {
 if (using_two_pass) {
     glDisable(GL_BLEND);
 } else {
-        // For fonts/UI, prefer alpha-test only without blending for speed and crisp edges
+        bool want_blend = prevBlend;
+
         if (g_es1_highp_alpha && g_es1_alpha_test_enable) {
-            glDisable(GL_BLEND);
-        } else if (prevBlend) {
+            uint8_t const_alpha = 255;
+
+            if (g_es1_base_color_mode == 2) {
+                const_alpha = g_es1_prim_rgba[3];
+            } else if (g_es1_base_color_mode == 3) {
+                const_alpha = g_es1_env_rgba[3];
+            }
+
+            if (const_alpha < 255) {
+                want_blend = true;
+            } else if (!prevBlend) {
+                want_blend = false;
+            }
+        }
+
+        if (want_blend) {
             glEnable(GL_BLEND);
-            // Ensure blend func matches the last requested mode
+
             if (s_last_modulate) {
                 glBlendFunc(GL_DST_COLOR, GL_ZERO);
             } else {
@@ -1029,9 +1045,10 @@ if (using_two_pass) {
         } else {
             glDisable(GL_BLEND);
         }
+
         // Keep blend func as set by gfx_opengl_set_use_alpha
         // Apply alpha testing when requested by RDP state, otherwise keep a minimal discard when blending
-        const bool want_alpha_test = g_es1_alpha_test_enable || (prevBlend && !s_last_modulate);
+        const bool want_alpha_test = g_es1_alpha_test_enable || (want_blend && !s_last_modulate);
         float alpha_ref = g_es1_alpha_test_enable ? g_es1_alpha_test_ref : 0.0f;
         // Bias slightly to account for 4-bit/quantized sources and sampling
         if (alpha_ref > 0.0f && alpha_ref < 1.0f) alpha_ref = fmaxf(0.0f, alpha_ref - 0.03f);
