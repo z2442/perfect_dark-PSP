@@ -20,11 +20,8 @@
 - Replace SDL2 audio with psp audio lib -> Done!
 - Replace SDL2 input with psp native -> Done!
 
-![Screenshot 2025-04-14 at 8 46 42 PM](https://github.com/user-attachments/assets/d76a4e0e-4d5b-4728-a9e5-5392fa34f826)
-![Screenshot 2025-04-14 at 8 46 50 PM](https://github.com/user-attachments/assets/f1d00605-9d34-45c1-87e0-6b3f8a3c4b4f)
-![Screenshot 2025-04-14 at 8 25 33 PM](https://github.com/user-attachments/assets/f3e17d14-0b4d-4821-a263-e69494926e72)
-![Screenshot 2025-04-14 at 8 47 19 PM](https://github.com/user-attachments/assets/ca8fb16a-5179-45fe-9f19-d688424115e0)
 
+<iframe width="560" height="315" src="https://www.youtube.com/embed/tW5jyqPiTaI?si=JTb1WcLrc6dVSzc_" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
 
 
 
