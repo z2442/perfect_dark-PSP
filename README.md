@@ -20,10 +20,8 @@
 - Replace SDL2 audio with psp audio lib -> Done!
 - Replace SDL2 input with psp native -> Done!
 
-
-<iframe width="560" height="315" src="https://www.youtube.com/embed/tW5jyqPiTaI?si=JTb1WcLrc6dVSzc_" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
-
-
+Video:
+https://youtu.be/tW5jyqPiTaI?si=Pu8vZp1W-zcNEr6i
 
 # Perfect Dark port
 
