@@ -37,9 +37,21 @@
 #include <PR/ultraerror.h>
 #include <PR/ultralog.h>
 
-#include <pspfpu.h>
-#include <pspmath.h>
 #include <math.h>
 
+#include <pspfpu.h>
+#include <pspmath.h>
 
+// Redirect standard trig calls to PSP VFPU versions
+#ifdef sinf
+#undef sinf
 #endif
+#define sinf(x) pspFpuSin(x)
+
+#ifdef cosf
+#undef cosf
+#endif
+#define cosf(x) pspFpuCos(x)
+#endif
+
+

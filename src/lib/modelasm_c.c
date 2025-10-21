@@ -1537,17 +1537,136 @@ static Mtxf *modelasmFindNodeMtx(struct model *model, struct modelnode *node)
  */
 static f32 modelasmAcosOrAsin(f32 f6)
 {
-	return pspFpuAcos(f6);
+	s32 t2;
+	s32 t3;
+	u16 *array;
+	s32 shiftamount;
+	s32 mask;
+	s32 s0;
+	s32 s1;
+	s32 s2;
+	s32 s3;
+	s32 s4;
+
+	t2 = f6 * 32767.0f;
+
+	if (t2 > 32767) {
+		t2 = 32767;
+	} else if (t2 < -32767) {
+		t2 = -32767;
+	}
+
+	t3 = t2;
+
+	if (t3 < 0) {
+		t3 = -t3;
+	}
+
+	if (t3 >= 32736) {
+		array = &var8006ae90[126];
+		t3 -= 32736;
+		shiftamount = 3;
+		mask = 0x07;
+	} else if (t3 >= 30720) {
+		array = &var8006ae90[62];
+		t3 -= 30720;
+		shiftamount = 5;
+		mask = 0x1f;
+	} else {
+		array = &var8006ae90[0];
+		shiftamount = 9;
+		mask = 0x1ff;
+	}
+
+	s0 = t3 >> shiftamount;
+	array += s0;
+	s1 = array[0];
+	s2 = array[1];
+	s3 = s1 - s2;
+	s4 = t3 & mask;
+	s3 *= s4;
+	s3 >>= shiftamount;
+	t3 = s1 - s3;
+
+	if (t2 < 0) {
+		t3 = 0xffff - t3;
+	}
+
+	return 0.000047937632189132f * t3;
 }
 
+#if !defined(PLATFORM_PSP)
 f32 cosf(f32 radians)
 {
-	return pspFpuSin(radians + 1.570796251297f);
+	return sinf(radians + 1.570796251297f);
 }
 
 f32 sinf(f32 radians)
 {
+	f32 f0;
+	f32 f13;
+	f32 f14;
+	f32 f15;
+	s32 t0;
+	s32 t1;
+	f32 ret;
 
-	return pspFpuSin(radians);
+	t0 = *(u32 *) &radians;
+	t0 = (t0 >> 22) & 0x1ff;
 
+	if (t0 < 255) {
+		if (t0 >= 230) {
+			f14 = radians * radians;
+
+			ret = 0.0000026057805371238f;
+			ret *= f14;
+			ret += -0.0001980960223591f;
+			ret *= f14;
+			ret += 0.0083330664783716f;
+			ret *= f14;
+			ret += -0.16666659712791f;
+			ret *= f14;
+			ret *= radians;
+			ret += radians;
+		} else {
+			ret = radians;
+		}
+	} else {
+		if (t0 < 310) {
+			f14 = radians * 0.31830987334251f;
+
+			t1 = (s32) (f14 > 0.0f ? f14 + 0.5f : f14 - 0.5f);
+			f14 = t1;
+
+			f15 = M_PI;
+			f15 *= f14;
+			radians -= f15;
+
+			f15 = 0.000000031786509424592f;
+			f15 *= f14;
+			radians -= f15;
+
+			f14 = radians * radians;
+
+			ret = 0.0000026057805371238f;
+			ret *= f14;
+			ret += -0.0001980960223591f;
+			ret *= f14;
+			ret += 0.0083330664783716f;
+			ret *= f14;
+			ret += -0.16666659712791f;
+			ret *= f14;
+			ret *= radians;
+			ret += radians;
+
+			if (t1 & 1) {
+				ret = -ret;
+			}
+		} else {
+			ret = 0;
+		}
+	}
+
+	return ret;
 }
+#endif
