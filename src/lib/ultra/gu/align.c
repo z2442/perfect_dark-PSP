@@ -10,7 +10,7 @@ void guAlignF(float mf[4][4], float a, float x, float y, float z)
 	a *= dtor;
 	s = sinf(a);
 	c = cosf(a);
-	h = sqrtf(x * x + z * z);
+	h = pspFpuSqrt(x * x + z * z);
 
 	guMtxIdentF(mf);
 

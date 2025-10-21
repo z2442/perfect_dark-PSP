@@ -130,7 +130,7 @@ Gfx *radarDrawDot(Gfx *gdl, struct prop *prop, struct coord *dist, u32 colour1, 
 	osSyncPrintf("RadarDrawDot : Prop=%x", prop);
 
 	spcc = (atan2f(dist->x, dist->z) * 180.0f) / M_PI + g_Vars.currentplayer->vv_theta + 180.0f;
-	sqdist = sqrtf(dist->z * dist->z + dist->x * dist->x) * (1.0f / 250.0f);
+	sqdist = pspFpuSqrt(dist->z * dist->z + dist->x * dist->x) * (1.0f / 250.0f);
 
 	if (sqdist < 16.0f) {
 		shiftamount = 0;

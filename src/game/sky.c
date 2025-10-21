@@ -66,7 +66,7 @@ void skyGetWorldPosFromScreenPos(f32 left, f32 top, struct coord *dst)
 bool skyIsScreenCornerInSky(struct coord *corner3dpos, struct coord *dstpos, f32 *dstfrac)
 {
 	struct coord *campos = &g_Vars.currentplayer->cam_pos;
-	f32 f12 = 2.0f * corner3dpos->y / sqrtf(corner3dpos->f[0] * corner3dpos->f[0] + corner3dpos->f[2] * corner3dpos->f[2] + 0.0001f);
+	f32 f12 = 2.0f * corner3dpos->y / pspFpuSqrt(corner3dpos->f[0] * corner3dpos->f[0] + corner3dpos->f[2] * corner3dpos->f[2] + 0.0001f);
 	f32 sp2c;
 	f32 f12_2;
 	f32 sp24;
@@ -86,7 +86,7 @@ bool skyIsScreenCornerInSky(struct coord *corner3dpos, struct coord *dstpos, f32
 
 	if (sp24 > 0.0f) {
 		sp2c = (envGetCurrent()->clouds_scale - campos->y) / sp24;
-		f12_2 = sqrtf(corner3dpos->f[0] * corner3dpos->f[0] + corner3dpos->f[2] * corner3dpos->f[2]) * sp2c;
+		f12_2 = pspFpuSqrt(corner3dpos->f[0] * corner3dpos->f[0] + corner3dpos->f[2] * corner3dpos->f[2]) * sp2c;
 
 		if (f12_2 > 300000) {
 			sp2c *= 300000 / f12_2;
@@ -105,7 +105,7 @@ bool skyIsScreenCornerInSky(struct coord *corner3dpos, struct coord *dstpos, f32
 bool skyIsCornerInWater(struct coord *corner3dpos, struct coord *dstpos, f32 *dstfrac)
 {
 	struct coord *campos = &g_Vars.currentplayer->cam_pos;
-	f32 f12 = -2.0f * corner3dpos->y / sqrtf(corner3dpos->f[0] * corner3dpos->f[0] + corner3dpos->f[2] * corner3dpos->f[2] + 0.0001f);
+	f32 f12 = -2.0f * corner3dpos->y / pspFpuSqrt(corner3dpos->f[0] * corner3dpos->f[0] + corner3dpos->f[2] * corner3dpos->f[2] + 0.0001f);
 	f32 sp2c;
 	f32 f12_2;
 	f32 sp24;
@@ -125,7 +125,7 @@ bool skyIsCornerInWater(struct coord *corner3dpos, struct coord *dstpos, f32 *ds
 
 	if (sp24 < 0.0f) {
 		sp2c = (envGetCurrent()->water_scale - campos->y) / sp24;
-		f12_2 = sqrtf(corner3dpos->f[0] * corner3dpos->f[0] + corner3dpos->f[2] * corner3dpos->f[2]) * sp2c;
+		f12_2 = pspFpuSqrt(corner3dpos->f[0] * corner3dpos->f[0] + corner3dpos->f[2] * corner3dpos->f[2]) * sp2c;
 
 		if (f12_2 > 300000) {
 			sp2c *= 300000 / f12_2;
@@ -1466,7 +1466,7 @@ bool skyVerticesAreSame(struct skyvtx2d *vtx0, struct skyvtx2d *vtx1)
 	f32 xdiff = vtx0->x - vtx1->x;
 	f32 ydiff = vtx0->y - vtx1->y;
 
-	return sqrtf(xdiff * xdiff + ydiff * ydiff) < 1.0f ? true : false;
+	return pspFpuSqrt(xdiff * xdiff + ydiff * ydiff) < 1.0f ? true : false;
 }
 
 Gfx *skyRenderTri(Gfx *gdl, struct skyvtx2d *vtx0, struct skyvtx2d *vtx1, struct skyvtx2d *vtx2, f32 arg4, bool textured)
@@ -2885,7 +2885,7 @@ Gfx *skyRenderFlare(Gfx *gdl, f32 x, f32 y, f32 intensityfrac, f32 size, s32 fla
 	xdist = viGetViewWidth() / 2.0f - x;
 	ydist = viGetViewHeight() / 2.0f - y;
 
-	f12 = (40.0f - sqrtf(xdist * xdist + ydist * ydist)) * 0.0125f;
+	f12 = (40.0f - pspFpuSqrt(xdist * xdist + ydist * ydist)) * 0.0125f;
 
 	if (f12 < 0.0f) {
 		f12 = 0.0f;
@@ -3068,9 +3068,9 @@ Gfx *skyRenderArtifacts(Gfx *gdl)
 
 void skySetOverexposure(s32 r, s32 g, s32 b)
 {
-	g_Vars.currentplayer->overexposurered = sqrtf(g_Vars.currentplayer->overexposurered * g_Vars.currentplayer->overexposurered + r * r);
-	g_Vars.currentplayer->overexposuregreen = sqrtf(g_Vars.currentplayer->overexposuregreen * g_Vars.currentplayer->overexposuregreen + g * g);
-	g_Vars.currentplayer->overexposureblue = sqrtf(g_Vars.currentplayer->overexposureblue * g_Vars.currentplayer->overexposureblue + b * b);
+	g_Vars.currentplayer->overexposurered = pspFpuSqrt(g_Vars.currentplayer->overexposurered * g_Vars.currentplayer->overexposurered + r * r);
+	g_Vars.currentplayer->overexposuregreen = pspFpuSqrt(g_Vars.currentplayer->overexposuregreen * g_Vars.currentplayer->overexposuregreen + g * g);
+	g_Vars.currentplayer->overexposureblue = pspFpuSqrt(g_Vars.currentplayer->overexposureblue * g_Vars.currentplayer->overexposureblue + b * b);
 
 	if (g_Vars.currentplayer->overexposurered > 0xcc) {
 		g_Vars.currentplayer->overexposurered = 0xcc;

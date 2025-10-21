@@ -53,6 +53,47 @@ void quaternionSetRotationAroundZ(f32 angle, f32 quat[4])
 
 void quaternionToMtx(f32 quat[4], Mtxf *mtx)
 {
+#ifdef __psp__
+	f32 qw = quat[0];
+	f32 qx = quat[1];
+	f32 qy = quat[2];
+	f32 qz = quat[3];
+	f32 mag = qw * qw + qx * qx + qy * qy + qz * qz;
+
+	if (mag > 0.0f) {
+		f32 invmag = 1.0f / pspFpuSqrt(mag);
+
+		qw *= invmag;
+		qx *= invmag;
+		qy *= invmag;
+		qz *= invmag;
+	}
+
+	ScePspQuatMatrix q = { qx, qy, qz, qw };
+	ScePspFMatrix4 out;
+	f32 *dst;
+	const f32 *src;
+	s32 i;
+
+	vfpu_quaternion_to_matrix(&q, &out);
+
+	dst = &mtx->m[0][0];
+	src = (const f32 *)&out;
+
+	for (i = 0; i < 16; i++) {
+		dst[i] = src[i];
+	}
+
+	mtx->m[3][0] = 0.0f;
+	mtx->m[3][1] = 0.0f;
+	mtx->m[3][2] = 0.0f;
+	mtx->m[0][3] = 0.0f;
+	mtx->m[1][3] = 0.0f;
+	mtx->m[2][3] = 0.0f;
+	mtx->m[3][3] = 1.0f;
+
+	return;
+#else
 	f32 mult = 2.0f / (quat[0] * quat[0] + quat[1] * quat[1] + quat[2] * quat[2] + quat[3] * quat[3]);
 	f32 a = quat[1] * mult;
 	f32 b = quat[2] * mult;
@@ -88,6 +129,7 @@ void quaternionToMtx(f32 quat[4], Mtxf *mtx)
 	mtx->m[1][3] = 0.0f;
 	mtx->m[2][3] = 0.0f;
 	mtx->m[3][3] = 1.0f;
+#endif
 }
 
 void quaternion0f097044(Mtxf *mtx, f32 arg1[4])
@@ -97,7 +139,7 @@ void quaternion0f097044(Mtxf *mtx, f32 arg1[4])
 	f32 trace = mtx->m[0][0] + mtx->m[1][1] + mtx->m[2][2] + 1.0f;
 
 	if (trace > 0.01f) {
-		var1 = sqrtf(trace);
+		var1 = pspFpuSqrt(trace);
 		var2 = 0.5f / var1;
 
 		arg1[0] = var1 * 0.5f;
@@ -123,7 +165,7 @@ void quaternion0f097044(Mtxf *mtx, f32 arg1[4])
 		j = indices[i];
 		k = indices[j];
 
-		var1 = sqrtf(mtx->m[i][i] - (mtx->m[j][j] + mtx->m[k][k]) + 1.0f);
+		var1 = pspFpuSqrt(mtx->m[i][i] - (mtx->m[j][j] + mtx->m[k][k]) + 1.0f);
 		var2 = 0.5f / var1;
 
 		arg1[i + 1] = var1 * 0.5f;
@@ -233,10 +275,23 @@ void quaternion0f0976c0(f32 q1[4], f32 q2[4])
 
 void quaternionMultQuaternion(f32 a[4], f32 b[4], f32 result[4])
 {
+#ifdef __psp__
+	ScePspQuatMatrix qa = { a[1], a[2], a[3], a[0] };
+	ScePspQuatMatrix qb = { b[1], b[2], b[3], b[0] };
+	ScePspQuatMatrix qr;
+
+	vfpu_quaternion_multiply(&qr, &qa, &qb);
+
+	result[0] = qr.w;
+	result[1] = qr.x;
+	result[2] = qr.y;
+	result[3] = qr.z;
+#else
 	result[0] = a[0] * b[0] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3];
 	result[1] = a[0] * b[1] + b[0] * a[1] + a[2] * b[3] - a[3] * b[2];
 	result[2] = a[0] * b[2] + b[0] * a[2] + a[3] * b[1] - a[1] * b[3];
 	result[3] = a[0] * b[3] + b[0] * a[3] + a[1] * b[2] - a[2] * b[1];
+#endif
 }
 
 void quaternionMultQuaternionInPlace(f32 a[4], f32 dst[4])

@@ -3484,7 +3484,7 @@ void playerTick(bool arg0)
 		if (rocket && rocket->base.prop) {
 			f32 sp2b8[3][3];
 			struct coord sp2ac;
-			f32 sp2a8 = sqrtf(
+			f32 sp2a8 = pspFpuSqrt(
 					rocket->base.realrot[0][0] * rocket->base.realrot[0][0] +
 					rocket->base.realrot[1][0] * rocket->base.realrot[1][0] +
 					rocket->base.realrot[2][0] * rocket->base.realrot[2][0]);
@@ -3680,7 +3680,7 @@ void playerTick(bool arg0)
 				}
 #endif
 
-				f20 = sqrtf(sp2ac.f[0] * sp2ac.f[0] + sp2ac.f[2] * sp2ac.f[2]);
+				f20 = pspFpuSqrt(sp2ac.f[0] * sp2ac.f[0] + sp2ac.f[2] * sp2ac.f[2]);
 
 				sp2ac.x /= f20;
 				sp2ac.z /= f20;
@@ -3717,7 +3717,7 @@ void playerTick(bool arg0)
 					rocket->team = TEAM_00;
 				}
 
-				prevspeed = sqrtf(
+				prevspeed = pspFpuSqrt(
 						projectile->speed.f[0] * projectile->speed.f[0] +
 						projectile->speed.f[1] * projectile->speed.f[1] +
 						projectile->speed.f[2] * projectile->speed.f[2]);
@@ -4174,7 +4174,7 @@ void playerTick(bool arg0)
 		}
 
 		if (g_Vars.currentplayer->autocontrol_walkspeed) {
-			xdist = sqrtf(xdist * xdist + zdist * zdist);
+			xdist = pspFpuSqrt(xdist * xdist + zdist * zdist);
 
 			if (xdist < g_Vars.currentplayer->autocontrol_dist) {
 				playerSetTickMode(TICKMODE_NORMAL);
@@ -4458,7 +4458,7 @@ Gfx *playerUpdateShootRot(Gfx *gdl)
 	bgun0f0a0c08(&sp30, &sp3c);
 	y = sp3c.y;
 
-	value = sqrtf(sp3c.z * sp3c.z + sp3c.x * sp3c.x);
+	value = pspFpuSqrt(sp3c.z * sp3c.z + sp3c.x * sp3c.x);
 
 	rotx = atan2f(y, value);
 	rotx += (g_Vars.currentplayer->vv_verta * M_BADTAU) / 360.0f;
@@ -5709,7 +5709,7 @@ void playerChooseThirdPersonAnimation(struct chrdata *chr, s32 crouchpos, f32 sp
 				wieldmode = WIELDMODE_HEAVY;
 			}
 
-			turnspeed = sqrtf(speedsideways * speedsideways + speedforwards * speedforwards);
+			turnspeed = pspFpuSqrt(speedsideways * speedsideways + speedforwards * speedforwards);
 
 			if (speedtheta < 0) {
 				speedtheta = -speedtheta;

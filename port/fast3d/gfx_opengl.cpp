@@ -30,6 +30,9 @@ extern "C"{
 }
 
 #include "system.h"
+#include <pspfpu.h>
+#include <pspmath.h>
+#include <math.h>
 
 #if defined(__PSP__)
 static inline void psp_clear_gl_errors(void) {

@@ -50,6 +50,7 @@
 #include "platform.h"
 #endif
 
+
 #define BGCMD_END                               0x00
 #define BGCMD_PUSH                              0x01
 #define BGCMD_POP                               0x02
@@ -456,7 +457,7 @@ void bgChooseXrayVtxColour(bool *inrange, s16 vertex[3], u32 *colour, struct xra
 			sp2c[1] = sp2c[1] * sp2c[1];
 
 			if (sp2c[1] < xraydata->unk010) {
-				f32 dist = sqrtf(sp2c[0] + sp2c[1] + sp2c[2]);
+				f32 dist = pspFpuSqrt(sp2c[0] + sp2c[1] + sp2c[2]);
 
 				if (dist < xraydata->unk00c) {
 					*inrange = true;
@@ -1292,7 +1293,7 @@ f32 bgCalculatePortalSurfaceArea(s32 portalnum)
 		sp90[1] = -sp84[0] * sp78[2] + sp84[2] * sp78[0];
 		sp90[2] = sp84[0] * sp78[1] - sp84[1] * sp78[0];
 
-		sum += sqrtf(sp90[0] * sp90[0] + sp90[1] * sp90[1] + sp90[2] * sp90[2]) * 0.5f;
+		sum += pspFpuSqrt(sp90[0] * sp90[0] + sp90[1] * sp90[1] + sp90[2] * sp90[2]) * 0.5f;
 	}
 
 	return sum;
@@ -1852,7 +1853,7 @@ void bgBuildTables(s32 stagenum)
 				tmp.normal.z += (pvertices->vertices[j].x - next->x) * (pvertices->vertices[j].y + next->y);
 			}
 
-			divisor = -sqrtf(tmp.normal.f[0] * tmp.normal.f[0] + tmp.normal.f[1] * tmp.normal.f[1] + tmp.normal.f[2] * tmp.normal.f[2]);
+			divisor = -pspFpuSqrt(tmp.normal.f[0] * tmp.normal.f[0] + tmp.normal.f[1] * tmp.normal.f[1] + tmp.normal.f[2] * tmp.normal.f[2]);
 
 			tmp.normal.x /= divisor;
 			tmp.normal.y /= divisor;
@@ -1970,7 +1971,7 @@ void bgBuildTables(s32 stagenum)
 			if (1);
 
 			// Calculate radius
-			g_Rooms[r].radius = sqrtf((g_Rooms[r].bbmin[0] - g_Rooms[r].bbmax[0]) * (g_Rooms[r].bbmin[0] - g_Rooms[r].bbmax[0])
+			g_Rooms[r].radius = pspFpuSqrt((g_Rooms[r].bbmin[0] - g_Rooms[r].bbmax[0]) * (g_Rooms[r].bbmin[0] - g_Rooms[r].bbmax[0])
 					+ (g_Rooms[r].bbmin[1] - g_Rooms[r].bbmax[1]) * (g_Rooms[r].bbmin[1] - g_Rooms[r].bbmax[1])
 					+ (g_Rooms[r].bbmin[2] - g_Rooms[r].bbmax[2]) * (g_Rooms[r].bbmin[2] - g_Rooms[r].bbmax[2])) / 2.0f;
 		}
@@ -5432,7 +5433,7 @@ void bgTickPortalsXray(void)
 				y = (g_Rooms[i].bbmin[1] + g_Rooms[i].bbmax[1]) / 2.0f - vismid.f[1];
 				z = (g_Rooms[i].bbmin[2] + g_Rooms[i].bbmax[2]) / 2.0f - vismid.f[2];
 
-				g_BgDrawSlots[index].draworder = sqrtf(x * x + y * y + z * z) / 100.0f;
+				g_BgDrawSlots[index].draworder = pspFpuSqrt(x * x + y * y + z * z) / 100.0f;
 
 				if (g_BgDrawSlots[index].draworder > g_BgMaxDrawOrder) {
 					g_BgMaxDrawOrder = g_BgDrawSlots[index].draworder;

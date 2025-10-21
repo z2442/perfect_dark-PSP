@@ -362,10 +362,10 @@ f32 cd00025654(f32 x1, f32 z1, f32 x2, f32 z2, f32 x3, f32 z3)
 	u32 stack[8];
 	f32 result;
 
-	result = sqrtf((x2 - x1) * (x2 - x1) + (z2 - z1) * (z2 - z1));
+	result = pspFpuSqrt((x2 - x1) * (x2 - x1) + (z2 - z1) * (z2 - z1));
 
 	if (result == 0.0f) {
-		return sqrtf((x3 - x2) * (x3 - x2) + (z3 - z2) * (z3 - z2));
+		return pspFpuSqrt((x3 - x2) * (x3 - x2) + (z3 - z2) * (z3 - z2));
 	}
 
 	return ((x3 - x1) * (z2 - z1) + -(x2 - x1) * (z3 - z1)) / result;
@@ -376,7 +376,7 @@ f32 cd00025724(f32 x1, f32 z1, f32 x2, f32 z2)
 	x2 -= x1;
 	z2 -= z1;
 
-	return sqrtf(x2 * x2 + z2 * z2);
+	return pspFpuSqrt(x2 * x2 + z2 * z2);
 }
 
 bool cd00025774(f32 x1, f32 z1, f32 x2, f32 z2, f32 x3, f32 z3)
@@ -404,7 +404,7 @@ void cd00025848(f32 tilex, f32 tilez, f32 tilewidth, f32 posx, f32 posz, f32 *x1
 	posz -= tilez;
 
 	if (posx != 0 || posz != 0) {
-		f32 dist = sqrtf(posx * posx + posz * posz);
+		f32 dist = pspFpuSqrt(posx * posx + posz * posz);
 
 		if (dist > 0) {
 			dist = tilewidth / dist;
@@ -1992,7 +1992,7 @@ f32 cdFindGroundFromList(struct collision *collisions, struct coord *pos, struct
 								if (cd00025774(thisx, thisz, nextx, nextz, pos->x, pos->z)) {
 									spb8 = nextx - thisx;
 									spb4 = nextz - thisz;
-									f14 = spd4 / sqrtf(spb8 * spb8 + spb4 * spb4);
+									f14 = spd4 / pspFpuSqrt(spb8 * spb8 + spb4 * spb4);
 									x = pos->x + f14 * -spb4;
 									z = pos->z + f14 * spb8;
 
@@ -2083,7 +2083,7 @@ f32 cdFindGroundFromList(struct collision *collisions, struct coord *pos, struct
 							if (cd00025774(thisx, thisz, nextx, nextz, pos->x, pos->z)) {
 								sp78 = nextx - thisx;
 								sp74 = nextz - thisz;
-								f14 = sp94 / sqrtf(sp78 * sp78 + sp74 * sp74);
+								f14 = sp94 / pspFpuSqrt(sp78 * sp78 + sp74 * sp74);
 								x = pos->x + f14 * -sp74;
 								z = pos->z + f14 * sp78;
 
@@ -2838,7 +2838,7 @@ bool cd0002b954Cyl(struct coord *arg0, struct coord *arg1, struct coord *arg2, s
 			f32 sp4c;
 			f32 sp48;
 
-			sp50 = sqrtf(xdiff * xdiff + zdiff * zdiff);
+			sp50 = pspFpuSqrt(xdiff * xdiff + zdiff * zdiff);
 
 			if (sp50 > 0.0f) {
 				xdiff = x - arg0->x;
@@ -2847,7 +2847,7 @@ bool cd0002b954Cyl(struct coord *arg0, struct coord *arg1, struct coord *arg2, s
 				sqdist = xdiff * xdiff + zdiff * zdiff;
 
 				if (sp74 * sp74 <= sqdist) {
-					dist = sqrtf(sqdist - sp74 * sp74) - sqrtf(radius * radius - sp74 * sp74);
+					dist = pspFpuSqrt(sqdist - sp74 * sp74) - pspFpuSqrt(radius * radius - sp74 * sp74);
 				} else {
 					dist = 0.0f;
 				}
@@ -3006,7 +3006,7 @@ void cd0002c328IntTile(struct geotilei *tile, struct coord *arg1, struct coord *
 		sp3c.y = 0.0f;
 		sp3c.z = -arg2->x;
 
-		dist = sqrtf(sp3c.f[0] * sp3c.f[0] + sp3c.f[2] * sp3c.f[2]);
+		dist = pspFpuSqrt(sp3c.f[0] * sp3c.f[0] + sp3c.f[2] * sp3c.f[2]);
 
 		if (dist > 0.0f) {
 			sp3c.x *= 1.0f / dist;
@@ -3060,7 +3060,7 @@ void cd0002c528FltTile(struct geotilef *tile, struct coord *arg1, struct coord *
 		sp3c.y = 0.0f;
 		sp3c.z = -arg2->x;
 
-		dist = sqrtf(sp3c.f[0] * sp3c.f[0] + sp3c.f[2] * sp3c.f[2]);
+		dist = pspFpuSqrt(sp3c.f[0] * sp3c.f[0] + sp3c.f[2] * sp3c.f[2]);
 
 		if (dist > 0.0f) {
 			sp3c.x *= 1.0f / dist;

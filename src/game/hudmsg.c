@@ -1292,7 +1292,7 @@ void hudmsgsTick(void)
 #endif
 				}
 
-				fadeintime = (sqrtf(msg->width * msg->width + msg->height * msg->height) + 132) / PALUPF(7.0f);
+				fadeintime = (pspFpuSqrt(msg->width * msg->width + msg->height * msg->height) + 132) / PALUPF(7.0f);
 
 				msg->timer += g_Vars.lvupdate60;
 
@@ -1330,7 +1330,7 @@ void hudmsgsTick(void)
 			}
 			break;
 		case HUDMSGSTATE_FADINGOUT:
-			fadeouttime = (sqrtf(msg->width * msg->width + msg->height * msg->height) + 92) / PALUPF(7.0f);
+			fadeouttime = (pspFpuSqrt(msg->width * msg->width + msg->height * msg->height) + 92) / PALUPF(7.0f);
 
 			msg->timer += g_Vars.lvupdate60;
 
@@ -1489,7 +1489,7 @@ Gfx *hudmsgsRender(Gfx *gdl)
 					bordercolour = (bordercolour & 0xffffff00) + (alpha & 0xff);
 				}
 
-				spc0 = (sqrtf(msg->width * msg->width + msg->height * msg->height) + 132.0f) / PALUPF(7.0f);
+				spc0 = (pspFpuSqrt(msg->width * msg->width + msg->height * msg->height) + 132.0f) / PALUPF(7.0f);
 
 				if (spc0 > 30.0f) {
 					spc0 = 30.0f;
@@ -1569,7 +1569,7 @@ Gfx *hudmsgsRender(Gfx *gdl)
 			{
 				u32 bordercolour;
 				u32 stack;
-				f32 spa8 = (sqrtf(msg->width * msg->width + msg->height * msg->height) + 92.0f) / PALUPF(7.0f);
+				f32 spa8 = (pspFpuSqrt(msg->width * msg->width + msg->height * msg->height) + 92.0f) / PALUPF(7.0f);
 				f32 tmp;
 
 				bordercolour = msg->textcolour | 0x40;

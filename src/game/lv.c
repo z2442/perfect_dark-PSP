@@ -2443,7 +2443,7 @@ void lvTickPlayer(void)
 	xdiff = g_Vars.currentplayer->prop->pos.x - g_Vars.currentplayer->bondprevpos.x;
 	zdiff = g_Vars.currentplayer->prop->pos.z - g_Vars.currentplayer->bondprevpos.z;
 
-	g_Vars.currentplayerstats->distance += sqrtf(xdiff * xdiff + zdiff * zdiff);
+	g_Vars.currentplayerstats->distance += pspFpuSqrt(xdiff * xdiff + zdiff * zdiff);
 }
 
 void lvStop(void)

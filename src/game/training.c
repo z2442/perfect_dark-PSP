@@ -2011,7 +2011,7 @@ void frTick(void)
 					diff.y = g_FrData.targets[i].dstpos.y - prop->pos.y;
 					diff.z = g_FrData.targets[i].dstpos.z - prop->pos.z;
 
-					dist = sqrtf(diff.f[0] * diff.f[0] + diff.f[1] * diff.f[1] + diff.f[2] * diff.f[2]);
+					dist = pspFpuSqrt(diff.f[0] * diff.f[0] + diff.f[1] * diff.f[1] + diff.f[2] * diff.f[2]);
 #if VERSION >= VERSION_NTSC_1_0
 					mult = 1;
 #endif
@@ -2233,7 +2233,7 @@ bool frChooseFarsightTarget(void)
 				f32 xdiff = g_Vars.currentplayer->bond2.unk10.x - prop->pos.x;
 				f32 ydiff = g_Vars.currentplayer->bond2.unk10.y - prop->pos.y;
 				f32 zdiff = g_Vars.currentplayer->bond2.unk10.z - prop->pos.z;
-				f32 dist = sqrtf(xdiff * xdiff + ydiff * ydiff + zdiff * zdiff);
+				f32 dist = pspFpuSqrt(xdiff * xdiff + ydiff * ydiff + zdiff * zdiff);
 
 				if (dist > 0) {
 					f32 value = (xdiff * g_Vars.currentplayer->bond2.unk1c.f[0]
@@ -2287,7 +2287,7 @@ void frCalculateHit(struct defaultobj *obj, struct coord *hitpos, f32 maulerchar
 			f32 ydiff = hitpos->y - prop->pos.y;
 			f32 zdiff = hitpos->z - prop->pos.z;
 
-			f32 dist = sqrtf(xdiff * xdiff + ydiff * ydiff + zdiff * zdiff);
+			f32 dist = pspFpuSqrt(xdiff * xdiff + ydiff * ydiff + zdiff * zdiff);
 
 			if (g_FrData.targets[i].flags & FRTARGETFLAG_ONEHITEXPLODE) {
 				g_FrData.targets[i].damage = g_FrData.targets[i].maxdamage;

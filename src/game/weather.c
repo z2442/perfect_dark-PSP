@@ -1383,7 +1383,7 @@ Gfx *weatherRenderRain(Gfx *gdl, struct weatherdata *weather, s32 arg2)
 					sp218[0] = particle2->pos.f[0];
 					sp218[1] = particle2->pos.f[2];
 
-					sp214 = sqrtf(sp218[0] * sp218[0] + sp218[1] * sp218[1]);
+					sp214 = pspFpuSqrt(sp218[0] * sp218[0] + sp218[1] * sp218[1]);
 
 					if (sp214 < 0.00001f) {
 						// empty
@@ -3345,7 +3345,7 @@ Gfx *weatherRenderSnow(Gfx *gdl, struct weatherdata *weather, s32 arg2)
 				sp21c = particle->pos.f[0];
 				sp220 = particle->pos.f[2];
 
-				f20 = sqrtf(sp220 * sp220 + sp21c * sp21c);
+				f20 = pspFpuSqrt(sp220 * sp220 + sp21c * sp21c);
 
 				if (f20 < 0.00001f) {
 					// empty
@@ -3441,7 +3441,7 @@ Gfx *weatherRenderSnow(Gfx *gdl, struct weatherdata *weather, s32 arg2)
 
 						if (range);
 
-						f0_3 = sqrtf(particle->pos.f[0] * particle->pos.f[0]
+						f0_3 = pspFpuSqrt(particle->pos.f[0] * particle->pos.f[0]
 								+ particle->pos.f[1] * particle->pos.f[1]
 								+ particle->pos.f[2] * particle->pos.f[2]);
 
@@ -3450,7 +3450,7 @@ Gfx *weatherRenderSnow(Gfx *gdl, struct weatherdata *weather, s32 arg2)
 						f26 = particle->pos.f[2] / f0_3;
 
 						// 55fc
-						f0_3 = sqrtf(f24 * f24 + f26 * f26);
+						f0_3 = pspFpuSqrt(f24 * f24 + f26 * f26);
 
 						val2 = f24 / f0_3;
 						val1 = f26 / f0_3;

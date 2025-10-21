@@ -461,13 +461,13 @@ bool bwalkCalculateNewPositionWithPush(struct coord *delta, f32 rotateamount, bo
 				}
 
 				if (canpush) {
-					movingdist = sqrtf(delta->f[0] * delta->f[0] + delta->f[2] * delta->f[2]) / LVUPDATE60FREAL();
+					movingdist = pspFpuSqrt(delta->f[0] * delta->f[0] + delta->f[2] * delta->f[2]) / LVUPDATE60FREAL();
 
 					xdist = obstacle->pos.x - g_Vars.currentplayer->prop->pos.x;
 					zdist = obstacle->pos.z - g_Vars.currentplayer->prop->pos.z;
 
 					if (xdist || zdist) {
-						disttochr = sqrtf(xdist * xdist + zdist * zdist);
+						disttochr = pspFpuSqrt(xdist * xdist + zdist * zdist);
 
 						if (disttochr > 0) {
 							disttochr = movingdist / disttochr;
@@ -611,7 +611,7 @@ s32 bwalk0f0c494c(struct coord *a, struct coord *b, struct coord *c, s32 types)
 		sp38.y = 0;
 		sp38.z = c->z - b->z;
 
-		tmp = sqrtf(sp38.f[0] * sp38.f[0] + sp38.f[2] * sp38.f[2]);
+		tmp = pspFpuSqrt(sp38.f[0] * sp38.f[0] + sp38.f[2] * sp38.f[2]);
 
 		sp38.x *= 1.0f / tmp;
 		sp38.z *= 1.0f / tmp;
@@ -648,7 +648,7 @@ s32 bwalk0f0c4a5c(struct coord *arg0, struct coord *arg1, struct coord *arg2, s3
 			sp34.y = 0;
 			sp34.z = arg1->x - g_Vars.currentplayer->prop->pos.x;
 
-			tmp = sqrtf(sp34.f[0] * sp34.f[0] + sp34.f[2] * sp34.f[2]);
+			tmp = pspFpuSqrt(sp34.f[0] * sp34.f[0] + sp34.f[2] * sp34.f[2]);
 
 			sp34.x = sp34.f[0] * (1.0f / tmp);
 			sp34.z = sp34.f[2] * (1.0f / tmp);
@@ -676,7 +676,7 @@ s32 bwalk0f0c4a5c(struct coord *arg0, struct coord *arg1, struct coord *arg2, s3
 				sp34.y = 0;
 				sp34.z = arg2->x - g_Vars.currentplayer->prop->pos.x;
 
-				tmp = sqrtf(sp34.f[0] * sp34.f[0] + sp34.f[2] * sp34.f[2]);
+				tmp = pspFpuSqrt(sp34.f[0] * sp34.f[0] + sp34.f[2] * sp34.f[2]);
 
 				sp34.x = sp34.f[0] * (1.0f / tmp);
 				sp34.z = sp34.f[2] * (1.0f / tmp);
@@ -986,7 +986,7 @@ void bwalkUpdateVertical(void)
 			newfallspeed = g_Vars.currentplayer->vv_manground - g_Vars.currentplayer->vv_ground;
 			newmanground = g_Vars.currentplayer->vv_ground;
 
-			fallspeed = sqrtf(g_Vars.currentplayer->bdeltapos.y *
+			fallspeed = pspFpuSqrt(g_Vars.currentplayer->bdeltapos.y *
 					g_Vars.currentplayer->bdeltapos.y +
 					(((newfallspeed + newfallspeed) * 0.277777777f) / 60.0f) * 60.0f);
 			fallspeed = -fallspeed;
@@ -1575,7 +1575,7 @@ void bwalk0f0c69b8(void)
 		spb4 = tmp1 - g_Vars.currentplayer->swayoffset0;
 		spb0 = tmp2 - g_Vars.currentplayer->swayoffset2;
 
-		dist = sqrtf(spb4 * spb4 + spb0 * spb0);
+		dist = pspFpuSqrt(spb4 * spb4 + spb0 * spb0);
 
 		if (g_Vars.lvupdate60freal > PALUPF(4)) {
 			lvupdate60f = PALUPF(4);
@@ -1813,7 +1813,7 @@ void bwalk0f0c69b8(void)
 			f0 = (xdiff * xdiff + zdiff * zdiff) / f0;
 		}
 
-		f0 = sqrtf(f0);
+		f0 = pspFpuSqrt(f0);
 		g_Vars.currentplayer->swayoffset0 += f0 * spb4;
 		g_Vars.currentplayer->swayoffset2 += f0 * spb0;
 	}

@@ -94,13 +94,13 @@ void camSetScale(void)
 	}
 
 	fVar2 = player->c_halfheight * player->c_scaley;
-	fVar4 = 1.0f / sqrtf(fVar2 * fVar2 + 1.0f);
+	fVar4 = 1.0f / pspFpuSqrt(fVar2 * fVar2 + 1.0f);
 	player->c_cameratopnorm.x = 0;
 	player->c_cameratopnorm.y = fVar4;
 	player->c_cameratopnorm.z = fVar2 * fVar4;
 
 	fVar5 = -player->c_halfwidth * player->c_scalex;
-	fVar4 = 1.0f / sqrtf(fVar5 * fVar5 + 1.0f);
+	fVar4 = 1.0f / pspFpuSqrt(fVar5 * fVar5 + 1.0f);
 	player->c_cameraleftnorm.x = -fVar4;
 	player->c_cameraleftnorm.y = 0;
 	player->c_cameraleftnorm.z = -fVar5 * fVar4;
@@ -117,7 +117,7 @@ void cam0f0b4c3c(f32 pos2d[2], struct coord *dir2d, f32 arg2)
 	sp1c = (player->c_halfheight - (pos2d[1] - player->c_screentop)) * player->c_scaley;
 	sp20 = (pos2d[0] - player->c_screenleft - player->c_halfwidth) * player->c_scalex;
 
-	f2 = arg2 / sqrtf(sp20 * sp20 + sp1c * sp1c + sp18 * sp18);
+	f2 = arg2 / pspFpuSqrt(sp20 * sp20 + sp1c * sp1c + sp18 * sp18);
 
 	dir2d->x = sp20 * f2;
 	dir2d->y = sp1c * f2;
@@ -427,7 +427,7 @@ void cam0f0b5838(void)
 	sp24 = player->c_halfheight * player->c_scaley;
 	mtx = player->projectionmtx;
 
-	sp2c = 1.0f / sqrtf(sp24 * sp24 + 1.0f);
+	sp2c = 1.0f / pspFpuSqrt(sp24 * sp24 + 1.0f);
 	sp24 *= sp2c;
 	sp20 = -sp2c;
 
@@ -445,7 +445,7 @@ void cam0f0b5838(void)
 
 	sp28 = -player->c_halfwidth * player->c_scalex;
 
-	sp10 = 1.0f / sqrtf(sp28 * sp28 + 1.0f);
+	sp10 = 1.0f / pspFpuSqrt(sp28 * sp28 + 1.0f);
 	sp28 *= sp10;
 	sp14 = -sp10;
 
@@ -522,7 +522,7 @@ bool camIsPosInScreenBox(struct coord *pos, f32 arg1, struct drawslot *drawslot)
 
 	sp38 = (drawslot->box.xmin - g_Vars.currentplayer->c_screenleft - g_Vars.currentplayer->c_halfwidth) * g_Vars.currentplayer->c_scalex;
 
-	sp3c = 1.0f / sqrtf(sp38 * sp38 + 1.0f);
+	sp3c = 1.0f / pspFpuSqrt(sp38 * sp38 + 1.0f);
 	sp38 *= sp3c;
 	sp24 = -sp3c;
 
@@ -537,7 +537,7 @@ bool camIsPosInScreenBox(struct coord *pos, f32 arg1, struct drawslot *drawslot)
 	}
 
 	sp38 = -(drawslot->box.xmax - g_Vars.currentplayer->c_screenleft - g_Vars.currentplayer->c_halfwidth) * g_Vars.currentplayer->c_scalex;
-	sp30 = 1.0f / sqrtf(sp38 * sp38 + 1.0f);
+	sp30 = 1.0f / pspFpuSqrt(sp38 * sp38 + 1.0f);
 	sp38 *= sp30;
 	sp20 = -sp30;
 
@@ -552,7 +552,7 @@ bool camIsPosInScreenBox(struct coord *pos, f32 arg1, struct drawslot *drawslot)
 	}
 
 	sp34 = (g_Vars.currentplayer->c_halfheight - (drawslot->box.ymin - g_Vars.currentplayer->c_screentop)) * g_Vars.currentplayer->c_scaley;
-	sp2c = 1.0f / sqrtf(sp34 * sp34 + 1.0f);
+	sp2c = 1.0f / pspFpuSqrt(sp34 * sp34 + 1.0f);
 	sp34 *= sp2c;
 	sp1c = -sp2c;
 
@@ -567,7 +567,7 @@ bool camIsPosInScreenBox(struct coord *pos, f32 arg1, struct drawslot *drawslot)
 	}
 
 	sp34 = -(g_Vars.currentplayer->c_halfheight - (drawslot->box.ymax - g_Vars.currentplayer->c_screentop)) * g_Vars.currentplayer->c_scaley;
-	sp28 = 1.0f / sqrtf(sp34 * sp34 + 1.0f);
+	sp28 = 1.0f / pspFpuSqrt(sp34 * sp34 + 1.0f);
 	sp34 *= sp28;
 	sp18 = -sp28;
 

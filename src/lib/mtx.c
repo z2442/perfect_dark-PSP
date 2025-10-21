@@ -221,7 +221,7 @@ void mtx4GetRotation(f32 mtx[4][4], struct coord *dst)
 	f32 sin_x_cos_y = mtx[1][2];
 	f32 cos_x_cos_y = mtx[2][2];
 
-	norm = sqrtf(sin_x_cos_y * sin_x_cos_y + cos_x_cos_y * cos_x_cos_y);
+	norm = pspFpuSqrt(sin_x_cos_y * sin_x_cos_y + cos_x_cos_y * cos_x_cos_y);
 
 	if (EPSILON < norm) {
 		dst->x = atan2f(mtx[1][2], mtx[2][2]);
@@ -313,7 +313,7 @@ void mtx00016874(Mtxf *mtx, f32 posx, f32 posy, f32 posz, f32 lookx, f32 looky, 
 	f32 c;
 	f32 tmp;
 
-	tmp = -1 / sqrtf(lookx * lookx + looky * looky + lookz * lookz);
+	tmp = -1 / pspFpuSqrt(lookx * lookx + looky * looky + lookz * lookz);
 	lookx *= tmp;
 	looky *= tmp;
 	lookz *= tmp;
@@ -322,7 +322,7 @@ void mtx00016874(Mtxf *mtx, f32 posx, f32 posy, f32 posz, f32 lookx, f32 looky, 
 	b = upz * lookx - upx * lookz;
 	c = upx * looky - upy * lookx;
 
-	tmp = 1 / sqrtf(a * a + b * b + c * c);
+	tmp = 1 / pspFpuSqrt(a * a + b * b + c * c);
 	a *= tmp;
 	b *= tmp;
 	c *= tmp;
@@ -331,7 +331,7 @@ void mtx00016874(Mtxf *mtx, f32 posx, f32 posy, f32 posz, f32 lookx, f32 looky, 
 	upy = lookz * a - lookx * c;
 	upz = lookx * b - looky * a;
 
-	tmp = 1 / sqrtf(upx * upx + upy * upy + upz * upz);
+	tmp = 1 / pspFpuSqrt(upx * upx + upy * upy + upz * upz);
 	upx *= tmp;
 	upy *= tmp;
 	upz *= tmp;
@@ -369,7 +369,7 @@ void mtx00016b58(Mtxf *mtx, f32 posx, f32 posy, f32 posz, f32 lookx, f32 looky, 
 	f32 c;
 	f32 tmp;
 
-	tmp = -1 / sqrtf(lookx * lookx + looky * looky + lookz * lookz);
+	tmp = -1 / pspFpuSqrt(lookx * lookx + looky * looky + lookz * lookz);
 	lookx *= tmp;
 	looky *= tmp;
 	lookz *= tmp;
@@ -378,7 +378,7 @@ void mtx00016b58(Mtxf *mtx, f32 posx, f32 posy, f32 posz, f32 lookx, f32 looky, 
 	b = upz * lookx - upx * lookz;
 	c = upx * looky - upy * lookx;
 
-	tmp = 1 / sqrtf(a * a + b * b + c * c);
+	tmp = 1 / pspFpuSqrt(a * a + b * b + c * c);
 	a *= tmp;
 	b *= tmp;
 	c *= tmp;
@@ -387,7 +387,7 @@ void mtx00016b58(Mtxf *mtx, f32 posx, f32 posy, f32 posz, f32 lookx, f32 looky, 
 	upy = lookz * a - lookx * c;
 	upz = lookx * b - looky * a;
 
-	tmp = 1 / sqrtf(upx * upx + upy * upy + upz * upz);
+	tmp = 1 / pspFpuSqrt(upx * upx + upy * upy + upz * upz);
 	upx *= tmp;
 	upy *= tmp;
 	upz *= tmp;
@@ -450,7 +450,7 @@ void mtx00016e98(f32 mtx[4][4], f32 angle, f32 x, f32 y, f32 z)
 	guNormalize(&x, &y, &z);
 	sine = sinf(angle);
 	cosine = cosf(angle);
-	norm = sqrtf(x * x + z * z);
+	norm = pspFpuSqrt(x * x + z * z);
 
 	if (norm != 0) {
 		cos_x = x * cosine;

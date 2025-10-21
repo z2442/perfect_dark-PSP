@@ -1637,7 +1637,7 @@ f32 func0f02e550(struct prop *prop, f32 arg1, f32 arg2, u32 cdtypes, f32 ymax, f
 		xdiff = sp3c.x - prop->pos.x;
 		zdiff = sp3c.z - prop->pos.z;
 
-		result = sqrtf(xdiff * xdiff + zdiff * zdiff);
+		result = pspFpuSqrt(xdiff * xdiff + zdiff * zdiff);
 	}
 
 	chrSetPerimEnabled(chr, true);
@@ -2160,7 +2160,7 @@ void chrRunPosChooseAnimation(struct chrdata *chr)
 	f32 xdiff = chr->prop->pos.x - chr->act_runpos.pos.x;
 	f32 ydiff = chr->prop->pos.y - chr->act_runpos.pos.y;
 	f32 zdiff = chr->prop->pos.z - chr->act_runpos.pos.z;
-	f32 distance = sqrtf(xdiff * xdiff + zdiff * zdiff);
+	f32 distance = pspFpuSqrt(xdiff * xdiff + zdiff * zdiff);
 	struct prop *leftgun = chrGetHeldProp(chr, HAND_LEFT);
 	struct prop *rightgun = chrGetHeldProp(chr, HAND_RIGHT);
 	bool heavy = true;
@@ -3635,7 +3635,7 @@ void chrYeetFromPos(struct chrdata *chr, struct coord *exppos, f32 force)
 			dist.z = 1;
 		}
 
-		speed = 0.625f * force / sqrtf(dist.f[0] * dist.f[0] + dist.f[1] * dist.f[1] + dist.f[2] * dist.f[2]);
+		speed = 0.625f * force / pspFpuSqrt(dist.f[0] * dist.f[0] + dist.f[1] * dist.f[1] + dist.f[2] * dist.f[2]);
 		angletoexplosion = latangle - faceangle;
 
 		dist.x *= speed;
@@ -5191,7 +5191,7 @@ bool func0f03654c(struct chrdata *chr, struct coord *pos, RoomNum *rooms, struct
 				return true;
 			}
 
-			mult = 1.0f / sqrtf(tmp.f[0] * tmp.f[0] + tmp.f[2] * tmp.f[2]);
+			mult = 1.0f / pspFpuSqrt(tmp.f[0] * tmp.f[0] + tmp.f[2] * tmp.f[2]);
 			tmp.x *= mult;
 			tmp.z *= mult;
 		}
@@ -5262,7 +5262,7 @@ void chrGetSideVectorToTarget(struct chrdata *chr, bool side, struct coord *vect
 	if (target) {
 		f32 x = target->pos.x - prop->pos.x;
 		f32 z = target->pos.z - prop->pos.z;
-		f32 distance = sqrtf(x * x + z * z);
+		f32 distance = pspFpuSqrt(x * x + z * z);
 
 		if (distance > 0) {
 			x = x / distance;
@@ -5382,8 +5382,8 @@ void chrGoPosInitMagic(struct chrdata *chr, struct waydata *waydata, struct coor
 
 	waydata->mode = WAYMODE_MAGIC;
 
-	waydata->magictotal = sqrtf(xdiff1 * xdiff1 + zdiff1 * zdiff1);
-	waydata->magicdone = waydata->magictotal - sqrtf(xdiff2 * xdiff2 + zdiff2 * zdiff2);
+	waydata->magictotal = pspFpuSqrt(xdiff1 * xdiff1 + zdiff1 * zdiff1);
+	waydata->magicdone = waydata->magictotal - pspFpuSqrt(xdiff2 * xdiff2 + zdiff2 * zdiff2);
 
 	chrSetLookAngle(chr, angle);
 }
@@ -6697,7 +6697,7 @@ bool chrCheckCanSeeTarget(struct chrdata *chr)
 
 		if (sqdistance < envGetSquaredFogMax()) {
 			f32 tmp;
-			s32 iVar8 = (sqrtf(sqdistance) * 0.0018749999580905f);
+			s32 iVar8 = (pspFpuSqrt(sqdistance) * 0.0018749999580905f);
 			s32 tmp2;
 
 			if (angle > 0.7852731347084f && angle < 5.4969120025635f) {
@@ -7423,7 +7423,7 @@ bool chrTryRunFromTarget(struct chrdata *chr)
 		diff.z = target->pos.z - prop->pos.z;
 		diff.y = 0;
 
-		distance = sqrtf(diff.f[0] * diff.f[0] + diff.f[2] * diff.f[2]);
+		distance = pspFpuSqrt(diff.f[0] * diff.f[0] + diff.f[2] * diff.f[2]);
 
 		// Scale diff into range -1 to +1
 		diff.x *= (1 / distance);
@@ -9143,7 +9143,7 @@ bool func0f03e9f4(struct chrdata *chr, struct attackanimconfig *animcfg, bool fi
 		}
 
 		if ((flags & ATTACKFLAG_NOVERTICAL) == 0) {
-			shootrotx = atan2f(sp174, sqrtf(sp178 * sp178 + sp170 * sp170));
+			shootrotx = atan2f(sp174, pspFpuSqrt(sp178 * sp178 + sp170 * sp170));
 
 			if (shootrotx >= M_PI) {
 				shootrotx -= M_BADTAU;
@@ -9553,7 +9553,7 @@ void chrCalculateHit(struct chrdata *chr, bool *angleokptr, bool *hit, struct gs
 	}
 
 	if (angleok) {
-		f32 dist = sqrtf(xdist * xdist + ydist * ydist + zdist * zdist);
+		f32 dist = pspFpuSqrt(xdist * xdist + ydist * ydist + zdist * zdist);
 		f32 accuracy = 0.16f;
 
 		// Decrease accuracy if further than taperdist
@@ -9853,8 +9853,8 @@ void chrCalculateTrajectory(struct coord *frompos, f32 arg1, struct coord *aimpo
 	yvel = (aimpos->y - frompos->y) * 0.01f;
 	zvel = (aimpos->z - frompos->z) * 0.01f;
 
-	vel = sqrtf(xvel * xvel + yvel * yvel + zvel * zvel);
-	latvel = sqrtf(xvel * xvel + zvel * zvel);
+	vel = pspFpuSqrt(xvel * xvel + yvel * yvel + zvel * zvel);
+	latvel = pspFpuSqrt(xvel * xvel + zvel * zvel);
 	sp38 = latvel / vel;
 	sp40 = acosf(sp38);
 
@@ -11004,7 +11004,7 @@ void chrTickRobotAttack(struct chrdata *chr)
 #define X() (targetprop->pos.x - act->pos[i].x)
 #define Z() (targetprop->pos.z - act->pos[i].z)
 
-			rotx = M_BADTAU - atan2f(aimy - act->pos[i].y, sqrtf(Z() * Z() + X() * X()));
+			rotx = M_BADTAU - atan2f(aimy - act->pos[i].y, pspFpuSqrt(Z() * Z() + X() * X()));
 
 			if (rotx > M_BADPI) {
 				rotx -= M_BADTAU;
@@ -11848,7 +11848,7 @@ bool chrNavCanSeeNextPos(struct chrdata *chr, struct coord *chrpos, RoomNum *chr
 		return true;
 	}
 
-	norm = 1.0f / sqrtf(spd4.f[0] * spd4.f[0] + spd4.f[2] * spd4.f[2]);
+	norm = 1.0f / pspFpuSqrt(spd4.f[0] * spd4.f[0] + spd4.f[2] * spd4.f[2]);
 	spd4.x *= norm;
 	spd4.z *= norm;
 
@@ -12007,7 +12007,7 @@ bool chrNavCheckForObstacle(struct chrdata *chr, struct coord *chrpos, RoomNum *
 		return true;
 	}
 
-	norm = 1.0f / sqrtf(spd4.f[0] * spd4.f[0] + spd4.f[2] * spd4.f[2]);
+	norm = 1.0f / pspFpuSqrt(spd4.f[0] * spd4.f[0] + spd4.f[2] * spd4.f[2]);
 	spd4.x *= norm;
 	spd4.z *= norm;
 
@@ -12150,7 +12150,7 @@ bool chrNavTryObstacle(struct chrdata *chr, struct coord *arg1, bool arg2, struc
 	sp68.z = arg1->z - prop->pos.z;
 
 	if (sp68.f[0] != 0.0f || sp68.f[2] != 0.0f) {
-		norm = sqrtf(sp68.f[0] * sp68.f[0] + sp68.f[2] * sp68.f[2]);
+		norm = pspFpuSqrt(sp68.f[0] * sp68.f[0] + sp68.f[2] * sp68.f[2]);
 
 		if (norm > 0.0f) {
 			norm = 1.0f / norm;
@@ -13053,7 +13053,7 @@ void chrTickGoPos(struct chrdata *chr)
 							sp168 = nextpos.z - pad.pos.z;
 						}
 
-						sp156 = sqrtf((sp180 * sp180 + sp176 * sp176) * (sp172 * sp172 + sp168 * sp168));
+						sp156 = pspFpuSqrt((sp180 * sp180 + sp176 * sp176) * (sp172 * sp172 + sp168 * sp168));
 
 						if (sp156 > 0) {
 							sp160 = acosf((sp180 * sp172 + sp176 * sp168) / sp156);
@@ -13216,7 +13216,7 @@ bool chrStartSkJump(struct chrdata *chr, u8 arg1, u8 arg2, s32 arg3, u8 arg4)
 	if (iVar2) {
 		diffs[0] = target->pos.x - chr->prop->pos.x;
 		diffs[1] = target->pos.z - chr->prop->pos.z;
-		thing = sqrtf(diffs[0] * diffs[0] + diffs[1] * diffs[1]) * 2.5f / PALUPF(21.0f);
+		thing = pspFpuSqrt(diffs[0] * diffs[0] + diffs[1] * diffs[1]) * 2.5f / PALUPF(21.0f);
 		time60 = thing;
 
 		if (time60 < TICKS(10)) {
@@ -13935,7 +13935,7 @@ f32 chrGetVerticalAngleToTarget(struct chrdata *chr)
 		ydiff = prop->pos.y - target->pos.y;
 		zdiff = prop->pos.z - target->pos.z;
 
-		result = atan2f(ydiff, sqrtf(xdiff * xdiff + zdiff * zdiff));
+		result = atan2f(ydiff, pspFpuSqrt(xdiff * xdiff + zdiff * zdiff));
 
 		if (result < 0) {
 			result += M_BADTAU;
@@ -14039,7 +14039,7 @@ f32 propGetDistanceToProp(struct prop *a, struct prop *b)
 	f32 ydiff = a->pos.y - b->pos.y;
 	f32 zdiff = a->pos.z - b->pos.z;
 
-	return sqrtf(xdiff * xdiff + ydiff * ydiff + zdiff * zdiff);
+	return pspFpuSqrt(xdiff * xdiff + ydiff * ydiff + zdiff * zdiff);
 }
 
 f32 propGetLateralDistanceToProp(struct prop *a, struct prop *b)
@@ -14047,7 +14047,7 @@ f32 propGetLateralDistanceToProp(struct prop *a, struct prop *b)
 	f32 xdiff = a->pos.x - b->pos.x;
 	f32 zdiff = a->pos.z - b->pos.z;
 
-	return sqrtf(xdiff * xdiff + zdiff * zdiff);
+	return pspFpuSqrt(xdiff * xdiff + zdiff * zdiff);
 }
 
 f32 chrGetDistanceToPad(struct chrdata *chr, s32 pad_id)
@@ -14066,7 +14066,7 @@ f32 chrGetDistanceToPad(struct chrdata *chr, s32 pad_id)
 		xdiff = pad.pos.x - prop->pos.x;
 		ydiff = pad.pos.y - prop->pos.y;
 		zdiff = pad.pos.z - prop->pos.z;
-		distance = sqrtf(xdiff * xdiff + ydiff * ydiff + zdiff * zdiff);
+		distance = pspFpuSqrt(xdiff * xdiff + ydiff * ydiff + zdiff * zdiff);
 	}
 
 	return distance;
@@ -14093,7 +14093,7 @@ f32 chrGetSameFloorDistanceToPad(struct chrdata *chr, s32 pad_id)
 	}
 
 	if (ydiff_absolute < 150) {
-		ret = sqrtf(xdiff * xdiff + zdiff * zdiff);
+		ret = pspFpuSqrt(xdiff * xdiff + zdiff * zdiff);
 	} else {
 		ret = 100000000;
 	}
@@ -14108,7 +14108,7 @@ f32 chrGetDistanceToCoord(struct chrdata *chr, struct coord *pos)
 	f32 ydiff = pos->y - chr->prop->pos.y;
 	f32 zdiff = pos->z - chr->prop->pos.z;
 
-	return sqrtf(xdiff * xdiff + ydiff * ydiff + zdiff * zdiff);
+	return pspFpuSqrt(xdiff * xdiff + ydiff * ydiff + zdiff * zdiff);
 }
 
 f32 chrGetLateralDistanceToCoord(struct chrdata *chr, struct coord *pos)
@@ -14116,7 +14116,7 @@ f32 chrGetLateralDistanceToCoord(struct chrdata *chr, struct coord *pos)
 	f32 xdiff = pos->x - chr->prop->pos.x;
 	f32 zdiff = pos->z - chr->prop->pos.z;
 
-	return sqrtf(xdiff * xdiff + zdiff * zdiff);
+	return pspFpuSqrt(xdiff * xdiff + zdiff * zdiff);
 }
 
 f32 chrGetLateralDistanceToPad(struct chrdata *chr, s32 pad_id)
@@ -14134,7 +14134,7 @@ f32 chrGetLateralDistanceToPad(struct chrdata *chr, s32 pad_id)
 		padUnpack(pad_id, PADFIELD_POS, &pad);
 		xdiff = pad.pos.x - prop->pos.x;
 		zdiff = pad.pos.z - prop->pos.z;
-		distance = sqrtf(xdiff * xdiff + zdiff * zdiff);
+		distance = pspFpuSqrt(xdiff * xdiff + zdiff * zdiff);
 	}
 
 	return distance;
@@ -14143,7 +14143,7 @@ f32 chrGetLateralDistanceToPad(struct chrdata *chr, s32 pad_id)
 	padUnpack(pad_id, PADFIELD_POS, &pad);
 	xdiff = pad.pos.x - prop->pos.x;
 	zdiff = pad.pos.z - prop->pos.z;
-	return sqrtf(xdiff * xdiff + zdiff * zdiff);
+	return pspFpuSqrt(xdiff * xdiff + zdiff * zdiff);
 #endif
 }
 
@@ -14402,7 +14402,7 @@ f32 chrGetDistanceToChr(struct chrdata *chr1, s32 chr2num)
 		f32 xdiff = chr2->prop->pos.x - prop1->pos.x;
 		f32 ydiff = chr2->prop->pos.y - prop1->pos.y;
 		f32 zdiff = chr2->prop->pos.z - prop1->pos.z;
-		distance = sqrtf(xdiff * xdiff + ydiff * ydiff + zdiff * zdiff);
+		distance = pspFpuSqrt(xdiff * xdiff + ydiff * ydiff + zdiff * zdiff);
 	}
 
 	return distance;
@@ -14424,7 +14424,7 @@ f32 chrGetDistanceFromTargetToPad(struct chrdata *chr, s32 pad_id)
 		xdiff = pad.pos.x - prop->pos.x;
 		ydiff = pad.pos.y - prop->pos.y;
 		zdiff = pad.pos.z - prop->pos.z;
-		distance = sqrtf(xdiff * xdiff + ydiff * ydiff + zdiff * zdiff);
+		distance = pspFpuSqrt(xdiff * xdiff + ydiff * ydiff + zdiff * zdiff);
 	}
 
 	return distance;
@@ -15467,13 +15467,22 @@ s32 chrAssignCoverByCriteria(struct chrdata *chr, u16 criteria, s32 refdist)
 	struct prop *roomprop;
 	s32 numcovers = coverGetCount();
 	s32 numcandidates = 0;
-	struct prop *target = chrGetTargetProp(chr);
+	struct prop *target;
 	bool userandomdist = false;
+	bool hastarget;
 	bool changed;
 	f32 sqdist;
-	f32 y = chr->prop->pos.y + 170;
+	f32 y;
 	s32 currefdist = refdist;
 	struct prop *gotoprop;
+
+	if (!chr || !chr->prop) {
+		return -1;
+	}
+
+	target = chrGetTargetProp(chr);
+	hastarget = target != NULL;
+	y = chr->prop->pos.y + 170;
 
 	if (criteria & COVERCRITERIA_DISTTOFETCHPROP) {
 		if (!chr->aibot || !chr->aibot->gotoprop) {
@@ -15481,10 +15490,6 @@ s32 chrAssignCoverByCriteria(struct chrdata *chr, u16 criteria, s32 refdist)
 		}
 
 		gotoprop = chr->aibot->gotoprop;
-	}
-
-	if (chr == NULL) {
-		return 0;
 	}
 
 	oldcover = chr->cover;
@@ -15495,7 +15500,10 @@ s32 chrAssignCoverByCriteria(struct chrdata *chr, u16 criteria, s32 refdist)
 		if (coverUnpack(i, &cover)
 				&& !coverIsSpecial(&cover)
 				&& ((criteria & COVERCRITERIA_2000) == 0 || (cover.flags & COVERFLAG_OMNIDIRECTIONAL))
-				&& ((criteria & COVERCRITERIA_1000) || (cover.flags & COVERFLAG_AIMDIFFROOM) == 0 || !arrayIntersects(cover.rooms, target->rooms))) {
+				&& ((criteria & COVERCRITERIA_1000)
+					|| (cover.flags & COVERFLAG_AIMDIFFROOM) == 0
+					|| !hastarget
+					|| !arrayIntersects(cover.rooms, target->rooms))) {
 			userandomdist = false;
 
 			if ((criteria & COVERCRITERIA_0001) && (criteria & COVERCRITERIA_FURTHEREST)) {
@@ -15507,9 +15515,11 @@ s32 chrAssignCoverByCriteria(struct chrdata *chr, u16 criteria, s32 refdist)
 					&& ((criteria & COVERCRITERIA_2000) || !(coverIsInUse(i) || cover.pos->y > y))) {
 				if (criteria & COVERCRITERIA_ROOMSFROMME) {
 					roomprop = chr->prop;
-				} else if (criteria & COVERCRITERIA_ROOMSFROMTARGET) {
-					roomprop = target;
-				} else if (criteria & COVERCRITERIA_DISTTOTARGET) {
+				} else if ((criteria & (COVERCRITERIA_ROOMSFROMTARGET | COVERCRITERIA_DISTTOTARGET)) != 0) {
+					if (!hastarget) {
+						continue;
+					}
+
 					roomprop = target;
 				} else {
 					roomprop = chr->prop;
@@ -15533,6 +15543,10 @@ s32 chrAssignCoverByCriteria(struct chrdata *chr, u16 criteria, s32 refdist)
 					if (criteria & COVERCRITERIA_DISTTOME) {
 						sqdist = chrGetSquaredDistanceToCoord(chr, cover.pos);
 					} else if (criteria & COVERCRITERIA_DISTTOTARGET) {
+						if (!hastarget) {
+							continue;
+						}
+
 						sqdist = coordGetSquaredDistanceToCoord(&target->pos, cover.pos);
 					} else if (criteria & COVERCRITERIA_DISTTOFETCHPROP) {
 						sqdist = coordGetSquaredDistanceToCoord(&gotoprop->pos, cover.pos);
@@ -15736,7 +15750,7 @@ bool chrRunFromPos(struct chrdata *chr, u32 goposflags, f32 rundist, struct coor
 			return false;
 		}
 
-		curdistfrompos = sqrtf(delta.f[0] * delta.f[0] + delta.f[2] * delta.f[2]);
+		curdistfrompos = pspFpuSqrt(delta.f[0] * delta.f[0] + delta.f[2] * delta.f[2]);
 		delta.x *= rundist / curdistfrompos;
 		delta.z *= rundist / curdistfrompos;
 
@@ -15794,11 +15808,11 @@ s32 chrGetDistanceLostToTargetInLastSecond(struct chrdata *chr)
 
 	s32 x1 = bdlist[(index + 1) % 60];
 	s32 z1 = bdlist[index];
-	s32 olddist = sqrtf(x1 * x1 + z1 * z1);
+	s32 olddist = pspFpuSqrt(x1 * x1 + z1 * z1);
 
 	s32 x2 = bdlist[(index + 59) % 60];
 	s32 z2 = bdlist[(index + 58) % 60];
-	s32 curdist = sqrtf(x2 * x2 + z2 * z2);
+	s32 curdist = pspFpuSqrt(x2 * x2 + z2 * z2);
 
 	return curdist - olddist;
 }
@@ -15910,7 +15924,7 @@ bool chr0f04c874(struct chrdata *chr, u32 angle360, struct coord *pos, u8 arg3, 
 
 			xdiff = pos->x - chrpos.x;
 			zdiff = pos->z - chrpos.z;
-			tmp = sqrtf(xdiff * xdiff + zdiff * zdiff);
+			tmp = pspFpuSqrt(xdiff * xdiff + zdiff * zdiff);
 			scale = (tmp - 50.0f) / tmp;
 
 			if (scale < 0) {

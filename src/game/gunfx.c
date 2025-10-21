@@ -36,7 +36,7 @@ void beamCreate(struct beam *beam, s32 weaponnum, struct coord *from, struct coo
 	beam->dir.y = to->y - from->y;
 	beam->dir.z = to->z - from->z;
 
-	distance = sqrtf(beam->dir.f[0] * beam->dir.f[0] + beam->dir.f[1] * beam->dir.f[1] + beam->dir.f[2] * beam->dir.f[2]);
+	distance = pspFpuSqrt(beam->dir.f[0] * beam->dir.f[0] + beam->dir.f[1] * beam->dir.f[1] + beam->dir.f[2] * beam->dir.f[2]);
 
 	if (distance > 0) {
 		beam->dir.x *= 1.0f / distance;
@@ -187,7 +187,7 @@ Gfx *beamRenderGeneric(Gfx *gdl, struct textureconfig *texconfig,
 	spe4.f[1] = tailpos->f[1] - headpos->f[1];
 	spe4.f[2] = tailpos->f[2] - headpos->f[2];
 
-	length = sqrtf(spe4.f[0] * spe4.f[0] + spe4.f[1] * spe4.f[1] + spe4.f[2] * spe4.f[2]);
+	length = pspFpuSqrt(spe4.f[0] * spe4.f[0] + spe4.f[1] * spe4.f[1] + spe4.f[2] * spe4.f[2]);
 
 	if (length < 0.00001f && length > -0.00001f) {
 		return gdl;
@@ -950,7 +950,7 @@ void boltbeamIncrementHeadPos(s32 beamnum, f32 arg1, bool arg2)
 #define DIFF(i) (g_BoltBeams[beamnum].tailpos.f[i] - g_BoltBeams[beamnum].headpos.f[i])
 #define SQDIFF(i) (DIFF(i) * DIFF(i))
 
-	dist = sqrtf(SQDIFF(0) + SQDIFF(1) + SQDIFF(2));
+	dist = pspFpuSqrt(SQDIFF(0) + SQDIFF(1) + SQDIFF(2));
 
 	if (dist > arg1 && !arg2) {
 		f32 tmp[3];
@@ -993,7 +993,7 @@ void boltbeamsTick(void)
 
 	for (i = 0; i < ARRAYCOUNT(g_BoltBeams); i++) {
 		if (g_BoltBeams[i].unk00 != -1 && g_BoltBeams[i].tickmode == BOLTBEAMTICKMODE_AUTOMATIC) {
-			f32 length = sqrtf(
+			f32 length = pspFpuSqrt(
 					(g_BoltBeams[i].tailpos.f[0] - g_BoltBeams[i].headpos.f[0]) * (g_BoltBeams[i].tailpos.f[0] - g_BoltBeams[i].headpos.f[0]) +
 					(g_BoltBeams[i].tailpos.f[1] - g_BoltBeams[i].headpos.f[1]) * (g_BoltBeams[i].tailpos.f[1] - g_BoltBeams[i].headpos.f[1]) +
 					(g_BoltBeams[i].tailpos.f[2] - g_BoltBeams[i].headpos.f[2]) * (g_BoltBeams[i].tailpos.f[2] - g_BoltBeams[i].headpos.f[2]));
@@ -1151,7 +1151,7 @@ Gfx *lasersightRenderDot(Gfx *gdl)
 					pos.y = (pos.y - campos.f[1]) * 5.0f;
 					pos.z = (pos.z - campos.f[2]) * 5.0f;
 
-					f0 = sqrtf(pos.f[0] * pos.f[0] + pos.f[1] * pos.f[1] + pos.f[2] * pos.f[2]);
+					f0 = pspFpuSqrt(pos.f[0] * pos.f[0] + pos.f[1] * pos.f[1] + pos.f[2] * pos.f[2]);
 
 					spcc = sp1;
 
@@ -1183,13 +1183,13 @@ Gfx *lasersightRenderDot(Gfx *gdl)
 						f24 = 0.0f;
 						f00 = 0;
 					} else {
-						f32 f0 = sqrtf(rot.f[0] * rot.f[0] + rot.f[1] * rot.f[1] + rot.f[2] * rot.f[2]);
+						f32 f0 = pspFpuSqrt(rot.f[0] * rot.f[0] + rot.f[1] * rot.f[1] + rot.f[2] * rot.f[2]);
 
 						f26 = rot.f[0] / f0;
 						f30 = rot.f[1] / f0;
 						f28 = rot.f[2] / f0;
 
-						f0 = sqrtf(f26 * f26 + f28 * f28);
+						f0 = pspFpuSqrt(f26 * f26 + f28 * f28);
 						f2 = f26 / f0;
 
 						f22 = f28 / f0;

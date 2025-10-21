@@ -6114,7 +6114,7 @@ f32 bgun0f0a2498(f32 arg0, f32 arg1, f32 arg2, f32 arg3)
 {
 	f32 a = arg0 - arg2;
 
-	return asinf(a / sqrtf(a * a + (arg1 - arg3) * (arg1 - arg3)));
+	return asinf(a / pspFpuSqrt(a * a + (arg1 - arg3) * (arg1 - arg3)));
 }
 
 void bgun0f0a24f0(struct coord *arg0, s32 handnum)

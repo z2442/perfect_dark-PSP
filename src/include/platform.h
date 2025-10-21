@@ -1,6 +1,7 @@
 #ifndef _IN_PLATFORM_H
 #define _IN_PLATFORM_H
 
+
 // detect OS
 #if defined(_WIN32)
 	#define PLATFORM_WIN32 1

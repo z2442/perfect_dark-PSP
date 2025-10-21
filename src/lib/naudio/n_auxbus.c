@@ -31,7 +31,7 @@ Acmd *n_alAuxBusPull(s32 sampleOffset, Acmd *cmdptr, s32 fxBus, s32 *numpulls)
 		sp30 -= 62;
 
 		if (sp30 >= 7) {
-			sp2c = 26755.0f / sqrtf(sp30);
+			sp2c = 26755.0f / pspFpuSqrt(sp30);
 		} else {
 			sp2c = 65536.0f / sp30;
 		}

@@ -485,7 +485,7 @@ bool lightsHandleHit(struct coord *gunpos, struct coord *hitpos, s32 roomnum)
 	sp8c.y = sp98.y - spa4.y;
 	sp8c.z = sp98.z - spa4.z;
 
-	f2 = 2.0f / sqrtf(sp8c.x * sp8c.x + sp8c.y * sp8c.y + sp8c.z * sp8c.z);
+	f2 = 2.0f / pspFpuSqrt(sp8c.x * sp8c.x + sp8c.y * sp8c.y + sp8c.z * sp8c.z);
 
 	sp8c.x *= f2;
 	sp8c.y *= f2;
@@ -814,7 +814,7 @@ void func0f00259c(s32 roomnum)
 		var80061434[i] = 0.0f;
 	}
 
-	var80061434[roomnum] = sqrtf(g_Rooms[roomnum].volume) * 255.0f;
+	var80061434[roomnum] = pspFpuSqrt(g_Rooms[roomnum].volume) * 255.0f;
 	if (1);
 
 	if (g_Rooms[roomnum].numportals != 0) {
@@ -830,7 +830,7 @@ void func0f00259c(s32 roomnum)
 	sp58 = (g_Rooms[roomnum].surfacearea - f20) / g_Rooms[roomnum].surfacearea;
 
 	for (i = 1; i < g_Vars.roomcount; i++) {
-		var80061434[i] *= 3.0f / sqrtf(g_Rooms[i].volume);
+		var80061434[i] *= 3.0f / pspFpuSqrt(g_Rooms[i].volume);
 	}
 
 	if (var80061434[roomnum] > 255.0f) {
@@ -1830,7 +1830,7 @@ void func0f00505c(void)
 							f32 ydiff = var80061428[portalnum].y - var80061428[portalnum2].y;
 							f32 zdiff = var80061428[portalnum].z - var80061428[portalnum2].z;
 
-							f32 dist = sqrtf(xdiff * xdiff + ydiff * ydiff + zdiff * zdiff);
+							f32 dist = pspFpuSqrt(xdiff * xdiff + ydiff * ydiff + zdiff * zdiff);
 
 							var8006142c[portalnum][portalnum2] = dist;
 							var8006142c[portalnum2][portalnum] = dist;
@@ -1875,7 +1875,7 @@ f32 func0f0053d0(s32 roomnum1, struct coord *pos1, s32 portalnum1, s32 roomnum2,
 			ydiff = ydiff > 0.0f ? ydiff : -ydiff;
 
 			if (ydiff < sp64) {
-				f32 dist = sqrtf(xdiff * xdiff + ydiff * ydiff + zdiff * zdiff);
+				f32 dist = pspFpuSqrt(xdiff * xdiff + ydiff * ydiff + zdiff * zdiff);
 
 				if (dist < sp64) {
 					if (roomnum1 == roomnum2 || portalnum1 == portalnum2) {
@@ -1901,7 +1901,7 @@ f32 func0f0053d0(s32 roomnum1, struct coord *pos1, s32 portalnum1, s32 roomnum2,
 								zdiff2 = zdiff2 > 0.0f ? zdiff2 : -zdiff2;
 
 								if (zdiff2 < sp64) {
-									f32 sp38 = sqrtf(xdiff2 * xdiff2 + zdiff2 * zdiff2);
+									f32 sp38 = pspFpuSqrt(xdiff2 * xdiff2 + zdiff2 * zdiff2);
 
 									if (sp38 < sp64) {
 										struct coord sp2c;
@@ -1919,7 +1919,7 @@ f32 func0f0053d0(s32 roomnum1, struct coord *pos1, s32 portalnum1, s32 roomnum2,
 											zdiff3 = zdiff3 > 0.0f ? zdiff3 : -zdiff3;
 
 											if (zdiff3 < sp64) {
-												f32 dist3 = sqrtf(xdiff3 * xdiff3 + zdiff3 * zdiff3);
+												f32 dist3 = pspFpuSqrt(xdiff3 * xdiff3 + zdiff3 * zdiff3);
 
 												if (dist3 < sp64) {
 													sp64 -= dist3;
@@ -1970,7 +1970,7 @@ void func0f0056f4(s32 roomnum1, struct coord *pos1, s32 roomnum2, struct coord *
 				}
 
 				if (ydist < *result) {
-					dist = sqrtf(xdist * xdist + ydist * ydist + zdist * zdist);
+					dist = pspFpuSqrt(xdist * xdist + ydist * ydist + zdist * zdist);
 
 					if (dist < *result) {
 						*result = dist;

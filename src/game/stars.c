@@ -57,7 +57,7 @@ void stars0f135c70(void)
 					break;
 				}
 
-				mult = 1.0f / sqrtf(coord.f[0] * coord.f[0] + coord.f[1] * coord.f[1] + coord.f[2] * coord.f[2]);
+				mult = 1.0f / pspFpuSqrt(coord.f[0] * coord.f[0] + coord.f[1] * coord.f[1] + coord.f[2] * coord.f[2]);
 
 				g_StarData3[index + 0] = coord.x * mult;
 				g_StarData3[index + 1] = coord.y * mult;

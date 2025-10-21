@@ -129,7 +129,7 @@ Gfx *smokeRenderPart(struct smoke *smoke, struct smokepart *part, Gfx *gdl, stru
 	sp58 = sp6c - campos->f[1];
 	sp54 = sp68 - campos->f[2];
 
-	distance = sqrtf(sp5c * sp5c + sp58 * sp58 + sp54 * sp54);
+	distance = pspFpuSqrt(sp5c * sp5c + sp58 * sp58 + sp54 * sp54);
 
 	if (distance > 30000.0f) {
 		return gdl;
@@ -181,7 +181,7 @@ Gfx *smokeRenderPart(struct smoke *smoke, struct smokepart *part, Gfx *gdl, stru
 		f32 alphamult = 0.5f;
 		f32 value;
 
-		distance = sqrtf((sp70 - g_Vars.currentplayer->eraserpos.f[0]) * (sp70 - g_Vars.currentplayer->eraserpos.f[0])
+		distance = pspFpuSqrt((sp70 - g_Vars.currentplayer->eraserpos.f[0]) * (sp70 - g_Vars.currentplayer->eraserpos.f[0])
 				+ (sp6c - g_Vars.currentplayer->eraserpos.f[1]) * (sp6c - g_Vars.currentplayer->eraserpos.f[1])
 				+ (sp68 - g_Vars.currentplayer->eraserpos.f[2]) * (sp68 - g_Vars.currentplayer->eraserpos.f[2]));
 

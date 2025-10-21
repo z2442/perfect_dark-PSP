@@ -99,7 +99,7 @@ s32 psCalculateVolumeFromDistance(f32 playerdist, f32 dist1, f32 dist2, f32 dist
 			result = fullvolume;
 		} else if (playerdist < dist2) {
 			// Range dist1 to dist2 -> scale down using curve
-			result = fullvolume - (s32) (sqrtf((playerdist - dist1) / (dist2 - dist1)) * (fullvolume - 1000.0f));
+			result = fullvolume - (s32) (pspFpuSqrt((playerdist - dist1) / (dist2 - dist1)) * (fullvolume - 1000.0f));
 		} else {
 			// Range dist2 to dist3 -> scale to zero linearly
 			result = (dist3 - playerdist) * 1000.0f / (dist3 - dist2);

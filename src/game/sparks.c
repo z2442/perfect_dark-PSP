@@ -125,7 +125,7 @@ void sparkCreate(struct coord *pos, struct sparktype *type)
 		}
 	}
 
-	tmp = sqrtf(spark->speed.f[0] * spark->speed.f[0] + spark->speed.f[1] * spark->speed.f[1] + spark->speed.f[2] * spark->speed.f[2]);
+	tmp = pspFpuSqrt(spark->speed.f[0] * spark->speed.f[0] + spark->speed.f[1] * spark->speed.f[1] + spark->speed.f[2] * spark->speed.f[2]);
 
 	spark->speed.x *= maxspeed / tmp;
 	spark->speed.y *= maxspeed / tmp;
@@ -229,7 +229,7 @@ void sparksCreate(s32 room, struct prop *prop, struct coord *pos, struct coord *
 	}
 
 	if (arg3 != NULL && arg4 != NULL) {
-		f32 f0 = sqrtf(arg4->f[0] * arg4->f[0] + arg4->f[1] * arg4->f[1] + arg4->f[2] * arg4->f[2]);
+		f32 f0 = pspFpuSqrt(arg4->f[0] * arg4->f[0] + arg4->f[1] * arg4->f[1] + arg4->f[2] * arg4->f[2]);
 
 		arg4->x /= f0;
 		arg4->y /= f0;
@@ -241,7 +241,7 @@ void sparksCreate(s32 room, struct prop *prop, struct coord *pos, struct coord *
 		grouppos.y = arg3->y + f0 * arg4->f[1];
 		grouppos.z = arg3->z + f0 * arg4->f[2];
 
-		f0 = sqrtf(grouppos.f[0] * grouppos.f[0] + grouppos.f[1] * grouppos.f[1] + grouppos.f[2] * grouppos.f[2]);
+		f0 = pspFpuSqrt(grouppos.f[0] * grouppos.f[0] + grouppos.f[1] * grouppos.f[1] + grouppos.f[2] * grouppos.f[2]);
 
 		if (f0 == 0.0f) {
 			f0 = 1.0f;
@@ -360,7 +360,7 @@ Gfx *sparksRender(Gfx *gdl)
 				}
 
 				if (g_Vars.currentplayer->visionmode == VISIONMODE_XRAY) {
-					f0 = sqrtf((group->pos.f[0] - g_Vars.currentplayer->eraserpos.f[0]) * (group->pos.f[0] - g_Vars.currentplayer->eraserpos.f[0])
+					f0 = pspFpuSqrt((group->pos.f[0] - g_Vars.currentplayer->eraserpos.f[0]) * (group->pos.f[0] - g_Vars.currentplayer->eraserpos.f[0])
 							+ (group->pos.f[1] - g_Vars.currentplayer->eraserpos.f[1]) * (group->pos.f[1] - g_Vars.currentplayer->eraserpos.f[1])
 							+ (group->pos.f[2] - g_Vars.currentplayer->eraserpos.f[2]) * (group->pos.f[2] - g_Vars.currentplayer->eraserpos.f[2]));
 
@@ -387,7 +387,7 @@ Gfx *sparksRender(Gfx *gdl)
 					sp124.y = campos->y - group->pos.y;
 					sp124.z = campos->z - group->pos.z;
 
-					sp120 = sqrtf(sp124.f[0] * sp124.f[0] + sp124.f[1] * sp124.f[1] + sp124.f[2] * sp124.f[2]);
+					sp120 = pspFpuSqrt(sp124.f[0] * sp124.f[0] + sp124.f[1] * sp124.f[1] + sp124.f[2] * sp124.f[2]);
 
 					if (sp120 > 20000.0f) {
 						render = false;
@@ -458,7 +458,7 @@ Gfx *sparksRender(Gfx *gdl)
 								vertices[k].t = 0;
 							}
 
-							f2 = sqrtf(spark->speed.f[0] * spark->speed.f[0] + spark->speed.f[1] * spark->speed.f[1] + spark->speed.f[2] * spark->speed.f[2]);
+							f2 = pspFpuSqrt(spark->speed.f[0] * spark->speed.f[0] + spark->speed.f[1] * spark->speed.f[1] + spark->speed.f[2] * spark->speed.f[2]);
 							f2 = (sp120 + (type->unk04 + group->age * type->unk08)) / f2;
 
 							vertices[0].x = spark->pos.x;

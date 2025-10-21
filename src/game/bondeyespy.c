@@ -317,7 +317,7 @@ s32 eyespy0f0cf9f8(struct coord *arg0, struct coord *arg1, struct coord *arg2)
 		sp30.y = 0;
 		sp30.z = arg2->z - arg1->z;
 
-		dist = sqrtf(sp30.f[0] * sp30.f[0] + sp30.f[2] * sp30.f[2]);
+		dist = pspFpuSqrt(sp30.f[0] * sp30.f[0] + sp30.f[2] * sp30.f[2]);
 
 		sp30.x *= 1.0f / dist;
 		sp30.z *= 1.0f / dist;
@@ -351,7 +351,7 @@ s32 eyespy0f0cfafc(struct coord *arg0, struct coord *arg1, struct coord *arg2)
 			sp34.y = 0;
 			sp34.z = arg1->x - prop->pos.x;
 
-			tmp = sqrtf(sp34.f[0] * sp34.f[0] + sp34.f[2] * sp34.f[2]);
+			tmp = pspFpuSqrt(sp34.f[0] * sp34.f[0] + sp34.f[2] * sp34.f[2]);
 
 			sp34.x = sp34.f[0] * (1.0f / tmp);
 			sp34.z = sp34.f[2] * (1.0f / tmp);
@@ -379,7 +379,7 @@ s32 eyespy0f0cfafc(struct coord *arg0, struct coord *arg1, struct coord *arg2)
 				sp34.y = 0;
 				sp34.z = arg2->x - prop->pos.x;
 
-				tmp = sqrtf(sp34.f[0] * sp34.f[0] + sp34.f[2] * sp34.f[2]);
+				tmp = pspFpuSqrt(sp34.f[0] * sp34.f[0] + sp34.f[2] * sp34.f[2]);
 
 				sp34.x = sp34.f[0] * (1.0f / tmp);
 				sp34.z = sp34.f[2] * (1.0f / tmp);
@@ -1064,7 +1064,7 @@ void eyespyProcessInput(bool allowbuttons)
 			+ g_Vars.currentplayer->eyespy->velf[1] * g_Vars.currentplayer->eyespy->velf[1];
 
 		if (spcc > 90.25f * g_Vars.lvupdate60freal * g_Vars.lvupdate60freal) {
-			spcc = 9.5f * g_Vars.lvupdate60freal / sqrtf(spcc);
+			spcc = 9.5f * g_Vars.lvupdate60freal / pspFpuSqrt(spcc);
 
 			g_Vars.currentplayer->eyespy->velf[0] *= spcc;
 			g_Vars.currentplayer->eyespy->velf[1] *= spcc;
@@ -1074,7 +1074,7 @@ void eyespyProcessInput(bool allowbuttons)
 			+ g_Vars.currentplayer->eyespy->vels[1] * g_Vars.currentplayer->eyespy->vels[1];
 
 		if (spd4 > 225.0f * g_Vars.lvupdate60freal * g_Vars.lvupdate60freal) {
-			spd4 = 15.0f * g_Vars.lvupdate60freal / sqrtf(spd4);
+			spd4 = 15.0f * g_Vars.lvupdate60freal / pspFpuSqrt(spd4);
 
 			g_Vars.currentplayer->eyespy->vels[0] *= spd4;
 			g_Vars.currentplayer->eyespy->vels[1] *= spd4;

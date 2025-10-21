@@ -309,7 +309,7 @@ void chrCalculatePushPos(struct chrdata *chr, struct coord *dstpos, RoomNum *dst
 				sp54.x = sp6c.x - sp78.x;
 				sp54.z = sp6c.z - sp78.z;
 
-				value = 1.0f / sqrtf(sp54.f[0] * sp54.f[0] + sp54.f[2] * sp54.f[2]);
+				value = 1.0f / pspFpuSqrt(sp54.f[0] * sp54.f[0] + sp54.f[2] * sp54.f[2]);
 
 				sp54.x *= value;
 				sp54.z *= value;
@@ -365,7 +365,7 @@ void chrCalculatePushPos(struct chrdata *chr, struct coord *dstpos, RoomNum *dst
 						sp54.x = -(sp78.z - prop->pos.z);
 						sp54.z = sp78.x - prop->pos.x;
 
-						value = 1.0f / sqrtf(sp54.f[0] * sp54.f[0] + sp54.f[2] * sp54.f[2]);
+						value = 1.0f / pspFpuSqrt(sp54.f[0] * sp54.f[0] + sp54.f[2] * sp54.f[2]);
 
 						sp54.x *= value;
 						sp54.z *= value;
@@ -419,7 +419,7 @@ void chrCalculatePushPos(struct chrdata *chr, struct coord *dstpos, RoomNum *dst
 							sp54.x = -(sp6c.z - prop->pos.z);
 							sp54.z = sp6c.x - prop->pos.x;
 
-							value = 1.0f / sqrtf(sp54.f[0] * sp54.f[0] + sp54.f[2] * sp54.f[2]);
+							value = 1.0f / pspFpuSqrt(sp54.f[0] * sp54.f[0] + sp54.f[2] * sp54.f[2]);
 
 							sp54.x *= value;
 							sp54.z *= value;
@@ -688,7 +688,7 @@ bool chr0f01f378(struct model *model, struct coord *arg1, struct coord *arg2, f3
 			chr->pushspeed[1] *= 0.9f;
 
 			if (chr->pushspeed[0] != 0.0f || chr->pushspeed[1] != 0.0f) {
-				f32 pushdist = sqrtf(chr->pushspeed[0] * chr->pushspeed[0] + chr->pushspeed[1] * chr->pushspeed[1]);
+				f32 pushdist = pspFpuSqrt(chr->pushspeed[0] * chr->pushspeed[0] + chr->pushspeed[1] * chr->pushspeed[1]);
 
 				if (pushdist > 0.0f) {
 					pushdist = 0.1f * VAR(lvupdate60freal) / pushdist;
@@ -733,7 +733,7 @@ bool chr0f01f378(struct model *model, struct coord *arg1, struct coord *arg2, f3
 			arg2->x = arg1->x;
 			arg2->z = arg1->z;
 
-			dist = sqrtf(xdiff * xdiff + zdiff * zdiff);
+			dist = pspFpuSqrt(xdiff * xdiff + zdiff * zdiff);
 
 #if VERSION >= VERSION_NTSC_1_0
 			if (dist > 100.0f) {
@@ -3391,7 +3391,7 @@ Gfx *chrRender(struct prop *prop, Gfx *gdl, bool xlupass)
 
 	if (g_Vars.currentplayer->visionmode == VISIONMODE_XRAY) {
 		f32 fadedist;
-		f32 chrdist = sqrtf(ERASERSQDIST(prop->pos.f));
+		f32 chrdist = pspFpuSqrt(ERASERSQDIST(prop->pos.f));
 
 		if (chrdist > g_Vars.currentplayer->eraserpropdist) {
 			return gdl;

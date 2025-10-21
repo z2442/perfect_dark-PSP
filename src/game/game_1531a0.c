@@ -518,7 +518,7 @@ void text0f153b6c(s32 arg0)
 		f32 tmp = g_Blend.diagtimer * g_Blend.diagtimer - (f32)((arg0 - g_Blend.diagrefy) * (arg0 - g_Blend.diagrefy));
 
 		if (tmp > 0.0f) {
-			var8007fba0 = sqrtf(tmp) + g_Blend.diagrefx;
+			var8007fba0 = pspFpuSqrt(tmp) + g_Blend.diagrefx;
 		} else {
 			var8007fba0 = 0;
 		}
@@ -638,7 +638,7 @@ u32 textApplyProjectionColour(s32 x, s32 y, u32 colour)
 
 		if (x - g_Blend.diagrefx > -3000 && x - g_Blend.diagrefx < 3000
 				&& y - g_Blend.diagrefy > -3000 && y - g_Blend.diagrefy < 3000) {
-			f12 = sqrtf((x - g_Blend.diagrefx) * (x - g_Blend.diagrefx) + (y - g_Blend.diagrefy) * (y - g_Blend.diagrefy));
+			f12 = pspFpuSqrt((x - g_Blend.diagrefx) * (x - g_Blend.diagrefx) + (y - g_Blend.diagrefy) * (y - g_Blend.diagrefy));
 		} else {
 			f12 = 3000.0f;
 		}
@@ -742,7 +742,7 @@ u32 text0f1543ac(s32 x, s32 y, u32 colourarg)
 
 		if (x - g_Blend.diagrefx > -3000 && x - g_Blend.diagrefx < 3000
 				&& y - g_Blend.diagrefy > -3000 && y - g_Blend.diagrefy < 3000) {
-			f12 = sqrtf((x - g_Blend.diagrefx) * (x - g_Blend.diagrefx) + (y - g_Blend.diagrefy) * (y - g_Blend.diagrefy));
+			f12 = pspFpuSqrt((x - g_Blend.diagrefx) * (x - g_Blend.diagrefx) + (y - g_Blend.diagrefy) * (y - g_Blend.diagrefy));
 		} else {
 			f12 = 3000.0f;
 		}

@@ -37,4 +37,9 @@
 #include <PR/ultraerror.h>
 #include <PR/ultralog.h>
 
+#include <pspfpu.h>
+#include <pspmath.h>
+#include <math.h>
+
+
 #endif

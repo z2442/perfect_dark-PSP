@@ -188,7 +188,7 @@ bool func0f177164(struct coord *arg0, struct coord *arg1, u32 line, char *file)
 		return false;
 	}
 
-	mult = 1.0f / sqrtf(sqdist);
+	mult = 1.0f / pspFpuSqrt(sqdist);
 
 	arg1->x = arg0->x * mult;
 	arg1->y = arg0->y * mult;
@@ -253,7 +253,7 @@ f32 coordsGetDistance(struct coord *a, struct coord *b)
 	f32 ydiff = b->y - a->y;
 	f32 zdiff = b->z - a->z;
 
-	return sqrtf(xdiff * xdiff + ydiff * ydiff + zdiff * zdiff);
+	return pspFpuSqrt(xdiff * xdiff + ydiff * ydiff + zdiff * zdiff);
 }
 
 bool func0f1774b4(struct coord *arg0, struct coord *arg1, struct coord *out)
@@ -310,7 +310,7 @@ void func0f177624(struct coord *arg0, struct coord *arg1, struct coord *arg2, st
 
 	func0f177164(arg0, arg1, 771, "utils.c");
 
-	dist = sqrtf(arg1->x * arg1->x + arg1->z * arg1->z);
+	dist = pspFpuSqrt(arg1->x * arg1->x + arg1->z * arg1->z);
 
 	tmpx = (arg1->x / dist);
 	tmpz = arg1->z / dist;

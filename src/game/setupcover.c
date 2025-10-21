@@ -34,6 +34,21 @@ void setupPrepareCover(void)
 	u16 specialcovernums[1024];
 	RoomNum inrooms[21];
 	RoomNum aboverooms[21];
+	struct coverdefinition *alignedcovers = NULL;
+
+	if (g_StageSetup.cover != NULL && numcovers > 0) {
+		u8 *coverdata = (u8 *)g_StageSetup.cover;
+
+		alignedcovers = mempAlloc(ALIGN16(numcovers * sizeof(*alignedcovers)), MEMPOOL_STAGE);
+
+		if (alignedcovers != NULL) {
+			for (i = 0; i < numcovers; i++) {
+				memcpy(&alignedcovers[i], coverdata + i * sizeof(struct coverdefinition), sizeof(struct coverdefinition));
+			}
+
+			g_StageSetup.cover = alignedcovers;
+		}
+	}
 
 	g_CoverFlags = mempAlloc(ALIGN16(numcovers * sizeof(g_CoverFlags[0])), MEMPOOL_STAGE);
 	g_CoverRooms = mempAlloc(ALIGN16(numcovers * sizeof(g_CoverRooms[0])), MEMPOOL_STAGE);
@@ -77,7 +92,7 @@ void setupPrepareCover(void)
 					} else if (!coverIsSpecial(&cover)) {
 						ly = 0.0f;
 						/* Normalize (manual to avoid taking addresses of packed fields) */
-						float len = sqrtf(lx*lx + ly*ly + lz*lz);
+						float len = pspFpuSqrt(lx*lx + ly*ly + lz*lz);
 						if (len != 0.0f) {
 							float inv = 1.0f / len;
 							lx *= inv; ly *= inv; lz *= inv;

@@ -53,6 +53,10 @@ extern "C" volatile uint8_t g_es1_use_tex1;
 #include "gfx_rendering_api.h"
 #include "gfx_screen_config.h"
 
+#include <pspfpu.h>
+#include <pspmath.h>
+#include <math.h>
+
 
 
 uintptr_t gfxFramebuffer;
@@ -294,11 +298,7 @@ static struct GfxRenderingAPI* gfx_rapi;
 static std::vector<uint8_t> s_psp_downscale_buf_a;
 static std::vector<uint8_t> s_psp_downscale_buf_b;
 
-static uint32_t get_psp_max_texture_size() {
-    int size = (gfx_rapi != nullptr) ? gfx_rapi->get_max_texture_size() : 512;
-    if (size <= 0) size = 512;
-    return static_cast<uint32_t>(size);
-}
+
 
 static void downsample_rgba32(const uint8_t* src,
                               uint32_t src_w,
@@ -704,11 +704,7 @@ static const uint8_t* mirror_texture_rgba32(const uint8_t* src,
 {
     applied_mirror_s = mirror_s;
     applied_mirror_t = mirror_t;
-#if defined(PLATFORM_PSP)
-    const uint32_t max_tex = get_psp_max_texture_size();
-    if (applied_mirror_s && src_w > max_tex / 2) applied_mirror_s = false;
-    if (applied_mirror_t && src_h > max_tex / 2) applied_mirror_t = false;
-#endif
+
 
     dst_w = src_w * (applied_mirror_s ? 2u : 1u);
     dst_h = src_h * (applied_mirror_t ? 2u : 1u);
@@ -928,14 +924,6 @@ static void import_texture_rgba16(int unit, int tile, const LoadedTexture& loade
     const bool mirror_s = rdp.texture_tile[tile].cms & G_TX_MIRROR;
     const bool mirror_t = rdp.texture_tile[tile].cmt & G_TX_MIRROR;
 
-#if defined(PLATFORM_PSP)
-    {
-        const uint32_t max_tex = get_psp_max_texture_size();
-        const uint32_t limit_w = mirror_s ? (max_tex >> 1) : max_tex;
-        const uint32_t limit_h = mirror_t ? (max_tex >> 1) : max_tex;
-        src = psp_downscale_texture(src, pot_w, pot_h, limit_w, limit_h);
-    }
-#endif
 
     std::vector<uint8_t> mirror_buf;   // keeps data alive until upload
     bool mirror_s_applied = false;
@@ -990,14 +978,6 @@ static void import_texture_rgba32(int unit, int tile, const LoadedTexture& loade
     const bool mirror_s = rdp.texture_tile[tile].cms & G_TX_MIRROR;
     const bool mirror_t = rdp.texture_tile[tile].cmt & G_TX_MIRROR;
 
-#if defined(PLATFORM_PSP)
-    {
-        const uint32_t max_tex = get_psp_max_texture_size();
-        const uint32_t limit_w = mirror_s ? (max_tex >> 1) : max_tex;
-        const uint32_t limit_h = mirror_t ? (max_tex >> 1) : max_tex;
-        src8 = psp_downscale_texture(src8, pot_w, pot_h, limit_w, limit_h);
-    }
-#endif
 
     std::vector<uint8_t> mirror_buf;
     bool mirror_s_applied = false;
@@ -1056,14 +1036,6 @@ static void import_texture_ia4(int unit, int tile, const LoadedTexture& loaded_t
     const bool mirror_s = rdp.texture_tile[tile].cms & G_TX_MIRROR;
     const bool mirror_t = rdp.texture_tile[tile].cmt & G_TX_MIRROR;
 
-#if defined(PLATFORM_PSP)
-    {
-        const uint32_t max_tex = get_psp_max_texture_size();
-        const uint32_t limit_w = mirror_s ? (max_tex >> 1) : max_tex;
-        const uint32_t limit_h = mirror_t ? (max_tex >> 1) : max_tex;
-        src = psp_downscale_texture(src, pot_w, pot_h, limit_w, limit_h);
-    }
-#endif
 
     std::vector<uint8_t> mirror_buf;
     bool mirror_s_applied = false;
@@ -1119,14 +1091,7 @@ static void import_texture_ia8(int unit, int tile, const LoadedTexture& loaded_t
     const bool mirror_s = rdp.texture_tile[tile].cms & G_TX_MIRROR;
     const bool mirror_t = rdp.texture_tile[tile].cmt & G_TX_MIRROR;
 
-#if defined(PLATFORM_PSP)
-    {
-        const uint32_t max_tex = get_psp_max_texture_size();
-        const uint32_t limit_w = mirror_s ? (max_tex >> 1) : max_tex;
-        const uint32_t limit_h = mirror_t ? (max_tex >> 1) : max_tex;
-        src = psp_downscale_texture(src, pot_w, pot_h, limit_w, limit_h);
-    }
-#endif
+
 
     std::vector<uint8_t> mirror_buf;
     bool mirror_s_applied = false;
@@ -1182,14 +1147,6 @@ static void import_texture_ia16(int unit, int tile, const LoadedTexture& loaded_
     const bool mirror_s = rdp.texture_tile[tile].cms & G_TX_MIRROR;
     const bool mirror_t = rdp.texture_tile[tile].cmt & G_TX_MIRROR;
 
-#if defined(PLATFORM_PSP)
-    {
-        const uint32_t max_tex = get_psp_max_texture_size();
-        const uint32_t limit_w = mirror_s ? (max_tex >> 1) : max_tex;
-        const uint32_t limit_h = mirror_t ? (max_tex >> 1) : max_tex;
-        src = psp_downscale_texture(src, pot_w, pot_h, limit_w, limit_h);
-    }
-#endif
 
     std::vector<uint8_t> mirror_buf;
     bool mirror_s_applied = false;
@@ -1245,14 +1202,6 @@ static void import_texture_i4(int unit, int tile, const LoadedTexture& loaded_te
     const bool mirror_s = rdp.texture_tile[tile].cms & G_TX_MIRROR;
     const bool mirror_t = rdp.texture_tile[tile].cmt & G_TX_MIRROR;
 
-#if defined(PLATFORM_PSP)
-    {
-        const uint32_t max_tex = get_psp_max_texture_size();
-        const uint32_t limit_w = mirror_s ? (max_tex >> 1) : max_tex;
-        const uint32_t limit_h = mirror_t ? (max_tex >> 1) : max_tex;
-        src = psp_downscale_texture(src, pot_w, pot_h, limit_w, limit_h);
-    }
-#endif
 
     std::vector<uint8_t> mirror_buf;
     bool mirror_s_applied = false;
@@ -1306,14 +1255,6 @@ static void import_texture_i8(int unit, int tile, const LoadedTexture& loaded_te
     const bool mirror_s = rdp.texture_tile[tile].cms & G_TX_MIRROR;
     const bool mirror_t = rdp.texture_tile[tile].cmt & G_TX_MIRROR;
 
-#if defined(PLATFORM_PSP)
-    {
-        const uint32_t max_tex = get_psp_max_texture_size();
-        const uint32_t limit_w = mirror_s ? (max_tex >> 1) : max_tex;
-        const uint32_t limit_h = mirror_t ? (max_tex >> 1) : max_tex;
-        src = psp_downscale_texture(src, pot_w, pot_h, limit_w, limit_h);
-    }
-#endif
 
     std::vector<uint8_t> mirror_buf;
     bool mirror_s_applied = false;
@@ -1398,14 +1339,7 @@ static void import_texture_ci4(int unit, int tile, const LoadedTexture& loaded_t
     const bool mirror_s = rdp.texture_tile[tile].cms & G_TX_MIRROR;
     const bool mirror_t = rdp.texture_tile[tile].cmt & G_TX_MIRROR;
 
-#if defined(PLATFORM_PSP)
-    {
-        const uint32_t max_tex = get_psp_max_texture_size();
-        const uint32_t limit_w = mirror_s ? (max_tex >> 1) : max_tex;
-        const uint32_t limit_h = mirror_t ? (max_tex >> 1) : max_tex;
-        src = psp_downscale_texture(src, pot_w, pot_h, limit_w, limit_h);
-    }
-#endif
+
 
     std::vector<uint8_t> mirror_buf;
     bool mirror_s_applied = false;
@@ -1461,14 +1395,7 @@ static void import_texture_ci8(int unit, int tile, const LoadedTexture& loaded_t
     const bool mirror_s = rdp.texture_tile[tile].cms & G_TX_MIRROR;
     const bool mirror_t = rdp.texture_tile[tile].cmt & G_TX_MIRROR;
 
-#if defined(PLATFORM_PSP)
-    {
-        const uint32_t max_tex = get_psp_max_texture_size();
-        const uint32_t limit_w = mirror_s ? (max_tex >> 1) : max_tex;
-        const uint32_t limit_h = mirror_t ? (max_tex >> 1) : max_tex;
-        src = psp_downscale_texture(src, pot_w, pot_h, limit_w, limit_h);
-    }
-#endif
+
 
     std::vector<uint8_t> mirror_buf;
     bool mirror_s_applied = false;
@@ -1579,7 +1506,7 @@ static void import_texture(int i, int tile, bool importReplacement) {
 }
 
 static void gfx_normalize_vector(float v[3]) {
-    float s = sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    float s = pspFpuSqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
     v[0] /= s;
     v[1] /= s;
     v[2] /= s;

@@ -2,7 +2,7 @@
 
 void guNormalize(f32 *x, f32 *y, f32 *z)
 {
-	f32 hyp = sqrtf(*x * *x + *y * *y + *z * *z);
+	f32 hyp = pspFpuSqrt(*x * *x + *y * *y + *z * *z);
 
 	if (hyp > 0.0f) {
 		f32 hyp2 = 1.0f / hyp;

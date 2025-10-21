@@ -210,7 +210,7 @@ void artifactsCalculateGlaresForRoom(s32 roomnum)
 				f16 = spc4.f[0] * spc4.f[0] + spc4.f[1] * spc4.f[1] + spc4.f[2] * spc4.f[2];
 
 				if (tmp > 0.0001f && f16 > 0.0001f) {
-					sp190 = -((roomlights[i].dirx * spc4.f[0] + roomlights[i].diry * spc4.f[1] + roomlights[i].dirz * spc4.f[2]) / sqrtf(tmp * f16));
+					sp190 = -((roomlights[i].dirx * spc4.f[0] + roomlights[i].diry * spc4.f[1] + roomlights[i].dirz * spc4.f[2]) / pspFpuSqrt(tmp * f16));
 
 					if (sp190 > 0.4f) {
 						sp190 = 0.4f;

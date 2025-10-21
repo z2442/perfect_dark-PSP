@@ -832,7 +832,7 @@ void setupCreateCctv(struct cctvobj *cctv, s32 cmdindex)
 		cctv->yrot = cctv->yleft;
 
 		cctv->yzero = atan2f(xdiff, zdiff);
-		cctv->xzero = M_BADTAU - atan2f(ydiff, sqrtf(xdiff * xdiff + zdiff * zdiff));
+		cctv->xzero = M_BADTAU - atan2f(ydiff, pspFpuSqrt(xdiff * xdiff + zdiff * zdiff));
 
 		if (xdiff || zdiff) {
 			// empty
@@ -884,7 +884,7 @@ void setupCreateAutogun(struct autogunobj *autogun, s32 cmdindex)
 		zdiff = pad.pos.z - autogun->base.prop->pos.z;
 
 		autogun->yzero = atan2f(xdiff, zdiff);
-		autogun->xzero = atan2f(ydiff, sqrtf(xdiff * xdiff + zdiff * zdiff));
+		autogun->xzero = atan2f(ydiff, pspFpuSqrt(xdiff * xdiff + zdiff * zdiff));
 	} else if (autogun->base.modelnum == MODEL_CETROOFGUN) {
 		// Deep Sea roofgun
 		autogun->xzero = -1.5705462694168f;

@@ -7,5 +7,5 @@
 
 f32 func0f096700(f32 value)
 {
-	return sqrtf(sinf(value) / cosf(value) + 1);
+	return pspFpuSqrt(sinf(value) / cosf(value) + 1);
 }

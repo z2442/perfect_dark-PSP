@@ -582,7 +582,7 @@ f32 bview0f142d74(s32 arg0, f32 arg1, f32 arg2, f32 arg3)
 	value += arg0 * arg1;
 
 	if (arg3 > value * value) {
-		result = sqrtf(arg3 - value * value) * 0.00625f;
+		result = pspFpuSqrt(arg3 - value * value) * 0.00625f;
 	} else {
 		result = 0.01f;
 	}
@@ -842,7 +842,7 @@ Gfx *bviewDrawFisheye(Gfx *gdl, u32 colour, u32 alpha, s32 shuttertime60, s8 sta
 			f32 f2;
 
 			if (sqhalfheight > f20 * f20) {
-				f2 = sqrtf(sqhalfheight - f20 * f20) * (1.0f / 160.0f);
+				f2 = pspFpuSqrt(sqhalfheight - f20 * f20) * (1.0f / 160.0f);
 			} else {
 				f2 = 0.01f;
 			}
@@ -1055,7 +1055,7 @@ Gfx *bviewDrawEyespyMetrics(Gfx *gdl)
 	}
 
 	if (sqmovedist > 0.001f) {
-		movedist = sqrtf(sqmovedist);
+		movedist = pspFpuSqrt(sqmovedist);
 	} else {
 		movedist = 0.0f;
 	}
@@ -1070,7 +1070,7 @@ Gfx *bviewDrawEyespyMetrics(Gfx *gdl)
 		}
 
 		if (sqmovedist > 0.001f) {
-			movedist = sqrtf(sqmovedist);
+			movedist = pspFpuSqrt(sqmovedist);
 		} else {
 			movedist = 0.0f;
 		}
@@ -2004,18 +2004,18 @@ Gfx *bviewDrawEyespyMetrics(Gfx *gdl)
 				points[2] = x = viewleft + 34;
 				points[3] = y + barheight;
 #if PAL
-				points[6] = x = viewwidth / 2.0f - sqrtf(sqcentrey - (ypos - yoffset) * (ypos - yoffset)) * palscale - 5.0f;
+				points[6] = x = viewwidth / 2.0f - pspFpuSqrt(sqcentrey - (ypos - yoffset) * (ypos - yoffset)) * palscale - 5.0f;
 #else
-				points[6] = x = viewwidth / 2.0f - sqrtf(sqcentrey - (ypos - yoffset) * (ypos - yoffset)) * scale - 5.0f;
+				points[6] = x = viewwidth / 2.0f - pspFpuSqrt(sqcentrey - (ypos - yoffset) * (ypos - yoffset)) * scale - 5.0f;
 #endif
 				points[5] = y + barheight;
 
 				ypos -= barheight;
 
 #if PAL
-				points[4] = x = viewwidth / 2.0f - sqrtf(sqcentrey - (ypos - yoffset) * (ypos - yoffset)) * palscale - 5.0f;
+				points[4] = x = viewwidth / 2.0f - pspFpuSqrt(sqcentrey - (ypos - yoffset) * (ypos - yoffset)) * palscale - 5.0f;
 #else
-				points[4] = x = viewwidth / 2.0f - sqrtf(sqcentrey - (ypos - yoffset) * (ypos - yoffset)) * scale - 5.0f;
+				points[4] = x = viewwidth / 2.0f - pspFpuSqrt(sqcentrey - (ypos - yoffset) * (ypos - yoffset)) * scale - 5.0f;
 #endif
 				points[7] = y;
 
@@ -2073,18 +2073,18 @@ Gfx *bviewDrawEyespyMetrics(Gfx *gdl)
 				points[3] = y + barheight;
 				points[2] = x = viewright - 34;
 #if PAL
-				points[6] = x = viewwidth / 2.0f + sqrtf(sqcentrey - (ypos - yoffset) * (ypos - yoffset)) * palscale + 5.0f;
+				points[6] = x = viewwidth / 2.0f + pspFpuSqrt(sqcentrey - (ypos - yoffset) * (ypos - yoffset)) * palscale + 5.0f;
 #else
-				points[6] = x = viewwidth / 2.0f + sqrtf(sqcentrey - (ypos - yoffset) * (ypos - yoffset)) * scale + 5.0f;
+				points[6] = x = viewwidth / 2.0f + pspFpuSqrt(sqcentrey - (ypos - yoffset) * (ypos - yoffset)) * scale + 5.0f;
 #endif
 				points[5] = y + barheight;
 
 				ypos -= barheight;
 
 #if PAL
-				points[4] = x = viewwidth / 2.0f + sqrtf(sqcentrey - (ypos - yoffset) * (ypos - yoffset)) * palscale + 5.0f;
+				points[4] = x = viewwidth / 2.0f + pspFpuSqrt(sqcentrey - (ypos - yoffset) * (ypos - yoffset)) * palscale + 5.0f;
 #else
-				points[4] = x = viewwidth / 2.0f + sqrtf(sqcentrey - (ypos - yoffset) * (ypos - yoffset)) * scale + 5.0f;
+				points[4] = x = viewwidth / 2.0f + pspFpuSqrt(sqcentrey - (ypos - yoffset) * (ypos - yoffset)) * scale + 5.0f;
 #endif
 				points[7] = y;
 
@@ -2393,7 +2393,7 @@ Gfx *bviewDrawIrLens(Gfx *gdl)
 			// Rendering a line that overlaps the semicircle
 			// in the middle of the screen
 			f32 f0 = a0;
-			s32 semicirclewidth = sqrtf(sqinnerradius - (s32) (f0 * f0)) * (viewwidth / (f32) SCREEN_WIDTH_LO);
+			s32 semicirclewidth = pspFpuSqrt(sqinnerradius - (s32) (f0 * f0)) * (viewwidth / (f32) SCREEN_WIDTH_LO);
 			s32 semicircleright = viewcentrex + semicirclewidth;
 			s32 rightsidewidth = viewwidth - semicircleright;
 			// if playernum is 1 or 3, shift to the right by viewwidth
@@ -2827,7 +2827,7 @@ Gfx *bviewDrawIrBinoculars(Gfx *gdl)
 		}
 
 		if (sqytocentre < sqradius) {
-			s32 xoffset = (viewwidth / (f32) SCREEN_WIDTH_LO) * sqrtf(sqradius - sqytocentre);
+			s32 xoffset = (viewwidth / (f32) SCREEN_WIDTH_LO) * pspFpuSqrt(sqradius - sqytocentre);
 
 			// Left side
 			if (leftx - xoffset > viewleft) {

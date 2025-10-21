@@ -229,7 +229,7 @@ struct waypoint *waypointFindClosestToPos(struct coord *pos, RoomNum *rooms)
 					sp98.f[1] = 0.0f;
 					sp98.f[2] = sp250[i].z - sp1d8[i].z;
 
-					mult = 10.0f / sqrtf(sp98.f[0] * sp98.f[0] + sp98.f[2] * sp98.f[2]);
+					mult = 10.0f / pspFpuSqrt(sp98.f[0] * sp98.f[0] + sp98.f[2] * sp98.f[2]);
 
 					sp98.x *= mult;
 					sp98.z *= mult;

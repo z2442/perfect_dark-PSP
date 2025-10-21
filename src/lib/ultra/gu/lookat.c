@@ -14,7 +14,7 @@ void guLookAtF(float mf[4][4], float xEye, float yEye, float zEye,
 	zLook = zAt - zEye;
 
 	/* Negate because positive Z is behind us: */
-	tmp = sqrtf(xLook*xLook + yLook*yLook + zLook*zLook);
+	tmp = pspFpuSqrt(xLook*xLook + yLook*yLook + zLook*zLook);
 
 	if (tmp == 0.0f) {
 		tmp = 0.001f;
@@ -32,7 +32,7 @@ void guLookAtF(float mf[4][4], float xEye, float yEye, float zEye,
 	yRight = zUp * xLook - xUp * zLook;
 	zRight = xUp * yLook - yUp * xLook;
 
-	tmp = sqrtf(xRight*xRight + yRight*yRight + zRight*zRight);
+	tmp = pspFpuSqrt(xRight*xRight + yRight*yRight + zRight*zRight);
 
 	if (tmp == 0.0f) {
 		tmp = 0.001f;
@@ -50,7 +50,7 @@ void guLookAtF(float mf[4][4], float xEye, float yEye, float zEye,
 	yUp = zLook * xRight - xLook * zRight;
 	zUp = xLook * yRight - yLook * xRight;
 
-	tmp = sqrtf(xUp*xUp + yUp*yUp + zUp*zUp);
+	tmp = pspFpuSqrt(xUp*xUp + yUp*yUp + zUp*zUp);
 
 	if (tmp == 0.0f) {
 		tmp = 0.001f;

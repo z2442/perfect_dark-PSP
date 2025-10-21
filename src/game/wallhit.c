@@ -888,7 +888,7 @@ void wallhitCreateWith20Args(struct coord *relpos, struct coord *arg1, struct co
 			sp1e8.y = sp118.y;
 			sp1e8.z = sp118.z;
 		} else {
-			f32 f0 = sqrtf(sp1b8.x * sp1b8.x + sp1b8.z * sp1b8.z);
+			f32 f0 = pspFpuSqrt(sp1b8.x * sp1b8.x + sp1b8.z * sp1b8.z);
 			f32 xvalue = sp1b8.x / f0;
 			f32 zvalue = sp1b8.z / f0;
 
@@ -951,8 +951,8 @@ void wallhitCreateWith20Args(struct coord *relpos, struct coord *arg1, struct co
 			mtx4RotateVecInPlace(mtx, &sp84);
 			mtx4RotateVecInPlace(mtx, &sp78);
 
-			width /= sqrtf(sp84.x * sp84.x + sp84.y * sp84.y + sp84.z * sp84.z);
-			height /= sqrtf(sp78.x * sp78.x + sp78.y * sp78.y + sp78.z * sp78.z);
+			width /= pspFpuSqrt(sp84.x * sp84.x + sp84.y * sp84.y + sp84.z * sp84.z);
+			height /= pspFpuSqrt(sp78.x * sp78.x + sp78.y * sp78.y + sp78.z * sp78.z);
 
 			if (xlu) {
 				obj->hidden2 |= OBJH2FLAG_HASXLU;

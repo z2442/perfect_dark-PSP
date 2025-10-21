@@ -506,7 +506,7 @@ f32 bmoveCalculateLookahead(void)
 		cdGetPos(&sp150, 455, "bondmove.c");
 		flags = cdGetGeoFlags();
 
-		sp160 = sqrtf((sp150.x - spf0.x) * (sp150.x - spf0.x)
+		sp160 = pspFpuSqrt((sp150.x - spf0.x) * (sp150.x - spf0.x)
 				+ (sp150.y - spf0.y) * (sp150.y - spf0.y)
 				+ (sp150.z - spf0.z) * (sp150.z - spf0.z));
 	}
@@ -2257,7 +2257,7 @@ void bmoveUpdateRooms(struct player *player)
 void bmove0f0cb904(struct coord *arg0)
 {
 	if (arg0->f[0] || arg0->f[2]) {
-		f32 hypotenuse = sqrtf(arg0->f[0] * arg0->f[0] + arg0->f[2] * arg0->f[2]);
+		f32 hypotenuse = pspFpuSqrt(arg0->f[0] * arg0->f[0] + arg0->f[2] * arg0->f[2]);
 		s32 i;
 
 		if (hypotenuse > 1.5f) {
@@ -2358,7 +2358,7 @@ void bmoveTick(bool allowc1x, bool allowc1y, bool allowc1buttons, bool ignorec2)
 			zdiff = g_Vars.currentplayer->bondprevpos.z - g_Vars.currentplayer->prop->pos.z;
 
 			foot = 0;
-			distance = sqrtf(xdiff * xdiff + ydiff * ydiff + zdiff * zdiff);
+			distance = pspFpuSqrt(xdiff * xdiff + ydiff * ydiff + zdiff * zdiff);
 
 			g_Vars.currentplayer->footstepdist += distance;
 

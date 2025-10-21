@@ -1054,7 +1054,7 @@ bool shotTestLos(struct coord *gunpos2d, struct coord *gundir2d, struct coord *g
 	delta.x = endpos3d->x - gunpos3d->x;
 	delta.y = endpos3d->y - gunpos3d->y;
 	delta.z = endpos3d->z - gunpos3d->z;
-	shotdata.distance = sqrtf(delta.x * delta.x + delta.y * delta.y + delta.z * delta.z);
+	shotdata.distance = pspFpuSqrt(delta.x * delta.x + delta.y * delta.y + delta.z * delta.z);
 
 	// and check props
 	propptr = g_Vars.endonscreenprops - 1;
@@ -1218,7 +1218,7 @@ void hitCreate(struct shotdata *shotdata, struct prop *prop, f32 hitdistance, s3
 			hit->pos.y = arg11->y;
 			hit->pos.z = arg11->z;
 
-			fVar8 = sqrtf(arg12->f[0] * arg12->f[0] + arg12->f[1] * arg12->f[1] + arg12->f[2] * arg12->f[2]);
+			fVar8 = pspFpuSqrt(arg12->f[0] * arg12->f[0] + arg12->f[1] * arg12->f[1] + arg12->f[2] * arg12->f[2]);
 
 			if (fVar8 > 0) {
 				hit->dir.x = arg12->x / fVar8;
@@ -2663,7 +2663,7 @@ void farsightChooseTarget(void)
 						f32 ydist = g_Vars.currentplayer->bond2.unk10.y - prop->pos.y;
 						f32 zdist = g_Vars.currentplayer->bond2.unk10.z - prop->pos.z;
 
-						f32 dist = sqrtf(xdist * xdist + ydist * ydist + zdist * zdist);
+						f32 dist = pspFpuSqrt(xdist * xdist + ydist * ydist + zdist * zdist);
 
 						if (dist > 0) {
 							f32 thing = (xdist * g_Vars.currentplayer->bond2.unk1c.f[0]
@@ -2862,7 +2862,7 @@ void autoaimTick(void)
 			f32 xdist = g_Vars.currentplayer->bond2.unk10.x - bestprop->pos.x;
 			f32 ydist = g_Vars.currentplayer->bond2.unk10.y - bestprop->pos.y;
 			f32 zdist = g_Vars.currentplayer->bond2.unk10.z - bestprop->pos.z;
-			f32 dist = sqrtf(xdist * xdist + ydist * ydist + zdist * zdist);
+			f32 dist = pspFpuSqrt(xdist * xdist + ydist * ydist + zdist * zdist);
 
 			if (dist < 200) {
 				g_Vars.currentplayer->gunctrl.gangsta = true;

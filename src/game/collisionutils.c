@@ -52,7 +52,7 @@ f32 func0f1578c8(struct widthxz *arg0, struct xz *arg1, struct xz *arg2)
 		return MAXFLOAT;
 	}
 
-	value2 -= sqrtf(sp24);
+	value2 -= pspFpuSqrt(sp24);
 
 	if (value2 < 0.0f) {
 		if (value2 * value2 + value1 * value1 <= arg0->width * arg0->width) {
@@ -90,7 +90,7 @@ f32 func0f1579cc(struct widthxz *arg0, struct xz *arg1, struct xz *arg2, struct 
 	f32 sp58;
 	f32 sp54;
 
-	spac = sqrtf(arg3->x * arg3->x + arg3->z * arg3->z);
+	spac = pspFpuSqrt(arg3->x * arg3->x + arg3->z * arg3->z);
 
 	if (spac == 0.0f) {
 		return 1.0f;
@@ -102,7 +102,7 @@ f32 func0f1579cc(struct widthxz *arg0, struct xz *arg1, struct xz *arg2, struct 
 	sp98 = arg2->x - arg1->x;
 	sp9c = arg2->z - arg1->z;
 
-	sp94 = sqrtf(sp98 * sp98 + sp9c * sp9c);
+	sp94 = pspFpuSqrt(sp98 * sp98 + sp9c * sp9c);
 
 	if (sp94 == 0.0f) {
 		goto handlezero;

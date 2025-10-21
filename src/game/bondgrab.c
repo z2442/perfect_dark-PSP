@@ -263,7 +263,7 @@ void bgrab0f0ccbf0(struct coord *delta, f32 angle, struct defaultobj *obj)
 				f32 sp3c = sp8c.z - g_Vars.currentplayer->prop->pos.z;
 				f32 rotation = 0.0f;
 				struct coord sp2c = {0, 0, 0};
-				f32 mult = 1.0f / sqrtf(sp40 * sp40 + sp3c * sp3c);
+				f32 mult = 1.0f / pspFpuSqrt(sp40 * sp40 + sp3c * sp3c);
 
 				sp40 *= mult;
 				sp3c *= mult;
@@ -641,7 +641,7 @@ bool bgrab0f0cdb68(f32 angle)
 	if (sp7c == 0.0f && sp78 == 0.0f) {
 		sp78 = 1.0f;
 	} else {
-		f12 = 1.0f / sqrtf(sp7c * sp7c + sp78 * sp78);
+		f12 = 1.0f / pspFpuSqrt(sp7c * sp7c + sp78 * sp78);
 		sp7c = sp7c * f12;
 		sp78 = sp78 * f12;
 	}
@@ -753,7 +753,7 @@ s32 bgrab0f0cdfbc(struct coord *delta, struct coord *arg1, struct coord *arg2)
 		sp30.x = arg2->x - arg1->x;
 		sp30.z = arg2->z - arg1->z;
 
-		tmp = 1.0f / sqrtf(sp30.f[0] * sp30.f[0] + sp30.f[2] * sp30.f[2]);
+		tmp = 1.0f / pspFpuSqrt(sp30.f[0] * sp30.f[0] + sp30.f[2] * sp30.f[2]);
 
 		sp30.x *= tmp;
 		sp30.z *= tmp;

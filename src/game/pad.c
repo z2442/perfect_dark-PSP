@@ -215,7 +215,7 @@ void padRotateForDoor(s32 padnum)
 		up = (struct coord *) ptr;
 		up->y = 0;
 
-		scale = 1 / sqrtf(up->f[0] * up->f[0] + up->f[2] * up->f[2]);
+		scale = 1 / pspFpuSqrt(up->f[0] * up->f[0] + up->f[2] * up->f[2]);
 
 		up->x *= scale;
 		up->z *= scale;

@@ -590,7 +590,7 @@ void explosionsUpdateShake(struct coord *arg0, struct coord *arg1, struct coord 
 			f32 ydiff = prop->pos.y - arg0->y;
 			f32 zdiff = prop->pos.z - arg0->z;
 
-			f32 dist = sqrtf(xdiff * xdiff + ydiff * ydiff + zdiff * zdiff);
+			f32 dist = pspFpuSqrt(xdiff * xdiff + ydiff * ydiff + zdiff * zdiff);
 			f32 mult;
 
 			if (dist == 0.0f) {
@@ -871,7 +871,7 @@ void explosionInflictDamage(struct prop *expprop)
 								spf4.z = prop->pos.z - expprop->pos.z;
 
 								if (spf4.f[0] != 0.0f || spf4.f[2] != 0.0f) {
-									dist = sqrtf(spf4.f[0] * spf4.f[0] + spf4.f[2] * spf4.f[2]);
+									dist = pspFpuSqrt(spf4.f[0] * spf4.f[0] + spf4.f[2] * spf4.f[2]);
 
 									if (dist > 0.0f) {
 										f32 tmp = minfrac * 4.0f / dist;
@@ -972,7 +972,7 @@ void explosionInflictDamage(struct prop *expprop)
 
 					if (isfirstframe) {
 						if (xdist != 0.0f || zdist != 0.0f) {
-							f32 dist = sqrtf(xdist * xdist + zdist * zdist);
+							f32 dist = pspFpuSqrt(xdist * xdist + zdist * zdist);
 
 							if (dist > 0.0f) {
 								xdist *= 1.0f / dist;
@@ -1319,7 +1319,7 @@ Gfx *explosionRender(struct prop *prop, Gfx *gdl, bool xlupass)
 			u32 alpha = 0x80;
 			u32 red;
 			u32 green;
-			f32 expdist = sqrtf(ERASERSQDIST(prop->pos.f));
+			f32 expdist = pspFpuSqrt(ERASERSQDIST(prop->pos.f));
 
 			if (g_Vars.currentplayer->eraserpropdist < expdist) {
 				return gdl;

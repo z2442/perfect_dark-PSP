@@ -43,7 +43,7 @@ void shardsCreate(struct coord *pos, f32 *rotx, f32 *roty, f32 *rotz, f32 relxmi
 	spcc[1] = rotx[1];
 	spcc[2] = rotx[2];
 
-	f0 = sqrtf(spcc[0] * spcc[0] + spcc[1] * spcc[1] + spcc[2] * spcc[2]);
+	f0 = pspFpuSqrt(spcc[0] * spcc[0] + spcc[1] * spcc[1] + spcc[2] * spcc[2]);
 
 	spcc[0] *= 1.0f / f0;
 	spcc[1] *= 1.0f / f0;
@@ -56,7 +56,7 @@ void shardsCreate(struct coord *pos, f32 *rotx, f32 *roty, f32 *rotz, f32 relxmi
 	spc0[1] = roty[1];
 	spc0[2] = roty[2];
 
-	f0 = sqrtf(spc0[0] * spc0[0] + spc0[1] * spc0[1] + spc0[2] * spc0[2]);
+	f0 = pspFpuSqrt(spc0[0] * spc0[0] + spc0[1] * spc0[1] + spc0[2] * spc0[2]);
 
 	spc0[0] *= 1.0f / f0;
 	spc0[1] *= 1.0f / f0;
@@ -70,7 +70,7 @@ void shardsCreate(struct coord *pos, f32 *rotx, f32 *roty, f32 *rotz, f32 relxmi
 	f20 = relxmax - relxmin;
 	spac = relymax - relymin;
 
-	spec = sqrtf(f20 * spac / (f32) (g_MaxShards / 2));
+	spec = pspFpuSqrt(f20 * spac / (f32) (g_MaxShards / 2));
 	speci = spec;
 	speci2 = speci;
 
@@ -235,7 +235,7 @@ Gfx *shardsRenderWood(Gfx *gdl)
 				u32 stack;
 
 				if (g_Vars.currentplayer->visionmode == VISIONMODE_XRAY) {
-					xraydist = sqrtf(ERASERSQDIST(g_Shards[i].pos.f));
+					xraydist = pspFpuSqrt(ERASERSQDIST(g_Shards[i].pos.f));
 
 					if (g_Vars.currentplayer->eraserpropdist < xraydist) {
 						render = false;
@@ -357,7 +357,7 @@ Gfx *shardsRenderGlass(Gfx *gdl)
 				u32 stack;
 
 				if (g_Vars.currentplayer->visionmode == VISIONMODE_XRAY) {
-					xraydist = sqrtf(ERASERSQDIST(g_Shards[i].pos.f));
+					xraydist = pspFpuSqrt(ERASERSQDIST(g_Shards[i].pos.f));
 
 					if (g_Vars.currentplayer->eraserpropdist < xraydist) {
 						render = false;

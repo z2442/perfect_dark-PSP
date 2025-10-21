@@ -175,7 +175,7 @@ void bbikeHandleActivate(void)
 
 		f32 sidedist = bbox->xmax * bike->base.model->scale;
 		f32 frontdist = bbox->zmax * bike->base.model->scale;
-		f32 diagdist = sqrtf(sidedist * sidedist + frontdist * frontdist);
+		f32 diagdist = pspFpuSqrt(sidedist * sidedist + frontdist * frontdist);
 
 		g_Vars.currentplayer->walkinitmove = false;
 
@@ -361,7 +361,7 @@ void bbike0f0d2b40(struct defaultobj *bike, struct coord *arg1, f32 arg2, struct
 		f32 rotation = 0;
 		struct coord speed = {0, 0, 0};
 
-		f32 tmp = 1 / sqrtf(xdiff * xdiff + zdiff * zdiff);
+		f32 tmp = 1 / pspFpuSqrt(xdiff * xdiff + zdiff * zdiff);
 
 		xdiff *= tmp;
 		zdiff *= tmp;
@@ -687,7 +687,7 @@ s32 bbike0f0d3840(struct coord *arg0, struct coord *arg1, struct coord *arg2)
 		sp30.x = arg2->x - arg1->x;
 		sp30.z = arg2->z - arg1->z;
 
-		tmp = sqrtf(sp30.f[0] * sp30.f[0] + sp30.f[2] * sp30.f[2]);
+		tmp = pspFpuSqrt(sp30.f[0] * sp30.f[0] + sp30.f[2] * sp30.f[2]);
 
 		sp30.x *= 1.0f / tmp;
 		sp30.z *= 1.0f / tmp;
@@ -726,7 +726,7 @@ s32 bbike0f0d3940(struct coord *arg0, struct coord *arg1, struct coord *arg2)
 			sp34.y = 0;
 			sp34.z = arg1->x - g_Vars.currentplayer->hoverbike->pos.x;
 
-			tmp = sqrtf(sp34.f[0] * sp34.f[0] + sp34.f[2] * sp34.f[2]);
+			tmp = pspFpuSqrt(sp34.f[0] * sp34.f[0] + sp34.f[2] * sp34.f[2]);
 
 			sp34.x = sp34.f[0] * (1.0f / tmp);
 			sp34.z = sp34.f[2] * (1.0f / tmp);
@@ -754,7 +754,7 @@ s32 bbike0f0d3940(struct coord *arg0, struct coord *arg1, struct coord *arg2)
 				sp34.y = 0;
 				sp34.z = arg2->x - g_Vars.currentplayer->hoverbike->pos.x;
 
-				tmp = sqrtf(sp34.f[0] * sp34.f[0] + sp34.f[2] * sp34.f[2]);
+				tmp = pspFpuSqrt(sp34.f[0] * sp34.f[0] + sp34.f[2] * sp34.f[2]);
 
 				sp34.x = sp34.f[0] * (1.0f / tmp);
 				sp34.z = sp34.f[2] * (1.0f / tmp);
@@ -913,7 +913,7 @@ void bbikeTick(void)
 			f32 tmp = sp1f8 * sp1f8 + sp1f4 * sp1f4;
 
 			if (tmp > 0.0f) {
-				tmp = sqrtf((bike->speed[0] * bike->speed[0] + bike->speed[1] * bike->speed[1]) / tmp);
+				tmp = pspFpuSqrt((bike->speed[0] * bike->speed[0] + bike->speed[1] * bike->speed[1]) / tmp);
 
 				if (tmp < 1.0f) {
 					sp1f8 *= tmp;

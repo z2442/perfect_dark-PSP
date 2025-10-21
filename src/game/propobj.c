@@ -1953,7 +1953,7 @@ void objCreateOneDebris(struct defaultobj *obj, s32 partindex, struct prop *prop
 				dist.y = 0.0f;
 				dist.z = obj->prop->pos.z - prop->pos.z;
 
-				distance = sqrtf(dist.f[0] * dist.f[0] + dist.f[2] * dist.f[2]);
+				distance = pspFpuSqrt(dist.f[0] * dist.f[0] + dist.f[2] * dist.f[2]);
 
 				if (distance > 0.0f) {
 					distance = 1.0f / distance;
@@ -2989,7 +2989,7 @@ bool func0f06bea0(struct model *model, struct modelnode *endnode, struct modelno
 	}
 
 	if (ok) {
-		*arg6 = sqrtf(sp98);
+		*arg6 = pspFpuSqrt(sp98);
 		*arg10 = sp88;
 		*arg9 = modelFindNodeMtxIndex(sp88, 0);
 	}
@@ -3135,7 +3135,7 @@ bool projectileFindCollidingProp(struct prop *prop, struct coord *pos1, struct c
 	sp98.y = pos2->y - pos1->y;
 	sp98.z = pos2->z - pos1->z;
 
-	dist = sqrtf(sp98.f[0] * sp98.f[0] + sp98.f[1] * sp98.f[1] + sp98.f[2] * sp98.f[2]);
+	dist = pspFpuSqrt(sp98.f[0] * sp98.f[0] + sp98.f[1] * sp98.f[1] + sp98.f[2] * sp98.f[2]);
 
 	if (dist == 0.0f) {
 		return false;
@@ -3351,7 +3351,7 @@ s32 func0f06cd00(struct defaultobj *obj, struct coord *pos, struct coord *arg2, 
 			dist.y = pos->y - prop->pos.y;
 			dist.z = pos->z - prop->pos.z;
 
-			distance = sqrtf(dist.f[0] * dist.f[0] + dist.f[1] * dist.f[1] + dist.f[2] * dist.f[2]);
+			distance = pspFpuSqrt(dist.f[0] * dist.f[0] + dist.f[1] * dist.f[1] + dist.f[2] * dist.f[2]);
 
 			if (distance > 0.1f) {
 				mult = 0.1f / distance;
@@ -3680,9 +3680,9 @@ void projectileFall(struct defaultobj *obj, f32 arg1[3][3])
 		mtx4LoadRotationFrom(sp108.m, spc8.m);
 		mtx4MultMtx4(&spc8, &sp148, &sp88);
 
-		projectile->unk0b8[0] = sqrtf(sp88.m[0][0] * sp88.m[0][0] + sp88.m[0][1] * sp88.m[0][1] + sp88.m[0][2] * sp88.m[0][2]);
-		projectile->unk0b8[1] = sqrtf(sp88.m[1][0] * sp88.m[1][0] + sp88.m[1][1] * sp88.m[1][1] + sp88.m[1][2] * sp88.m[1][2]);
-		projectile->unk0b8[2] = sqrtf(sp88.m[2][0] * sp88.m[2][0] + sp88.m[2][1] * sp88.m[2][1] + sp88.m[2][2] * sp88.m[2][2]);
+		projectile->unk0b8[0] = pspFpuSqrt(sp88.m[0][0] * sp88.m[0][0] + sp88.m[0][1] * sp88.m[0][1] + sp88.m[0][2] * sp88.m[0][2]);
+		projectile->unk0b8[1] = pspFpuSqrt(sp88.m[1][0] * sp88.m[1][0] + sp88.m[1][1] * sp88.m[1][1] + sp88.m[1][2] * sp88.m[1][2]);
+		projectile->unk0b8[2] = pspFpuSqrt(sp88.m[2][0] * sp88.m[2][0] + sp88.m[2][1] * sp88.m[2][1] + sp88.m[2][2] * sp88.m[2][2]);
 
 		t2 = -1;
 		t4 = -1;
@@ -3797,7 +3797,7 @@ void projectileFall(struct defaultobj *obj, f32 arg1[3][3])
 		sp80 = obj->realrot[t2][2];
 
 		if (sp84 != 0.0f || sp80 != 0.0f) {
-			f32 f0 = sqrtf(sp84 * sp84 + sp80 * sp80);
+			f32 f0 = pspFpuSqrt(sp84 * sp84 + sp80 * sp80);
 
 			if (f0 > 0.0f) {
 				f0 = 1.0f / f0;
@@ -3926,7 +3926,7 @@ void func0f06e9cc(struct coord *arg0, Mtxf *arg1)
 	Mtxf sp30;
 	struct coord sp24;
 
-	f0 = sqrtf(arg0->f[0] * arg0->f[0] + arg0->f[1] * arg0->f[1] + arg0->f[2] * arg0->f[2]);
+	f0 = pspFpuSqrt(arg0->f[0] * arg0->f[0] + arg0->f[1] * arg0->f[1] + arg0->f[2] * arg0->f[2]);
 
 	sp10c = arg0->x / f0;
 	sp108 = arg0->y / f0;
@@ -3939,7 +3939,7 @@ void func0f06e9cc(struct coord *arg0, Mtxf *arg1)
 		sp118 = 1.0f;
 		sp114 = 0.0f;
 	} else {
-		a = sqrtf(sp10c * sp10c + sp104 * sp104);
+		a = pspFpuSqrt(sp10c * sp10c + sp104 * sp104);
 		b = sp10c / a;
 
 		sp118 = sp104 / a;
@@ -4143,7 +4143,7 @@ void objLand(struct prop *prop, struct coord *arg1, struct coord *arg2, bool *em
 		objLand2(obj, arg1, arg2);
 
 		autogun->yzero = atan2f(arg2->x, arg2->z);
-		autogun->xzero = atan2f(arg2->y, sqrtf(arg2->f[0] * arg2->f[0] + arg2->f[2] * arg2->f[2]));
+		autogun->xzero = atan2f(arg2->y, pspFpuSqrt(arg2->f[0] * arg2->f[0] + arg2->f[2] * arg2->f[2]));
 
 		autogun->xrot = autogun->xzero;
 		autogun->yrot = autogun->yzero;
@@ -4815,7 +4815,7 @@ s32 glassCalculateOpacity(struct coord *pos, f32 xludist, f32 opadist, f32 arg3)
 	f32 ydiff = pos->y - campos->y;
 	f32 zdiff = pos->z - campos->z;
 
-	f32 distance = sqrtf(xdiff * xdiff + ydiff * ydiff + zdiff * zdiff);
+	f32 distance = pspFpuSqrt(xdiff * xdiff + ydiff * ydiff + zdiff * zdiff);
 
 	if (distance > opadist) {
 		opacity = 255;
@@ -5133,7 +5133,7 @@ void liftGoToStop(struct liftobj *lift, s32 stopnum)
 			f32 xdiff = aimpad.pos.x - curpad.pos.x;
 			f32 ydiff = aimpad.pos.y - curpad.pos.y;
 			f32 zdiff = aimpad.pos.z - curpad.pos.z;
-			f32 result = sqrtf(xdiff * xdiff + ydiff * ydiff + zdiff * zdiff);
+			f32 result = pspFpuSqrt(xdiff * xdiff + ydiff * ydiff + zdiff * zdiff);
 
 			lift->levelcur = lift->levelaim;
 			lift->dist = result - lift->dist;
@@ -5760,7 +5760,7 @@ f32 objCollide(struct defaultobj *movingobj, struct coord *movingvel, f32 rotati
 					f32 zdiff = sp88.f[2] - movingobj->prop->pos.f[2];
 					f32 finalrotation = 0.0f;
 					struct coord speed = {0, 0, 0};
-					f32 mult = 1.0f / sqrtf(xdiff * xdiff + zdiff * zdiff);
+					f32 mult = 1.0f / pspFpuSqrt(xdiff * xdiff + zdiff * zdiff);
 
 					xdiff *= mult;
 					zdiff *= mult;
@@ -6062,7 +6062,7 @@ bool rocketTickFbw(struct weaponobj *rocket)
 
 	if (ownerchr) {
 		xrot = atan2f(xdist, zdist);
-		yrot = atan2f(ydist, sqrtf(xdist * xdist + zdist * zdist));
+		yrot = atan2f(ydist, pspFpuSqrt(xdist * xdist + zdist * zdist));
 
 		for (i = 0; i < g_Vars.lvupdate240; i++) {
 			projectile->unk018 = modelTweenRotAxis(projectile->unk018, xrot, PAL ? 0.02246f : 0.01875f);
@@ -6326,7 +6326,7 @@ s32 projectileTick(struct defaultobj *obj, bool *embedded)
 				}
 
 				if ((projectile->speed.f[0] != 0.0f || projectile->speed.f[2] != 0.0f) && projectile->unk098 > 0.0f) {
-					dist = sqrtf(projectile->speed.f[0] * projectile->speed.f[0] + projectile->speed.f[2] * projectile->speed.f[2]);
+					dist = pspFpuSqrt(projectile->speed.f[0] * projectile->speed.f[0] + projectile->speed.f[2] * projectile->speed.f[2]);
 
 					if (dist > 0.0f) {
 						f32 f12 = projectile->unk098 * g_Vars.lvupdate60freal / dist;
@@ -6393,7 +6393,7 @@ s32 projectileTick(struct defaultobj *obj, bool *embedded)
 					x = pad.pos.x - prop->pos.x;
 					z = pad.pos.z - prop->pos.z;
 
-					dist = sqrtf(x * x + z * z);
+					dist = pspFpuSqrt(x * x + z * z);
 
 					if (dist > outerdist) {
 						projectile->unk0dc = 0.0f;
@@ -6423,7 +6423,7 @@ s32 projectileTick(struct defaultobj *obj, bool *embedded)
 					x = pad.pos.x - prop->pos.x - sp59c.x;
 					z = pad.pos.z - prop->pos.z - sp59c.z;
 
-					dist = sqrtf(x * x + z * z);
+					dist = pspFpuSqrt(x * x + z * z);
 
 					if (dist > outerdist) {
 						projectile->speed.f[0] = \
@@ -6538,7 +6538,7 @@ s32 projectileTick(struct defaultobj *obj, bool *embedded)
 							x = pad.pos.x - prop->pos.x - sp59c.x;
 							z = pad.pos.z - prop->pos.z - sp59c.z;
 
-							dist = sqrtf(x * x + z * z);
+							dist = pspFpuSqrt(x * x + z * z);
 
 							if (dist > outerdist) {
 								projectile->speed.f[0] = \
@@ -6572,7 +6572,7 @@ s32 projectileTick(struct defaultobj *obj, bool *embedded)
 								x = pad.pos.x - prop->pos.x - sp59c.x;
 								z = pad.pos.z - prop->pos.z - sp59c.z;
 
-								dist = sqrtf(x * x + z * z);
+								dist = pspFpuSqrt(x * x + z * z);
 
 								if (dist > outerdist) {
 									projectile->speed.f[0] = \
@@ -6602,7 +6602,7 @@ s32 projectileTick(struct defaultobj *obj, bool *embedded)
 									sp398.x = sp3dc.x - sp3e8.x;
 									sp398.z = sp3dc.z - sp3e8.z;
 
-									f12 = 1.0f / sqrtf(sp398.f[0] * sp398.f[0] + sp398.f[2] * sp398.f[2]);
+									f12 = 1.0f / pspFpuSqrt(sp398.f[0] * sp398.f[0] + sp398.f[2] * sp398.f[2]);
 
 									sp398.x *= f12;
 									sp398.z *= f12;
@@ -6621,7 +6621,7 @@ s32 projectileTick(struct defaultobj *obj, bool *embedded)
 										x = pad.pos.x - prop->pos.x - sp59c.x;
 										z = pad.pos.z - prop->pos.z - sp59c.z;
 
-										dist = sqrtf(x * x + z * z);
+										dist = pspFpuSqrt(x * x + z * z);
 
 										if (dist > outerdist) {
 											projectile->speed.f[0] = \
@@ -6749,7 +6749,7 @@ s32 projectileTick(struct defaultobj *obj, bool *embedded)
 
 					if (obj && obj->prop && projectile->targetprop) {
 						Mtxf mtx;
-						f32 sp29c = sqrtf(obj->realrot[0][0] * obj->realrot[0][0] + obj->realrot[1][0] * obj->realrot[1][0] + obj->realrot[2][0] * obj->realrot[2][0]);
+						f32 sp29c = pspFpuSqrt(obj->realrot[0][0] * obj->realrot[0][0] + obj->realrot[1][0] * obj->realrot[1][0] + obj->realrot[2][0] * obj->realrot[2][0]);
 						struct coord sp290;
 						f32 sp28c;
 
@@ -7483,7 +7483,7 @@ s32 projectileTick(struct defaultobj *obj, bool *embedded)
 
 						if (projectile->unk060 >= 1.0f) {
 							if (projectile->unk098 > 0.0f) {
-								f32 dist = sqrtf(projectile->speed.f[0] * projectile->speed.f[0] + projectile->speed.f[2] * projectile->speed.f[2]);
+								f32 dist = pspFpuSqrt(projectile->speed.f[0] * projectile->speed.f[0] + projectile->speed.f[2] * projectile->speed.f[2]);
 
 								if (dist > 0.0f) {
 									f12 = projectile->unk098 * g_Vars.lvupdate60freal / dist;
@@ -7609,7 +7609,7 @@ void doorTick(struct prop *doorprop)
 			f32 xdiff = doorprop->pos.x - g_Vars.players[0]->cam_pos.x;
 			f32 zdiff = doorprop->pos.z - g_Vars.players[0]->cam_pos.z;
 
-			sqrtf(xdiff * xdiff + zdiff * zdiff);
+			pspFpuSqrt(xdiff * xdiff + zdiff * zdiff);
 		}
 	}
 #endif
@@ -8052,7 +8052,7 @@ void liftTick(struct prop *prop)
 			ydiff = padaim.pos.f[1] - padcur.pos.f[1];
 			zdiff = padaim.pos.f[2] - padcur.pos.f[2];
 
-			segdist = sqrtf(xdiff * xdiff + ydiff * ydiff + zdiff * zdiff);
+			segdist = pspFpuSqrt(xdiff * xdiff + ydiff * ydiff + zdiff * zdiff);
 
 #if VERSION >= VERSION_NTSC_1_0
 			prevdist = lift->dist;
@@ -8279,7 +8279,7 @@ void cctvTick(struct prop *camprop)
 
 	// Check vertical angle
 	if (canseeplayer) {
-		f32 angle = atan2f(ydist, sqrtf(xdist * xdist + zdist * zdist));
+		f32 angle = atan2f(ydist, pspFpuSqrt(xdist * xdist + zdist * zdist));
 		f32 finalangle = angle - camera->xzero;
 
 		if (angle < camera->xzero) {
@@ -8702,12 +8702,12 @@ void autogunTick(struct prop *prop)
 		if (ydist);
 
 		sqdist = xdist * xdist + zdist * zdist;
-		dist = sqrtf(sqdist);
+		dist = pspFpuSqrt(sqdist);
 		horizdist = dist;
 
 		if (obj->flags & OBJFLAG_AUTOGUN_3DRANGE) {
 			sqdist += ydist * ydist;
-			dist = sqrtf(sqdist);
+			dist = pspFpuSqrt(sqdist);
 		}
 
 		limitangle = chrGetAimLimitAngle(sqdist);
@@ -9260,7 +9260,7 @@ void autogunTickShoot(struct prop *autogunprop)
 						sqguntohitdist = x * x + y * y + z * z;
 
 						if (sqguntohitdist >= sqguntotargetdist) {
-							f32 guntotargetdist = sqrtf(sqguntotargetdist);
+							f32 guntotargetdist = pspFpuSqrt(sqguntotargetdist);
 							f32 increment = 0.16f * g_Vars.lvupdate60freal * g_AutogunAccuracyScale;
 
 							if (guntotargetdist > 200.0f) {
@@ -9326,7 +9326,7 @@ void autogunTickShoot(struct prop *autogunprop)
 
 					sum = dist.f[0] * dist.f[0] + dist.f[1] * dist.f[1] + dist.f[2] * dist.f[2];
 
-					distance = sqrtf(sum);
+					distance = pspFpuSqrt(sum);
 
 					if (distance > 0.0f) {
 						beam->from.x = gunpos.x;
@@ -9718,7 +9718,7 @@ void chopperIncrementBarrel(struct prop *chopperprop, bool firing)
 			angleh += M_BADTAU;
 		}
 
-		anglev = atan2f(gunaimy - gunpos.y, sqrtf((targetprop->pos.x - gunpos.x) * (targetprop->pos.x - gunpos.x) + (targetprop->pos.z - gunpos.z) * (targetprop->pos.z - gunpos.z))) - chopper->rotx + M_BADTAU;
+		anglev = atan2f(gunaimy - gunpos.y, pspFpuSqrt((targetprop->pos.x - gunpos.x) * (targetprop->pos.x - gunpos.x) + (targetprop->pos.z - gunpos.z) * (targetprop->pos.z - gunpos.z))) - chopper->rotx + M_BADTAU;
 
 		if (anglev > M_PI) {
 			anglev -= M_BADTAU;
@@ -10026,7 +10026,7 @@ void chopperTickFall(struct prop *chopperprop)
 			xdiff = prevpad.pos.f[0] - nextpad.pos.f[0];
 			zdiff = prevpad.pos.f[2] - nextpad.pos.f[2];
 
-			tmp = 0.25f / sqrtf(xdiff * xdiff + zdiff * zdiff);
+			tmp = 0.25f / pspFpuSqrt(xdiff * xdiff + zdiff * zdiff);
 
 			xdiff *= tmp;
 			zdiff *= tmp;
@@ -10209,7 +10209,7 @@ void chopperTickPatrol(struct prop *chopperprop)
 		roty = atan2f(pad.pos.x - chopperprop->pos.x, pad.pos.z - chopperprop->pos.z);
 		xdiff = pad.pos.x - chopperprop->pos.x;
 		zdiff = pad.pos.z - chopperprop->pos.z;
-		rotx = atan2f(pad.pos.y - chopperprop->pos.y, sqrtf(xdiff * xdiff + zdiff * zdiff));
+		rotx = atan2f(pad.pos.y - chopperprop->pos.y, pspFpuSqrt(xdiff * xdiff + zdiff * zdiff));
 	}
 
 	if (chopper->base.flags & OBJFLAG_CHOPPER_INIT) {
@@ -10389,7 +10389,7 @@ void chopperTickCombat(struct prop *chopperprop)
 
 		roty = atan2f(targetprop->pos.x - chopperprop->pos.x, targetprop->pos.z - chopperprop->pos.z);
 
-		dist = sqrtf((targetprop->pos.x - chopperprop->pos.x) * (targetprop->pos.x - chopperprop->pos.x) + (targetprop->pos.z - chopperprop->pos.z) * (targetprop->pos.z - chopperprop->pos.z));
+		dist = pspFpuSqrt((targetprop->pos.x - chopperprop->pos.x) * (targetprop->pos.x - chopperprop->pos.x) + (targetprop->pos.z - chopperprop->pos.z) * (targetprop->pos.z - chopperprop->pos.z));
 		rotx = atan2f(targetprop->pos.y - chopperprop->pos.y, dist);
 
 		chopperIncrementMovement(chopperprop, roty, rotx, &dir, chopper->targetvisible && chopper->weaponsarmed);
@@ -10531,7 +10531,7 @@ void hovercarTick(struct prop *prop)
 		}
 
 		sp200 = atan2f(sp214.x - prop->pos.x, sp214.z - prop->pos.z);
-		tmp2 = sqrtf((sp214.x - prop->pos.x) * (sp214.x - prop->pos.x) + (sp214.z - prop->pos.z) * (sp214.z - prop->pos.z));
+		tmp2 = pspFpuSqrt((sp214.x - prop->pos.x) * (sp214.x - prop->pos.x) + (sp214.z - prop->pos.z) * (sp214.z - prop->pos.z));
 		sp1fc = atan2f(sp214.y - prop->pos.y, tmp2);
 
 		if (hovercar->base.flags & OBJFLAG_HOVERCAR_INIT) {
@@ -10568,7 +10568,7 @@ void hovercarTick(struct prop *prop)
 	} else {
 		if (hovercar->base.flags & OBJFLAG_HOVERCAR_INIT) {
 			hovercar->roty = atan2f(hovercar->base.realrot[2][0], hovercar->base.realrot[2][2]);
-			tmp2 = sqrtf(hovercar->base.realrot[2][2] * hovercar->base.realrot[2][2] + hovercar->base.realrot[2][0] * hovercar->base.realrot[2][0]);
+			tmp2 = pspFpuSqrt(hovercar->base.realrot[2][2] * hovercar->base.realrot[2][2] + hovercar->base.realrot[2][0] * hovercar->base.realrot[2][0]);
 			hovercar->rotx = atan2f(hovercar->base.realrot[2][1], tmp2);
 			hovercar->base.flags &= ~OBJFLAG_HOVERCAR_INIT;
 		}
@@ -13683,7 +13683,7 @@ Gfx *objRender(struct prop *prop, Gfx *gdl, bool xlupass)
 		}
 	} else if (g_Vars.currentplayer->visionmode == VISIONMODE_XRAY) {
 		fadedist;
-		objdist = sqrtf(ERASERSQDIST(prop->pos.f));
+		objdist = pspFpuSqrt(ERASERSQDIST(prop->pos.f));
 
 		if (objdist > g_Vars.currentplayer->eraserpropdist) {
 			return gdl;
@@ -13945,7 +13945,7 @@ void objDeform(struct defaultobj *obj, s32 level)
 	for (i = 0; i < 3; i++) {
 		bool swapthis = false;
 
-		spb0[i] = sqrtf(obj->realrot[i][0] * obj->realrot[i][0] + obj->realrot[i][1] * obj->realrot[i][1] + obj->realrot[i][2] * obj->realrot[i][2]);
+		spb0[i] = pspFpuSqrt(obj->realrot[i][0] * obj->realrot[i][0] + obj->realrot[i][1] * obj->realrot[i][1] + obj->realrot[i][2] * obj->realrot[i][2]);
 
 		f2 = obj->realrot[i][1] / spb0[i];
 
@@ -21363,7 +21363,7 @@ void projectileCreate(struct prop *fromprop, struct fireslotthing *arg1, struct 
 			z = endpos.z - pos->z;
 
 			if (targetprop && sqdist <= x * x + y * y + z * z) {
-				f32 dist = sqrtf(sqdist);
+				f32 dist = pspFpuSqrt(sqdist);
 				struct coord aimpos;
 
 				aimpos.x = targetprop->pos.x;

@@ -2203,7 +2203,7 @@ void func0f14e1c4(struct var8007f8e0 *arg0)
 	f22 = f26 * 0.5f;
 
 	for (f20 = 0.0f; f20 < f22; f20 += 1.0f) {
-		s32 size = f22 - sqrtf(2.0f * f22 * f20 - f20 * f20);
+		s32 size = f22 - pspFpuSqrt(2.0f * f22 * f20 - f20 * f20);
 
 		s32 y1 = ((s32)f20 + spb8);
 		s32 y2 = (spb0 - (s32)f20);
@@ -2832,7 +2832,7 @@ void func0f14f510(s32 arg0)
 	var800a45a0->unk00c = 0;
 
 	for (j = 0; j < 8; j++) {
-		var800a45a0->unk17c[0][j] = 1 / sqrtf(8.0f);
+		var800a45a0->unk17c[0][j] = 1 / pspFpuSqrt(8.0f);
 		var800a45a0->unk27c[j][0] = var800a45a0->unk17c[0][j];
 	}
 
@@ -2841,7 +2841,7 @@ void func0f14f510(s32 arg0)
 			s32 v0 = j * 2 + 1;
 			f32 angle = v0 * 3.141592502594f * i / 16;
 
-			var800a45a0->unk17c[i][j] = sqrtf(0.25f) * cosf(angle);
+			var800a45a0->unk17c[i][j] = pspFpuSqrt(0.25f) * cosf(angle);
 			var800a45a0->unk27c[j][i] = var800a45a0->unk17c[i][j];
 		}
 	}

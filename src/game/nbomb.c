@@ -63,7 +63,7 @@ Gfx *func0f006c80(Gfx *gdl, struct coord *arg1, struct coord *arg2, struct coord
 	sp7c.y = arg2->y + arg1->y;
 	sp7c.z = arg2->z + arg1->z;
 
-	dist = sqrtf(sp7c.f[0] * sp7c.f[0] + sp7c.f[1] * sp7c.f[1] + sp7c.f[2] * sp7c.f[2]);
+	dist = pspFpuSqrt(sp7c.f[0] * sp7c.f[0] + sp7c.f[1] * sp7c.f[1] + sp7c.f[2] * sp7c.f[2]);
 
 	sp7c.x /= dist;
 	sp7c.y /= dist;
@@ -73,7 +73,7 @@ Gfx *func0f006c80(Gfx *gdl, struct coord *arg1, struct coord *arg2, struct coord
 	sp70.y = arg3->y + arg2->y;
 	sp70.z = arg3->z + arg2->z;
 
-	dist = sqrtf(sp70.f[0] * sp70.f[0] + sp70.f[1] * sp70.f[1] + sp70.f[2] * sp70.f[2]);
+	dist = pspFpuSqrt(sp70.f[0] * sp70.f[0] + sp70.f[1] * sp70.f[1] + sp70.f[2] * sp70.f[2]);
 
 	sp70.x /= dist;
 	sp70.y /= dist;
@@ -83,7 +83,7 @@ Gfx *func0f006c80(Gfx *gdl, struct coord *arg1, struct coord *arg2, struct coord
 	sp64.y = arg1->y + arg3->y;
 	sp64.z = arg1->z + arg3->z;
 
-	dist = sqrtf(sp64.f[0] * sp64.f[0] + sp64.f[1] * sp64.f[1] + sp64.f[2] * sp64.f[2]);
+	dist = pspFpuSqrt(sp64.f[0] * sp64.f[0] + sp64.f[1] * sp64.f[1] + sp64.f[2] * sp64.f[2]);
 
 	sp64.x /= dist;
 	sp64.y /= dist;
@@ -493,7 +493,7 @@ void nbombInflictDamage(struct nbomb *nbomb)
 				f32 ydiff = prop->pos.f[1] - nbomb->pos.f[1];
 				f32 zdiff = prop->pos.f[2] - nbomb->pos.f[2];
 
-				f32 dist = sqrtf(xdiff * xdiff + ydiff * ydiff + zdiff * zdiff);
+				f32 dist = pspFpuSqrt(xdiff * xdiff + ydiff * ydiff + zdiff * zdiff);
 
 				if (dist < nbomb->radius) {
 					struct chrdata *chr = prop->chr;
@@ -542,7 +542,7 @@ void nbombTick(struct nbomb *nbomb)
 
 		if (nbomb->age240 < TICKS(80)) {
 			nbomb->radius = nbomb->age240 / (PAL ? 66.0f : 80.0f);
-			nbomb->radius = sqrtf(sqrtf(nbomb->radius));
+			nbomb->radius = pspFpuSqrt(pspFpuSqrt(nbomb->radius));
 			nbomb->unk18 = 0;
 		} else {
 			nbomb->radius = sinf((nbomb->age240 - TICKS(80)) * (PAL ? 0.062800005078316f : 0.0523333363235f)) * 0.05f + 1.0f;
@@ -823,7 +823,7 @@ Gfx *nbombRenderOverlay(Gfx *gdl)
 			f32 ydiff = campos.f[1] - g_Nbombs[i].pos.f[1];
 			f32 zdiff = campos.f[2] - g_Nbombs[i].pos.f[2];
 
-			if (sqrtf(xdiff * xdiff + ydiff * ydiff + zdiff * zdiff) < g_Nbombs[i].radius) {
+			if (pspFpuSqrt(xdiff * xdiff + ydiff * ydiff + zdiff * zdiff) < g_Nbombs[i].radius) {
 				u32 alpha = nbombCalculateAlpha(&g_Nbombs[i]);
 
 				inside = true;
@@ -953,7 +953,7 @@ Gfx *gasRender(Gfx *gdl)
 
 		if (!show) {
 			// Outside of the gas rooms list - check distance to abitrary point
-			f32 distance = sqrtf(
+			f32 distance = pspFpuSqrt(
 					(campos.f[0] - -1473.0f) * (campos.f[0] - -1473.0f) +
 					(campos.f[1] - -308.0f) * (campos.f[1] - -308.0f) +
 					(campos.f[2] - -13660.0f) * (campos.f[2] - -13660.0f));
