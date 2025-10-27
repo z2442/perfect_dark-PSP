@@ -32,6 +32,10 @@ extern "C"{
 #include "system.h"
 #include <pspfpu.h>
 #include <pspmath.h>
+#if defined(PLATFORM_PSP)
+#include <pspgu.h>
+#include <pspgum.h>
+#endif
 #include <math.h>
 
 #if defined(__PSP__)
@@ -51,6 +55,79 @@ static inline GLenum psp_check_gl_error(const char* op, int w, int h, GLenum fmt
 #else
 static inline void psp_clear_gl_errors(void) {}
 static inline GLenum psp_check_gl_error(const char*, int, int, GLenum, GLenum) { return GL_NO_ERROR; }
+#endif
+
+#if defined(__GNUC__) || defined(__clang__)
+static inline void gfx_prefetch_read(const void* ptr) {
+    __builtin_prefetch(ptr, 0, 1);
+}
+#else
+static inline void gfx_prefetch_read(const void*) {}
+#endif
+
+#if defined(PLATFORM_PSP)
+static inline int pd_gum_matrix_mode(GLenum mode) {
+    switch (mode) {
+    case GL_PROJECTION: return SCEGU_MATRIX_PROJECTION;
+    case GL_TEXTURE: return SCEGU_MATRIX_TEXTURE;
+    case GL_MODELVIEW:
+    default:
+        return SCEGU_MATRIX_MODEL;
+    }
+}
+
+static inline void pdMatrixMode(GLenum mode) {
+    sceGumMatrixMode(pd_gum_matrix_mode(mode));
+    glMatrixMode(mode);
+}
+
+static inline void pdPushMatrix(void) {
+    sceGumPushMatrix();
+    glPushMatrix();
+}
+
+static inline void pdPopMatrix(void) {
+    sceGumPopMatrix();
+    glPopMatrix();
+}
+
+static inline void pdLoadIdentity(void) {
+    sceGumLoadIdentity();
+    glLoadIdentity();
+}
+
+static inline void pdLoadMatrixf(const float *m) {
+    sceGumLoadMatrix((const ScePspFMatrix4 *)m);
+    glLoadMatrixf(m);
+}
+
+static inline void pdOrthof(GLfloat left, GLfloat right, GLfloat bottom, GLfloat top, GLfloat znear, GLfloat zfar) {
+    sceGumOrtho(left, right, bottom, top, znear, zfar);
+    glOrthof(left, right, bottom, top, znear, zfar);
+}
+
+static inline void pdScalef(GLfloat x, GLfloat y, GLfloat z) {
+    const ScePspFVector3 vec = { x, y, z };
+    sceGumScale(&vec);
+    glScalef(x, y, z);
+}
+
+static inline void pdTranslatef(GLfloat x, GLfloat y, GLfloat z) {
+    const ScePspFVector3 vec = { x, y, z };
+    sceGumTranslate(&vec);
+    glTranslatef(x, y, z);
+}
+#else
+static inline void pdMatrixMode(GLenum mode) { glMatrixMode(mode); }
+static inline void pdPushMatrix(void) { glPushMatrix(); }
+static inline void pdPopMatrix(void) { glPopMatrix(); }
+static inline void pdLoadIdentity(void) { glLoadIdentity(); }
+static inline void pdLoadMatrixf(const float *m) { glLoadMatrixf(m); }
+static inline void pdOrthof(GLfloat left, GLfloat right, GLfloat bottom, GLfloat top, GLfloat znear, GLfloat zfar) {
+    glOrthof(left, right, bottom, top, znear, zfar);
+}
+static inline void pdScalef(GLfloat x, GLfloat y, GLfloat z) { glScalef(x, y, z); }
+static inline void pdTranslatef(GLfloat x, GLfloat y, GLfloat z) { glTranslatef(x, y, z); }
 #endif
 
 // ---- CPU-side texture copies & compositor for two-cycle emulation ----
@@ -279,15 +356,15 @@ static std::vector<GLESFramebuffer> s_fbs; // index 0 is the default (window) fb
 static void begin_2d_batch() {
     g_es1_depth_clamp_active = 0;
     // Save PROJECTION and set screen-space ortho
-    glMatrixMode(GL_PROJECTION);
-    glPushMatrix();
-    glLoadIdentity();
-    glOrthof(0.0f, (GLfloat)SCREEN_WIDTH, (GLfloat)SCREEN_HEIGHT, 0.0f, -1.0f, 1.0f);
+    pdMatrixMode(GL_PROJECTION);
+    pdPushMatrix();
+    pdLoadIdentity();
+    pdOrthof(0.0f, (GLfloat)SCREEN_WIDTH, (GLfloat)SCREEN_HEIGHT, 0.0f, -1.0f, 1.0f);
 
     // Save MODELVIEW and reset
-    glMatrixMode(GL_MODELVIEW);
-    glPushMatrix();
-    glLoadIdentity();
+    pdMatrixMode(GL_MODELVIEW);
+    pdPushMatrix();
+    pdLoadIdentity();
 
     // Disable depth test for pure 2D; remember we shadow the intended state in es_depth_*.
     if (es_depth_test) glDisable(GL_DEPTH_TEST);
@@ -296,18 +373,18 @@ static void begin_2d_batch() {
 
 static void end_2d_batch() {
     // Restore MODELVIEW then PROJECTION
-    glMatrixMode(GL_MODELVIEW);
-    glPopMatrix();
+    pdMatrixMode(GL_MODELVIEW);
+    pdPopMatrix();
 
-    glMatrixMode(GL_PROJECTION);
-    glPopMatrix();
+    pdMatrixMode(GL_PROJECTION);
+    pdPopMatrix();
 
     // Restore depth state per shadow flags so 3D resumes exactly as before
     if (es_depth_test) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
     glDepthMask(es_depth_write ? GL_TRUE : GL_FALSE);
 
     // Return to MODELVIEW for client-state draws
-    glMatrixMode(GL_MODELVIEW);
+    pdMatrixMode(GL_MODELVIEW);
 }
 
 extern "C" float g_es1_P[4][4];
@@ -331,7 +408,7 @@ extern "C" volatile uint8_t g_es1_depth_clamp_active; // 0/1: projection current
 
 static void glLoadRowMajorMatrixf(const float m[4][4]) {
     // Our matrices are laid out the way OpenGL expects already; load directly.
-    glLoadMatrixf(&m[0][0]);
+    pdLoadMatrixf(&m[0][0]);
 }
 
 static void load_projection_matrix_with_depth_clamp(const float m[4][4]) {
@@ -346,10 +423,10 @@ static void load_projection_matrix_with_depth_clamp(const float m[4][4]) {
         for (int i = 0; i < 4; ++i) {
             adjusted[i][2] *= kDepthClampScale;
         }
-        glLoadMatrixf(&adjusted[0][0]);
+        pdLoadMatrixf(&adjusted[0][0]);
         g_es1_depth_clamp_active = 1;
     } else {
-        glLoadMatrixf(&m[0][0]);
+        pdLoadMatrixf(&m[0][0]);
         if (!s_supports_depth_clamp) {
             g_es1_depth_clamp_active = 0;
         }
@@ -383,20 +460,20 @@ static void gfx_opengl_set_orthographic_projection(float left, float right, floa
 
 
 static void gfx_opengl_set_projection_for_2d() {
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
+    pdMatrixMode(GL_PROJECTION);
+    pdLoadIdentity();
     // Screen-space ortho: origin top-left, +x right, +y down
-    glOrthof(0.0f, (GLfloat)SCREEN_WIDTH, (GLfloat)SCREEN_HEIGHT, 0.0f, -1.0f, 1.0f);
+    pdOrthof(0.0f, (GLfloat)SCREEN_WIDTH, (GLfloat)SCREEN_HEIGHT, 0.0f, -1.0f, 1.0f);
 
-    glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
+    pdMatrixMode(GL_MODELVIEW);
+    pdLoadIdentity();
 }
 
 static void gfx_opengl_set_projection_for_3d() {
     // Load external matrices provided by the engine
-    glMatrixMode(GL_PROJECTION);
+    pdMatrixMode(GL_PROJECTION);
     load_projection_matrix_with_depth_clamp(g_es1_P);
-    glMatrixMode(GL_MODELVIEW);
+    pdMatrixMode(GL_MODELVIEW);
     glLoadRowMajorMatrixf(g_es1_M);
 }
 
@@ -551,6 +628,7 @@ static void gfx_opengl_upload_texture(const uint8_t* rgba32_buf, uint32_t width,
         return;
     }
     const size_t num_pixels = static_cast<size_t>(width) * static_cast<size_t>(height);
+    constexpr size_t kPrefetchDistance = 16; // 1 cache line (in bytes) for sequential texture reads
 #if defined(__PSP__)
     // PSP: prefer RGBA4444 uploads; fall back to RGBA8888 if required.
     static std::vector<uint16_t> rgba4444;
@@ -561,6 +639,9 @@ static void gfx_opengl_upload_texture(const uint8_t* rgba32_buf, uint32_t width,
 
     const uint8_t* src = rgba32_buf;
     for (size_t i = 0; i < num_pixels; ++i) {
+        if ((i & 0xF) == 0) {
+            gfx_prefetch_read(src + kPrefetchDistance);
+        }
         uint8_t r = src[0];
         uint8_t g = src[1];
         uint8_t b = src[2];
@@ -586,6 +667,9 @@ static void gfx_opengl_upload_texture(const uint8_t* rgba32_buf, uint32_t width,
         rgba8888.resize(num_pixels * 4u);
         const uint16_t* src4444 = rgba4444.data();
         for (size_t i = 0; i < num_pixels; ++i) {
+            if ((i & 0x1F) == 0) {
+                gfx_prefetch_read(reinterpret_cast<const uint8_t*>(src4444 + i) + kPrefetchDistance);
+            }
             uint16_t p = src4444[i];
             uint8_t r4 = (uint8_t)((p >> 12) & 0xF);
             uint8_t g4 = (uint8_t)((p >> 8)  & 0xF);
@@ -616,9 +700,15 @@ static void gfx_opengl_upload_texture(const uint8_t* rgba32_buf, uint32_t width,
             // Fast font/UI: alpha-only, color from PRIMARY
             static std::vector<uint8_t> alpha8;
             alpha8.resize(num_pixels);
-            const uint8_t* src = rgba32_buf;
+            const uint8_t* src = rgba32_buf + 3;
             uint8_t*       dst = alpha8.data();
-            for (size_t i = 0; i < num_pixels; ++i) dst[i] = src[i * 4 + 3];
+            for (size_t i = 0; i < num_pixels; ++i) {
+                if ((i & 0xF) == 0) {
+                    gfx_prefetch_read(src + kPrefetchDistance);
+                }
+                dst[i] = *src;
+                src += 4;
+            }
             glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_ALPHA,
                          width, height, 0,
@@ -628,9 +718,17 @@ static void gfx_opengl_upload_texture(const uint8_t* rgba32_buf, uint32_t width,
             // No COMBINE: use LA
             static std::vector<uint8_t> la;
             la.resize(num_pixels * 2);
-            const uint8_t* src = rgba32_buf;
+            const uint8_t* src = rgba32_buf + 3;
             uint8_t*       dst = la.data();
-            for (size_t i = 0; i < num_pixels; ++i) { dst[i * 2 + 0] = 255; dst[i * 2 + 1] = src[i * 4 + 3]; }
+            for (size_t i = 0; i < num_pixels; ++i) {
+                if ((i & 0xF) == 0) {
+                    gfx_prefetch_read(src + kPrefetchDistance);
+                }
+                dst[0] = 255;
+                dst[1] = *src;
+                src += 4;
+                dst += 2;
+            }
             glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE_ALPHA,
                          width, height, 0,
@@ -646,6 +744,9 @@ static void gfx_opengl_upload_texture(const uint8_t* rgba32_buf, uint32_t width,
         size_t i = 0;
         const size_t n4 = num_pixels & ~static_cast<size_t>(3);
         for (; i < n4; i += 4) {
+            if ((i & 0xF) == 0) {
+                gfx_prefetch_read(src + kPrefetchDistance);
+            }
             uint8_t r0 = src[0],  g0 = src[1],  b0 = src[2],  a0 = src[3];
             uint8_t r1 = src[4],  g1 = src[5],  b1 = src[6],  a1 = src[7];
             uint8_t r2 = src[8],  g2 = src[9],  b2 = src[10], a2 = src[11];
@@ -662,6 +763,9 @@ static void gfx_opengl_upload_texture(const uint8_t* rgba32_buf, uint32_t width,
             dst += 4;
         }
         for (; i < num_pixels; ++i) {
+            if ((i & 0xF) == 0) {
+                gfx_prefetch_read(src + kPrefetchDistance);
+            }
             uint8_t r = src[0], g = src[1], b = src[2], a = src[3];
             src += 4;
             r = (uint8_t)((r * a + 128) >> 8);
@@ -702,12 +806,17 @@ static void gfx_opengl_upload_texture(const uint8_t* rgba32_buf, uint32_t width,
         // Ensure a PMA RGBA4444 copy regardless of upload path
         const size_t num_pixels = (size_t)width * (size_t)height;
         const uint8_t* src = rgba32_buf;
+        uint16_t* dst = ct.rgba4444.data();
         for (size_t i = 0; i < num_pixels; ++i) {
-            uint8_t r = src[i*4+0], g = src[i*4+1], b = src[i*4+2], a = src[i*4+3];
+            if ((i & 0xF) == 0) {
+                gfx_prefetch_read(src + kPrefetchDistance);
+            }
+            uint8_t r = src[0], g = src[1], b = src[2], a = src[3];
+            src += 4;
             r = (uint8_t)((r * a + 128) >> 8);
             g = (uint8_t)((g * a + 128) >> 8);
             b = (uint8_t)((b * a + 128) >> 8);
-            ct.rgba4444[i] = pack_rgba4444_pma(r,g,b,a);
+            *dst++ = pack_rgba4444_pma(r,g,b,a);
         }
 #endif
     }
@@ -716,24 +825,12 @@ static void gfx_opengl_upload_texture(const uint8_t* rgba32_buf, uint32_t width,
 
 static uint32_t gfx_cm_to_opengl(uint32_t val) {
     switch (val) {
-        case G_TX_NOMIRROR | G_TX_CLAMP:
+        case G_TX_CLAMP:
             return GL_CLAMP_TO_EDGE;
 
-        case G_TX_NOMIRROR | G_TX_WRAP:
+        case G_TX_WRAP:
             return GL_REPEAT;
 
-        case G_TX_MIRROR | G_TX_WRAP:
-            return GL_REPEAT;
-
-
-        case G_TX_MIRROR | G_TX_CLAMP:
-#ifdef GL_MIRROR_CLAMP_TO_EDGE_ATI
-            return GL_MIRROR_CLAMP_TO_EDGE_ATI;
-#elif defined(GL_MIRROR_CLAMP_ATI)
-            return GL_MIRROR_CLAMP_ATI;
-#else
-            return GL_CLAMP_TO_EDGE; // Fallback
-#endif
     }
     return GL_REPEAT; // Default fallback
 }
@@ -847,11 +944,11 @@ static void gfx_opengl_set_use_alpha(bool use_alpha, bool modulate) {
 }
 
 static inline void es11_apply_tex_transform(int tile) {
-    glMatrixMode(GL_TEXTURE);
-    glLoadIdentity();
-    glScalef(g_tex_s_scale[tile], g_tex_t_scale[tile], 1.0f);
-    glTranslatef(g_tex_s_offset[tile], g_tex_t_offset[tile], 0.0f);
-    glMatrixMode(GL_MODELVIEW);
+    pdMatrixMode(GL_TEXTURE);
+    pdLoadIdentity();
+    pdScalef(g_tex_s_scale[tile], g_tex_t_scale[tile], 1.0f);
+    pdTranslatef(g_tex_s_offset[tile], g_tex_t_offset[tile], 0.0f);
+    pdMatrixMode(GL_MODELVIEW);
 }
 
 
@@ -871,14 +968,14 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
     bool prevDepthTestLocal = es_depth_test;
     bool prevDepthMaskLocal = current_depth_mask;
     if (forced2D) {
-        glMatrixMode(GL_PROJECTION);
-        glPushMatrix();
-        glLoadIdentity();
+        pdMatrixMode(GL_PROJECTION);
+        pdPushMatrix();
+        pdLoadIdentity();
         // NDC ortho to match N64-style UI math (-1..1)
-        glOrthof(-1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f);
-        glMatrixMode(GL_MODELVIEW);
-        glPushMatrix();
-        glLoadIdentity();
+        pdOrthof(-1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f);
+        pdMatrixMode(GL_MODELVIEW);
+        pdPushMatrix();
+        pdLoadIdentity();
         // Disable depth test and writes for UI
         if (prevDepthTestLocal) glDisable(GL_DEPTH_TEST);
         glDepthMask(GL_FALSE);
@@ -886,9 +983,9 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
         glDisable(GL_CULL_FACE);
     } else {
         if (g_es1_matrix_dirty) {
-            glMatrixMode(GL_PROJECTION);
+            pdMatrixMode(GL_PROJECTION);
             load_projection_matrix_with_depth_clamp(g_es1_P);
-            glMatrixMode(GL_MODELVIEW);
+            pdMatrixMode(GL_MODELVIEW);
             glLoadRowMajorMatrixf(g_es1_M);
             g_es1_matrix_dirty = 0;
         }
@@ -906,7 +1003,7 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
         glCullFace(g_es1_cull_mode == 1 ? GL_BACK : GL_FRONT);
     }
 
-    glMatrixMode(GL_MODELVIEW);
+    pdMatrixMode(GL_MODELVIEW);
 
     glEnableClientState(GL_VERTEX_ARRAY);
     glEnableClientState(GL_TEXTURE_COORD_ARRAY);
@@ -934,11 +1031,11 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
             if (fb.allocated && fb.tex == s_tex_id[0] && fb.invert_y) { needs_invert_v = true; break; }
         }
         if (needs_invert_v) {
-            glMatrixMode(GL_TEXTURE);
-            glLoadIdentity();
-            glScalef(1.0f, -1.0f, 1.0f);
-            glTranslatef(0.0f, -1.0f, 0.0f);
-            glMatrixMode(GL_MODELVIEW);
+            pdMatrixMode(GL_TEXTURE);
+            pdLoadIdentity();
+            pdScalef(1.0f, -1.0f, 1.0f);
+            pdTranslatef(0.0f, -1.0f, 0.0f);
+            pdMatrixMode(GL_MODELVIEW);
         }
     }
     // Base pass texenv:
@@ -1151,9 +1248,9 @@ if (using_two_pass) {
         if (g_es1_highp_alpha && g_es1_alpha_test_enable && !g_es1_tex0_in_rgb) set_texenv_font_combine(); else if (g_es1_base_modulate) set_texenv_modulate(); else set_texenv_replace();
     }
 
-    glMatrixMode(GL_TEXTURE);
-    glLoadIdentity();
-    glMatrixMode(GL_MODELVIEW);
+    pdMatrixMode(GL_TEXTURE);
+    pdLoadIdentity();
+    pdMatrixMode(GL_MODELVIEW);
     glDisableClientState(GL_COLOR_ARRAY);
     glDisableClientState(GL_TEXTURE_COORD_ARRAY);
     glDisableClientState(GL_VERTEX_ARRAY);
@@ -1166,11 +1263,11 @@ if (using_two_pass) {
     }
     if (forced2D) {
         // Restore matrices
-        glMatrixMode(GL_MODELVIEW);
-        glPopMatrix();
-        glMatrixMode(GL_PROJECTION);
-        glPopMatrix();
-        glMatrixMode(GL_MODELVIEW);
+        pdMatrixMode(GL_MODELVIEW);
+        pdPopMatrix();
+        pdMatrixMode(GL_PROJECTION);
+        pdPopMatrix();
+        pdMatrixMode(GL_MODELVIEW);
         // Restore depth
         if (prevDepthTestLocal) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
         glDepthMask(prevDepthMaskLocal ? GL_TRUE : GL_FALSE);
@@ -1231,10 +1328,10 @@ static void gfx_opengl_init(void) {
     glFrontFace(GL_CCW);
     glCullFace(GL_BACK);
 
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
-    glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
+    pdMatrixMode(GL_PROJECTION);
+    pdLoadIdentity();
+    pdMatrixMode(GL_MODELVIEW);
+    pdLoadIdentity();
 
     glClearColor(0.0, 0.0, 0.0, 1.0);
 

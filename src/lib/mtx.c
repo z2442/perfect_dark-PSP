@@ -662,47 +662,167 @@ void mtx00017614(f32 arg0[4][4], f32 arg1[4][4])
 
 f32 mtx00017a78(f32 arg0[4][4])
 {
-	f32 tmp;
-	f32 sp78, sp74, sp70, sp6c;
-	f32 sp68, sp64, sp60, sp5c;
-	f32 sp58, sp54, sp50, sp4c;
-	f32 sp48, sp44, sp40, sp3c;
-	f32 sp38;
-	f32 sp34;
-	f32 sp30;
-
-	sp78 = arg0[0][0]; sp68 = arg0[0][1];
-	sp58 = arg0[0][2]; sp48 = arg0[0][3];
-	sp74 = arg0[1][0]; sp64 = arg0[1][1];
-	sp54 = arg0[1][2]; sp44 = arg0[1][3];
-	sp70 = arg0[2][0]; sp60 = arg0[2][1];
-	sp50 = arg0[2][2]; sp40 = arg0[2][3];
-	sp6c = arg0[3][0]; sp5c = arg0[3][1];
-	sp4c = arg0[3][2]; sp3c = arg0[3][3];
-
-	sp30 = mtx00017c2c(sp74, sp70, sp6c, sp64, sp60, sp5c, sp44, sp40, sp3c);
-	sp34 = mtx00017c2c(sp74, sp70, sp6c, sp54, sp50, sp4c, sp44, sp40, sp3c);
-	sp38 = mtx00017c2c(sp64, sp60, sp5c, sp54, sp50, sp4c, sp44, sp40, sp3c);
-
-	tmp = mtx00017c2c(sp74, sp70, sp6c, sp64, sp60, sp5c, sp54, sp50, sp4c);
-
-	return (sp78 * sp38 - sp68 * sp34 + sp58 * sp30) - tmp * sp48;
+    f32 result;
+    __asm__(
+        // Load matrix into FPU registers
+        "lwc1    $f8,  0(%1)\n"   // sp78 = [0][0]
+        "lwc1    $f9,  4(%1)\n"   // sp68 = [0][1]
+        "lwc1    $f10, 8(%1)\n"   // sp58 = [0][2]
+        "lwc1    $f11, 12(%1)\n"  // sp48 = [0][3]
+        "lwc1    $f12, 16(%1)\n"  // sp74 = [1][0]
+        "lwc1    $f13, 20(%1)\n"  // sp64 = [1][1]
+        "lwc1    $f14, 24(%1)\n"  // sp54 = [1][2]
+        "lwc1    $f15, 28(%1)\n"  // sp44 = [1][3]
+        "lwc1    $f16, 32(%1)\n"  // sp70 = [2][0]
+        "lwc1    $f17, 36(%1)\n"  // sp60 = [2][1]
+        "lwc1    $f18, 40(%1)\n"  // sp50 = [2][2]
+        "lwc1    $f19, 44(%1)\n"  // sp40 = [2][3]
+        "lwc1    $f20, 48(%1)\n"  // sp6c = [3][0]
+        "lwc1    $f21, 52(%1)\n"  // sp5c = [3][1]
+        "lwc1    $f22, 56(%1)\n"  // sp4c = [3][2]
+        "lwc1    $f23, 60(%1)\n"  // sp3c = [3][3]
+        
+        // sp30 = mtx00017c2c(sp74, sp70, sp6c, sp64, sp60, sp5c, sp44, sp40, sp3c)
+        // arg1=$f12, arg2=$f16, arg7=$f19, arg8=$f23
+        "mul.s   $f0, $f12, $f23\n"   // sp74 * sp3c
+        "mul.s   $f1, $f16, $f19\n"   // sp70 * sp40
+        "sub.s   $f2, $f0, $f1\n"     // sp1c
+        
+        "mul.s   $f0, $f13, $f23\n"   // sp64 * sp3c
+        "mul.s   $f1, $f17, $f19\n"   // sp60 * sp40
+        "sub.s   $f3, $f0, $f1\n"     // sp20
+        
+        "mul.s   $f0, $f12, $f17\n"   // sp74 * sp60
+        "mul.s   $f1, $f16, $f13\n"   // sp70 * sp64
+        "sub.s   $f4, $f0, $f1\n"     // sp24
+        
+        "mul.s   $f0, $f4, $f15\n"    // sp24 * sp44
+        "mul.s   $f1, $f12, $f3\n"    // sp74 * sp20
+        "mul.s   $f5, $f13, $f2\n"    // sp64 * sp1c
+        "sub.s   $f1, $f1, $f5\n"
+        "add.s   $f24, $f0, $f1\n"    // sp30 in $f24
+        
+        // sp34 = mtx00017c2c(sp74, sp70, sp6c, sp54, sp50, sp4c, sp44, sp40, sp3c)
+        "mul.s   $f0, $f12, $f23\n"   // sp74 * sp3c
+        "mul.s   $f1, $f16, $f19\n"   // sp70 * sp40
+        "sub.s   $f2, $f0, $f1\n"     // sp1c
+        
+        "mul.s   $f0, $f14, $f23\n"   // sp54 * sp3c
+        "mul.s   $f1, $f18, $f19\n"   // sp50 * sp40
+        "sub.s   $f3, $f0, $f1\n"     // sp20
+        
+        "mul.s   $f0, $f12, $f18\n"   // sp74 * sp50
+        "mul.s   $f1, $f16, $f14\n"   // sp70 * sp54
+        "sub.s   $f4, $f0, $f1\n"     // sp24
+        
+        "mul.s   $f0, $f4, $f15\n"    // sp24 * sp44
+        "mul.s   $f1, $f12, $f3\n"    // sp74 * sp20
+        "mul.s   $f5, $f14, $f2\n"    // sp54 * sp1c
+        "sub.s   $f1, $f1, $f5\n"
+        "add.s   $f25, $f0, $f1\n"    // sp34 in $f25
+        
+        // sp38 = mtx00017c2c(sp64, sp60, sp5c, sp54, sp50, sp4c, sp44, sp40, sp3c)
+        "mul.s   $f0, $f13, $f23\n"   // sp64 * sp3c
+        "mul.s   $f1, $f17, $f19\n"   // sp60 * sp40
+        "sub.s   $f2, $f0, $f1\n"     // sp1c
+        
+        "mul.s   $f0, $f14, $f23\n"   // sp54 * sp3c
+        "mul.s   $f1, $f18, $f19\n"   // sp50 * sp40
+        "sub.s   $f3, $f0, $f1\n"     // sp20
+        
+        "mul.s   $f0, $f13, $f18\n"   // sp64 * sp50
+        "mul.s   $f1, $f17, $f14\n"   // sp60 * sp54
+        "sub.s   $f4, $f0, $f1\n"     // sp24
+        
+        "mul.s   $f0, $f4, $f15\n"    // sp24 * sp44
+        "mul.s   $f1, $f13, $f3\n"    // sp64 * sp20
+        "mul.s   $f5, $f14, $f2\n"    // sp54 * sp1c
+        "sub.s   $f1, $f1, $f5\n"
+        "add.s   $f26, $f0, $f1\n"    // sp38 in $f26
+        
+        // tmp = mtx00017c2c(sp74, sp70, sp6c, sp64, sp60, sp5c, sp54, sp50, sp4c)
+        "mul.s   $f0, $f12, $f22\n"   // sp74 * sp4c
+        "mul.s   $f1, $f16, $f18\n"   // sp70 * sp50
+        "sub.s   $f2, $f0, $f1\n"     // sp1c
+        
+        "mul.s   $f0, $f13, $f22\n"   // sp64 * sp4c
+        "mul.s   $f1, $f17, $f18\n"   // sp60 * sp50
+        "sub.s   $f3, $f0, $f1\n"     // sp20
+        
+        "mul.s   $f0, $f12, $f17\n"   // sp74 * sp60
+        "mul.s   $f1, $f16, $f13\n"   // sp70 * sp64
+        "sub.s   $f4, $f0, $f1\n"     // sp24
+        
+        "mul.s   $f0, $f4, $f14\n"    // sp24 * sp54
+        "mul.s   $f1, $f12, $f3\n"    // sp74 * sp20
+        "mul.s   $f5, $f13, $f2\n"    // sp64 * sp1c
+        "sub.s   $f1, $f1, $f5\n"
+        "add.s   $f27, $f0, $f1\n"    // tmp in $f27
+        
+        // result = (sp78 * sp38 - sp68 * sp34 + sp58 * sp30) - tmp * sp48
+        "mul.s   $f0, $f8, $f26\n"    // sp78 * sp38
+        "mul.s   $f1, $f9, $f25\n"    // sp68 * sp34
+        "sub.s   $f0, $f0, $f1\n"
+        "mul.s   $f1, $f10, $f24\n"   // sp58 * sp30
+        "add.s   $f0, $f0, $f1\n"
+        "mul.s   $f1, $f27, $f11\n"   // tmp * sp48
+        "sub.s   %0, $f0, $f1\n"      // final result
+        
+        : "=f" (result)
+        : "r" (arg0)
+        : "$f0", "$f1", "$f2", "$f3", "$f4", "$f5",
+          "$f8", "$f9", "$f10", "$f11", "$f12", "$f13", "$f14", "$f15",
+          "$f16", "$f17", "$f18", "$f19", "$f20", "$f21", "$f22", "$f23",
+          "$f24", "$f25", "$f26", "$f27"
+    );
+    return result;
 }
 
 f32 mtx00017c2c(f32 arg0, f32 arg1, f32 arg2, f32 arg3, f32 arg4, f32 arg5, f32 arg6, f32 arg7, f32 arg8)
 {
-	f32 sp24;
-	f32 sp20;
-	f32 sp1c;
-
-	sp1c = mtx00017cbc(arg1, arg2, arg7, arg8);
-	sp20 = mtx00017cbc(arg4, arg5, arg7, arg8);
-	sp24 = mtx00017cbc(arg1, arg2, arg4, arg5);
-
-	return sp24 * arg6 + (arg0 * sp20 - arg3 * sp1c);
+    f32 result;
+    __asm__(
+        // sp1c = arg1 * arg8 - arg2 * arg7
+        "mul.s   $f0, $f13, %8\n"      // arg1 * arg8
+        "mul.s   $f1, $f14, %7\n"      // arg2 * arg7
+        "sub.s   $f2, $f0, $f1\n"      // sp1c in $f2
+        
+        // sp20 = arg4 * arg8 - arg5 * arg7
+        "mul.s   $f0, %4, %8\n"        // arg4 * arg8
+        "mul.s   $f1, %5, %7\n"        // arg5 * arg7
+        "sub.s   $f3, $f0, $f1\n"      // sp20 in $f3
+        
+        // sp24 = arg1 * arg5 - arg2 * arg4
+        "mul.s   $f0, $f13, %5\n"      // arg1 * arg5
+        "mul.s   $f1, $f14, %4\n"      // arg2 * arg4
+        "sub.s   $f4, $f0, $f1\n"      // sp24 in $f4
+        
+        // result = sp24 * arg6 + (arg0 * sp20 - arg3 * sp1c)
+        "mul.s   $f0, $f4, %6\n"       // sp24 * arg6
+        "mul.s   $f1, $f12, $f3\n"     // arg0 * sp20
+        "mul.s   $f5, %3, $f2\n"       // arg3 * sp1c
+        "sub.s   $f1, $f1, $f5\n"      // arg0 * sp20 - arg3 * sp1c
+        "add.s   %0, $f0, $f1\n"       // final result
+        
+        : "=f" (result)
+        : "f" (arg0), "f" (arg1), "f" (arg2), "f" (arg3), 
+          "f" (arg4), "f" (arg5), "f" (arg6), "f" (arg7), "f" (arg8)
+        : "$f0", "$f1", "$f2", "$f3", "$f4", "$f5"
+    );
+    return result;
 }
 
 f32 mtx00017cbc(f32 arg0, f32 arg1, f32 arg2, f32 arg3)
 {
-	return arg0 * arg3 - arg1 * arg2;
+    f32 result;
+    __asm__ __volatile__(
+        "mul.s   $f0, $f12, $f15\n\t"
+        "mul.s   $f1, $f13, $f14\n\t"
+        "sub.s   $f0, $f0, $f1\n\t"
+        "mov.s   %0, $f0\n\t"
+        : "=f" (result)
+        : "f" (arg0), "f" (arg1), "f" (arg2), "f" (arg3)
+        : "$f0", "$f1"
+    );
+    return result;
 }

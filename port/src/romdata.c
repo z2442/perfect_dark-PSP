@@ -410,14 +410,7 @@ s32 romdataReadFromRom(u32 offset, void *dst, u32 len) {
     const int is_seq = (offset == g_RomLastReadEnd);
 
     /* Fast path for very small reads: go straight to FILE* without touching the cache. */
-    if (len < 256) {
-        if (!g_RomFp) return -1;
-        ROM_FSEEK_IF_NEEDED(offset);
-        size_t n = fread(dst, 1, len, g_RomFp);
-        g_RomFpPos += (u32)n;
-        g_RomLastReadEnd = offset + (u32)n;
-        return (s32)n;
-    }
+
     // Try cache first for small aligned reads
     if (len <= ROM_STREAM_CACHE_CHUNK) {
         const u32 base = offset & ~(ROM_STREAM_CACHE_CHUNK - 1);
