@@ -1328,6 +1328,13 @@ static void gfx_opengl_init(void) {
     glFrontFace(GL_CCW);
     glCullFace(GL_BACK);
 
+    // Match N64/desktop behavior: smooth shading, dither, and best perspective correction.
+    glShadeModel(GL_SMOOTH);
+    glEnable(GL_DITHER);
+#if defined(GL_PERSPECTIVE_CORRECTION_HINT) && !defined(__PSP__)
+    glHint(GL_PERSPECTIVE_CORRECTION_HINT, GL_NICEST);
+#endif
+
     pdMatrixMode(GL_PROJECTION);
     pdLoadIdentity();
     pdMatrixMode(GL_MODELVIEW);

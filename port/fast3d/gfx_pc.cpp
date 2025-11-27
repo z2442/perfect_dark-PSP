@@ -2519,9 +2519,19 @@ static void gfx_sp_movemem(uint8_t index, uint8_t offset, const void* data) {
         case G_MV_L0:
         case G_MV_L1:
         case G_MV_L2:
+        case G_MV_L3:
+        case G_MV_L4:
+        case G_MV_L5:
+        case G_MV_L6:
+        case G_MV_L7: {
             // NOTE: reads out of bounds if it is an ambient light
-            memcpy(rsp.current_lights + (index - G_MV_L0) / 2, data, sizeof(Light_t));
+            const size_t light_idx = (index - G_MV_L0) / 2;
+            if (light_idx < MAX_LIGHTS + 1) {
+                memcpy(rsp.current_lights + light_idx, data, sizeof(Light_t));
+                rsp.lights_changed = true;
+            }
             break;
+        }
     }
 }
 
