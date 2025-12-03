@@ -32,10 +32,7 @@ extern "C"{
 #include "system.h"
 #include <pspfpu.h>
 #include <pspmath.h>
-#if defined(PLATFORM_PSP)
-#include <pspgu.h>
-#include <pspgum.h>
-#endif
+
 #include <math.h>
 
 #if defined(__PSP__)
@@ -65,59 +62,7 @@ static inline void gfx_prefetch_read(const void* ptr) {
 static inline void gfx_prefetch_read(const void*) {}
 #endif
 
-#if defined(PLATFORM_PSP)
-static inline int pd_gum_matrix_mode(GLenum mode) {
-    switch (mode) {
-    case GL_PROJECTION: return SCEGU_MATRIX_PROJECTION;
-    case GL_TEXTURE: return SCEGU_MATRIX_TEXTURE;
-    case GL_MODELVIEW:
-    default:
-        return SCEGU_MATRIX_MODEL;
-    }
-}
 
-static inline void pdMatrixMode(GLenum mode) {
-    sceGumMatrixMode(pd_gum_matrix_mode(mode));
-    glMatrixMode(mode);
-}
-
-static inline void pdPushMatrix(void) {
-    sceGumPushMatrix();
-    glPushMatrix();
-}
-
-static inline void pdPopMatrix(void) {
-    sceGumPopMatrix();
-    glPopMatrix();
-}
-
-static inline void pdLoadIdentity(void) {
-    sceGumLoadIdentity();
-    glLoadIdentity();
-}
-
-static inline void pdLoadMatrixf(const float *m) {
-    sceGumLoadMatrix((const ScePspFMatrix4 *)m);
-    glLoadMatrixf(m);
-}
-
-static inline void pdOrthof(GLfloat left, GLfloat right, GLfloat bottom, GLfloat top, GLfloat znear, GLfloat zfar) {
-    sceGumOrtho(left, right, bottom, top, znear, zfar);
-    glOrthof(left, right, bottom, top, znear, zfar);
-}
-
-static inline void pdScalef(GLfloat x, GLfloat y, GLfloat z) {
-    const ScePspFVector3 vec = { x, y, z };
-    sceGumScale(&vec);
-    glScalef(x, y, z);
-}
-
-static inline void pdTranslatef(GLfloat x, GLfloat y, GLfloat z) {
-    const ScePspFVector3 vec = { x, y, z };
-    sceGumTranslate(&vec);
-    glTranslatef(x, y, z);
-}
-#else
 static inline void pdMatrixMode(GLenum mode) { glMatrixMode(mode); }
 static inline void pdPushMatrix(void) { glPushMatrix(); }
 static inline void pdPopMatrix(void) { glPopMatrix(); }
@@ -128,7 +73,7 @@ static inline void pdOrthof(GLfloat left, GLfloat right, GLfloat bottom, GLfloat
 }
 static inline void pdScalef(GLfloat x, GLfloat y, GLfloat z) { glScalef(x, y, z); }
 static inline void pdTranslatef(GLfloat x, GLfloat y, GLfloat z) { glTranslatef(x, y, z); }
-#endif
+
 
 // ---- CPU-side texture copies & compositor for two-cycle emulation ----
 struct CpuTex {
