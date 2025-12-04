@@ -160,13 +160,8 @@ add_definitions(
   -D_LANGUAGE_C=1
   -DPAL=${VERSION_IS_PAL}
   -DVERSION=${VERSION}
-  # Add PSP specific defines if needed
-  # -DPSP_PLATFORM=1
 )
-if(BUILD_PSP)
-  # Enable PSP-specific renderer paths and use float matrices in Fast3D
-  add_definitions(-DPLATFORM_PSP=1 -DGBI_FLOATS=1)
-endif()
+
 if(TARGET_IS_64BIT) # This will be false for PSP
   add_definitions(-DPLATFORM_64BIT=1)
 endif()
