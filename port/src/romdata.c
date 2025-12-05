@@ -28,9 +28,6 @@
 //Used to enable debug on rom streaming. 
 //#define PDDEBUG
 
-#define ROMDATA_FILEDIR "files"
-#define ROMDATA_SEGDIR "segs"
-
 #define ROMDATA_ROM_NAME "pd." VERSION_ROMID ".z64"
 #define ROMDATA_ROM_SIZE 33554432
 
@@ -579,29 +576,6 @@ static inline void romdataInitSegment(struct romfile *seg)
             return;
         }
 	}
-    
-    // Check if we have an external replacement and load it if so
-    char tmp[FS_MAXPATH];
-    snprintf(tmp, sizeof(tmp), ROMDATA_SEGDIR "/%s", seg->name);
-    u32 extFileSize = 0; // fsFileLoad wants u32 for size
-    s32 fs_size_check = fsFileSize(tmp);
-
-	if (fs_size_check > 0) {
-        extFileSize = (u32)fs_size_check;
-		u8 *newData = fsFileLoad(tmp, &extFileSize);
-        if (newData) {
-            seg->data = newData;
-            seg->size = extFileSize; // fsFileLoad updates this
-            seg->source = SRC_EXTERNAL;
-            #ifdef PDDEBUG
-            sysLogPrintf(LOG_NOTE, "Loading segment %s from external file (size %u, pointer %p)", seg->name, seg->size, seg->data);
-            #endif
-        } else {
-            #ifdef PDDEBUG
-             sysLogPrintf(LOG_WARNING, "Segment %s: external file %s found but failed to load. Falling back to ROM.", seg->name, tmp);
-            #endif
-            }
-	}
 
     if (seg->source == SRC_ROM_IN_FILE) { // Stream from ROM, or load+preprocess if required
         if (!g_RomFp || seg->size == 0 || seg->rom_offset + seg->size > g_RomFileSize) {
@@ -1090,32 +1064,6 @@ u8 *romdataFileLoad(s32 fileNum, u32 *outSize)
         if (outSize) *outSize = file->size;
         return file->data;
     }
-
-	// Try to load external file if source is UNLOADED or if it's a ROM file that could be overridden
-    // (SRC_UNLOADED could mean it's from filenames.lst, SRC_ROM_IN_FILE means it's known from ROM)
-	if (file->source == SRC_UNLOADED || file->source == SRC_ROM_IN_FILE) {
-        if (file->name) { // Need a name to check for external file
-            char tmp[FS_MAXPATH] = {0};
-            snprintf(tmp, sizeof(tmp), ROMDATA_FILEDIR "/%s", file->name);
-            s32 ext_fs_size = fsFileSize(tmp);
-            if (ext_fs_size > 0) {
-                u32 loaded_size = (u32)ext_fs_size;
-                u8* ext_data = fsFileLoad(tmp, &loaded_size);
-                if (ext_data && loaded_size > 0) {
-                    #ifdef PDDEBUG
-                    sysLogPrintf(LOG_NOTE, "File %d (%s) loaded externally (size %u)", fileNum, file->name, loaded_size);
-                    #endif
-                    if (file->data) sysMemFree(file->data); // Should be NULL if not loaded
-                    file->data = ext_data;
-                    file->size = loaded_size;
-                    file->source = SRC_EXTERNAL;
-                    file->numpatches = 0; // External files don't get ROM patches
-                    if (outSize) *outSize = file->size;
-                    return file->data;
-                }
-            }
-        }
-	}
 
     // If not loaded externally, and it's marked as being in ROM file but not yet in RAM,
     // return a special encoded pointer which represents the ROM file offset. The DMA layer
