@@ -53,6 +53,24 @@ PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU); // Enable VFPU for th
 PSP_MAIN_THREAD_STACK_SIZE_KB(256); // Increase stack size if needed (default is 64KB)
 
 
+int exit_callback(int arg1, int arg2, void *common) {
+    sceKernelExitGame();
+    return 0;
+}
+
+int callback_thread(SceSize args, void *argp) {
+    int cbid = sceKernelCreateCallback("Exit Callback", exit_callback, NULL);
+    sceKernelRegisterExitCallback(cbid);
+    sceKernelSleepThreadCB();
+    return 0;
+}
+
+int setup_callbacks(void) {
+    int thid = sceKernelCreateThread("update_thread", callback_thread, 0x11, 0xFA0, 0, 0);
+    if(thid >= 0)
+        sceKernelStartThread(thid, 0, 0);
+    return thid;
+}
 
 
 u32 g_OsMemSize = 0;
@@ -134,6 +152,9 @@ static void cleanup(void)
 
 int main(int argc, const char **argv)
 {
+	
+	setup_callbacks();
+
 	pspDebugScreenInit();
 	pspDebugScreenPrintf("Loading Bits \n");
 	pspDebugScreenPrintf("Disabling FPU Exceptions \n");

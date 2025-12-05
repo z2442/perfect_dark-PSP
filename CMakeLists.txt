@@ -439,7 +439,7 @@ if(BUILD_PSP)
 create_pbp_file(
   TARGET pd_elf
   PREVIEW_PATH NULL
-  TITLE pd
+  TITLE Perfect_Dark
   BUILD_PRX
   )
 

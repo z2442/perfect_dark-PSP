@@ -85,7 +85,8 @@ uintptr_t gfxFramebuffer;
 #define MAX_VERTICES 128
 #define MAX_VERTEX_COLORS 64
 
-#define TEXTURE_CACHE_MAX_SIZE 1024
+//fix this later size is touchy on phats.
+#define TEXTURE_CACHE_MAX_SIZE 256
 
 #define C0(pos, width) ((cmd->words.w0 >> (pos)) & ((1U << width) - 1))
 #define C1(pos, width) ((cmd->words.w1 >> (pos)) & ((1U << width) - 1))
