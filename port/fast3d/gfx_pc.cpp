@@ -85,11 +85,7 @@ uintptr_t gfxFramebuffer;
 #define MAX_VERTICES 128
 #define MAX_VERTEX_COLORS 64
 
-#ifdef PLATFORM_PSP
-#define TEXTURE_CACHE_MAX_SIZE 256
-#else
 #define TEXTURE_CACHE_MAX_SIZE 1024
-#endif
 
 #define C0(pos, width) ((cmd->words.w0 >> (pos)) & ((1U << width) - 1))
 #define C1(pos, width) ((cmd->words.w1 >> (pos)) & ((1U << width) - 1))
@@ -294,7 +290,7 @@ static uint32_t s_batch_cc_opts = 0;
 static struct GfxWindowManagerAPI* gfx_wapi;
 static struct GfxRenderingAPI* gfx_rapi;
 
-#if defined(PLATFORM_PSP)
+#if defined(__PSP__)
 static std::vector<uint8_t> s_psp_downscale_buf_a;
 static std::vector<uint8_t> s_psp_downscale_buf_b;
 
@@ -1532,7 +1528,7 @@ static void calculate_normal_dir(const struct NormalColor *vcn, float coeffs[3])
     gfx_normalize_vector(coeffs);
 }
 
-#if defined(PLATFORM_PSP)
+#if defined(__PSP__)
 static inline void psp_vfpu_dot_pair(const struct NormalColor *normal,
                                      const float (*coeffs)[3],
                                      float *out_x,
@@ -1575,7 +1571,7 @@ static inline void compute_lookat_dots(const struct NormalColor *normal,
                                        const float (*coeffs)[3],
                                        float *out_x,
                                        float *out_y) {
-#if defined(PLATFORM_PSP)
+#if defined(__PSP__)
     psp_vfpu_dot_pair(normal, coeffs, out_x, out_y);
 #else
     float dotx = 0.0f;
