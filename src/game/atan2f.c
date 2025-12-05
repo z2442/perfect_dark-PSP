@@ -3,7 +3,7 @@
 #include "data.h"
 #include "types.h"
 
-#ifdef __psp__
+#ifdef __PSP__
 static f32 vfpu_atan2f_psp(f32 x, f32 z)
 {
 	const float pi = 3.14159265358979f;
@@ -31,7 +31,7 @@ static f32 vfpu_atan2f_psp(f32 x, f32 z)
 
 f32 atan2f(f32 x, f32 z)
 {
-#ifdef __psp__
+#ifdef __PSP__
 	return vfpu_atan2f_psp(x, z);
 #else
 	f32 result;

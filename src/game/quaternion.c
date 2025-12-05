@@ -53,7 +53,7 @@ void quaternionSetRotationAroundZ(f32 angle, f32 quat[4])
 
 void quaternionToMtx(f32 quat[4], Mtxf *mtx)
 {
-#ifdef __psp__
+#ifdef __PSP__
 	f32 qw = quat[0];
 	f32 qx = quat[1];
 	f32 qy = quat[2];
@@ -275,7 +275,7 @@ void quaternion0f0976c0(f32 q1[4], f32 q2[4])
 
 void quaternionMultQuaternion(f32 a[4], f32 b[4], f32 result[4])
 {
-#ifdef __psp__
+#ifdef __PSP__
 	ScePspQuatMatrix qa = { a[1], a[2], a[3], a[0] };
 	ScePspQuatMatrix qb = { b[1], b[2], b[3], b[0] };
 	ScePspQuatMatrix qr;

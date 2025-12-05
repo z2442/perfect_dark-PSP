@@ -291,8 +291,8 @@ static struct GfxWindowManagerAPI* gfx_wapi;
 static struct GfxRenderingAPI* gfx_rapi;
 
 #if defined(__PSP__)
-static std::vector<uint8_t> s_psp_downscale_buf_a;
-static std::vector<uint8_t> s_psp_downscale_buf_b;
+static std::vector<uint8_t> s_PSP_downscale_buf_a;
+static std::vector<uint8_t> s_PSP_downscale_buf_b;
 
 
 
@@ -340,12 +340,12 @@ static const uint8_t* psp_downscale_texture(const uint8_t* src,
     uint32_t cur_h = height;
     const uint8_t* current = src;
     std::vector<uint8_t>* cur_buf = nullptr;
-    std::vector<uint8_t>* next_buf = &s_psp_downscale_buf_b;
+    std::vector<uint8_t>* next_buf = &s_PSP_downscale_buf_b;
 
     auto ensure_buffer = [&](void) {
         if (cur_buf == nullptr) {
-            s_psp_downscale_buf_a.assign(current, current + (size_t)cur_w * cur_h * 4);
-            cur_buf = &s_psp_downscale_buf_a;
+            s_PSP_downscale_buf_a.assign(current, current + (size_t)cur_w * cur_h * 4);
+            cur_buf = &s_PSP_downscale_buf_a;
             current = cur_buf->data();
         }
     };
@@ -365,7 +365,7 @@ static const uint8_t* psp_downscale_texture(const uint8_t* src,
         cur_h = new_h;
         cur_buf = next_buf;
         current = cur_buf->data();
-        next_buf = (next_buf == &s_psp_downscale_buf_b) ? &s_psp_downscale_buf_a : &s_psp_downscale_buf_b;
+        next_buf = (next_buf == &s_PSP_downscale_buf_b) ? &s_PSP_downscale_buf_a : &s_PSP_downscale_buf_b;
     }
 
     width = cur_w;

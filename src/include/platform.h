@@ -9,12 +9,8 @@
 	// Nintendo Switch specific flags
 	#define PLATFORM_POSIX 1     // Has POSIX-like APIs
 	#define PLATFORM_NSWITCH 1
-#elif defined(__psp__)
-	// PlayStation Portable specific flags
-	// Note: PSP has some POSIX-like APIs, but isn't fully POSIX.
-	// Avoid defining PLATFORM_POSIX unless your code specifically relies
-	// on features known to be present and compatible on PSP.
-	#define __PSP__ 1
+#elif defined(__PSP__)
+
 #elif defined(__linux__)
 	#define PLATFORM_POSIX 1
 	#define PLATFORM_LINUX 1
