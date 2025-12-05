@@ -14,7 +14,7 @@
 	// Note: PSP has some POSIX-like APIs, but isn't fully POSIX.
 	// Avoid defining PLATFORM_POSIX unless your code specifically relies
 	// on features known to be present and compatible on PSP.
-	#define PLATFORM_PSP 1
+	#define __PSP__ 1
 #elif defined(__linux__)
 	#define PLATFORM_POSIX 1
 	#define PLATFORM_LINUX 1
