@@ -155,9 +155,12 @@ int main(int argc, const char **argv)
 	
 	setup_callbacks();
 
+	#ifdef PDDEBUG
 	pspDebugScreenInit();
 	pspDebugScreenPrintf("Loading Bits \n");
 	pspDebugScreenPrintf("Disabling FPU Exceptions \n");
+	#endif 
+
 	pspFpuSetEnable(0);
 	//VolatileMemInit();
 	sysInitArgs(argc, argv);
@@ -166,6 +169,7 @@ int main(int argc, const char **argv)
 		//crashInit();
 	}
 
+	#ifdef PDDEBUG
 	pspDebugScreenPrintf("sysInit \n");
 	sysInit();
 	pspDebugScreenPrintf("fs Init \n");
@@ -180,6 +184,16 @@ int main(int argc, const char **argv)
 	audioInit();
 	pspDebugScreenPrintf("Rom Data Init Please Wait... \n");
 	romdataInit();
+
+	#else
+	sysInit();
+	fsInit();
+	configInit();
+	videoInit();
+	inputInit();
+	audioInit();
+	romdataInit();
+	#endif
 
 	g_ValidGbcRomFound = romdataCheckGbcRom();
 
