@@ -32,14 +32,15 @@
 
 #ifndef PLATFORM_N64
 static s32 g_MenuBlurFb = -1;
-static s32 g_MenuScreenFb = -1;
 static bool g_MenuBlurDone = false;
+static u32 g_MenuBlurW = BLURIMG_WIDTH;
+static u32 g_MenuBlurH = BLURIMG_HEIGHT;
 #endif
 
 /**
  * Blur the gameplay background for the pause menu.
  *
- * The blurred image is 30x40 pixels at 16 bits per pixel. At standard
+ * On N64 the blurred image is 30x40 pixels at 16 bits per pixel. At standard
  * resolution this is 1/8th the size of the framebuffer.
  *
  * This function reads the framebuffer in blocks of 8x8 pixels. Each block's
@@ -125,11 +126,29 @@ void menugfxCreateBlur(void)
 
 	g_ScaleX = 1;
 #else
-	if (g_MenuBlurFb < 0) {
-		g_MenuBlurFb = videoCreateFramebuffer(BLURIMG_WIDTH, BLURIMG_HEIGHT, true, false);
-		g_MenuScreenFb = videoCreateFramebuffer(0, 0, false, true);
+	{
+		u32 targetw = (u32)videoGetWidth();
+		u32 targeth = (u32)videoGetHeight();
+
+		// Create a low-res copy, roughly matching the original N64 1/8 scale blur.
+		targetw = (targetw == 0) ? BLURIMG_WIDTH : (targetw / SAMPLE_WIDTH);
+		targeth = (targeth == 0) ? BLURIMG_HEIGHT : (targeth / SAMPLE_HEIGHT);
+
+		if (targetw == 0) targetw = 1;
+		if (targeth == 0) targeth = 1;
+
+		if (g_MenuBlurFb < 0) {
+			g_MenuBlurFb = videoCreateFramebuffer(targetw, targeth, false, false);
+			g_MenuBlurW = targetw;
+			g_MenuBlurH = targeth;
+		} else if (g_MenuBlurW != targetw || g_MenuBlurH != targeth) {
+			videoResizeFramebuffer(g_MenuBlurFb, targetw, targeth, false, false);
+			g_MenuBlurW = targetw;
+			g_MenuBlurH = targeth;
+		}
 	}
-	// copy full viewport and downscale to 40x30
+
+	// copy full viewport and downscale to ~1/8 scale
 	videoCopyFramebuffer(g_MenuBlurFb, 0, -1, -1);
 	// we'll generate a blurred version later
 	g_MenuBlurDone = false;
@@ -144,6 +163,13 @@ Gfx *menugfxRenderBgBlur(Gfx *gdl, u32 colour, s16 arg2, s16 arg3)
 	s32 width;
 	s32 height;
 #endif
+#ifndef PLATFORM_N64
+	const s32 blurw = (s32)(g_MenuBlurW ? g_MenuBlurW : BLURIMG_WIDTH);
+	const s32 blurh = (s32)(g_MenuBlurH ? g_MenuBlurH : BLURIMG_HEIGHT);
+#else
+	const s32 blurw = BLURIMG_WIDTH;
+	const s32 blurh = BLURIMG_HEIGHT;
+#endif
 
 	if (IS4MB())
 	{
@@ -151,18 +177,8 @@ Gfx *menugfxRenderBgBlur(Gfx *gdl, u32 colour, s16 arg2, s16 arg3)
 	}
 
 #ifndef PLATFORM_N64
-	width = viGetWidth();
-	height = viGetHeight();
 	if (g_MenuBlurFb >= 0 && !g_MenuBlurDone) {
-		// blit the small blur texture onto a screen-sized framebuffer while blurring it
 		g_MenuBlurDone = true;
-		gdl = bviewPrepareStaticRgba16(gdl, 0xffffffff, 0xff);
-		gDPSetTextureFilter(gdl++, G_TF_BLUR_EXT);
-		gDPSetFramebufferTextureEXT(gdl++, G_IM_FMT_RGBA, G_IM_SIZ_16b, BLURIMG_WIDTH, g_MenuBlurFb);
-		gDPSetFramebufferTargetEXT(gdl++, G_IM_FMT_RGBA, G_IM_SIZ_16b, width, g_MenuScreenFb);
-		gSPImageRectangleEXT(gdl++, 0, 0, 0, 0, width << 2, height << 2, BLURIMG_WIDTH, BLURIMG_HEIGHT, 0, BLURIMG_WIDTH, BLURIMG_HEIGHT);
-		gDPSetFramebufferTargetEXT(gdl++, G_IM_FMT_RGBA, G_IM_SIZ_16b, width, 0);
-		gDPSetFramebufferTextureEXT(gdl++, G_IM_FMT_RGBA, G_IM_SIZ_16b, BLURIMG_WIDTH, 0);
 	}
 #endif
 
@@ -178,7 +194,7 @@ Gfx *menugfxRenderBgBlur(Gfx *gdl, u32 colour, s16 arg2, s16 arg3)
 
 #ifndef PLATFORM_N64
 	// LoadTextureBlock will set up the sizes, but we'll use the framebuffer instead of g_BlurBuffer
-	gDPSetFramebufferTextureEXT(gdl++, G_IM_FMT_RGBA, G_IM_SIZ_16b, width, g_MenuScreenFb);
+	gDPSetFramebufferTextureEXT(gdl++, G_IM_FMT_RGBA, G_IM_SIZ_16b, blurw, g_MenuBlurFb);
 #endif
 
 	gDPPipeSync(gdl++);
@@ -240,14 +256,14 @@ Gfx *menugfxRenderBgBlur(Gfx *gdl, u32 colour, s16 arg2, s16 arg3)
 	vertices[3].z = -10;
 #endif
 
-	vertices[0].s = 0;
-	vertices[0].t = 0;
-	vertices[1].s = SCREEN_320 * 4;
-	vertices[1].t = 0;
-	vertices[2].s = SCREEN_320 * 4;
-	vertices[2].t = SCREEN_320 * 3;
-	vertices[3].s = 0;
-	vertices[3].t = SCREEN_320 * 3;
+		vertices[0].s = 0;
+		vertices[0].t = 0;
+		vertices[1].s = blurw * 32;
+		vertices[1].t = 0;
+		vertices[2].s = blurw * 32;
+		vertices[2].t = blurh * 32;
+		vertices[3].s = 0;
+		vertices[3].t = blurh * 32;
 
 	vertices[0].colour = 0;
 	vertices[1].colour = 0;

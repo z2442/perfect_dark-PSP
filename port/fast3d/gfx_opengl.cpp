@@ -23,6 +23,7 @@ static bool s_blend_enabled = true;            // shadow of GL_BLEND enable stat
 #include <math.h>
 #include <vector>
 #include <unordered_map>
+#include <algorithm>
 
 extern "C"{
 #include <GLES/egl.h>
@@ -36,6 +37,37 @@ extern "C"{
 #include <math.h>
 
 #if defined(__PSP__)
+// Minimal PSPGL structures so we can peek at the default surface buffers.
+struct pspgl_buffer {
+    uint16_t refcount;
+    uint16_t refpad;
+    int8_t   mapcount;
+    uint8_t  flags;
+    uint8_t  pad[2];
+    void    *unk0;
+    void    *unk1;
+    pspgl_buffer *next;
+    pspgl_buffer *prev;
+    void    *base;      // pixel data
+    uint32_t size_bytes;
+};
+
+struct pspgl_surface {
+    uint32_t stamp;
+    uint32_t config;
+    uint32_t unk_addr;
+    uint16_t stride;    // line stride in pixels
+    uint8_t  flags;
+    uint8_t  pad;
+    pspgl_buffer *draw;     // buffer currently used for drawing
+    pspgl_buffer *display;  // buffer currently being displayed
+    pspgl_buffer *depth;
+    pspgl_buffer **drawp;
+    pspgl_buffer **readp;
+    uint32_t mask0;
+    uint32_t mask1;
+};
+
 static inline void psp_clear_gl_errors(void) {
     while (glGetError() != GL_NO_ERROR) {}
 }
@@ -900,10 +932,6 @@ static inline void es11_apply_tex_transform(int tile) {
 static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_vbo_num_tris) {
     // Suppress draws when targeting custom offscreen FBOs we cannot render to.
     // Allow draws when targeting the system primary offscreen (the game’s main render target),
-    // because that path clears the screen before presenting the resolved texture.
-    if (s_current_draw_fb != 0 && s_current_draw_fb != s_system_game_fb_primary) {
-        return; // pretend we drew offscreen; texture content comes from copy ops
-    }
 
     const int stride_floats = 9; // pos(3) + uv(2) + color(4)
     const int stride_bytes = stride_floats * sizeof(float);
@@ -970,16 +998,24 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
     // --- Pass 1: base (TEXEL0) ---
     if (g_es1_use_tex0 && s_tex_id[0] != 0) {
         glBindTexture(GL_TEXTURE_2D, s_tex_id[0]);
-        // If TEXEL0 is a framebuffer texture with inverted V, apply via texture matrix
+        // If TEXEL0 is a framebuffer texture with inverted V, apply via texture matrix.
+        // Important: if the framebuffer uses a POT texture, only the [0..t_max] sub-rect is valid;
+        // flip within that range so we don't sample uninitialized padding.
         bool needs_invert_v = false;
+        float t_max = 1.0f;
         for (const auto &fb : s_fbs) {
-            if (fb.allocated && fb.tex == s_tex_id[0] && fb.invert_y) { needs_invert_v = true; break; }
+            if (fb.allocated && fb.tex == s_tex_id[0] && fb.invert_y) {
+                needs_invert_v = false;
+                const float ph = (float)(fb.pot_h ? fb.pot_h : fb.h);
+                t_max = (ph > 0.0f) ? ((float)fb.h / ph) : 1.0f;
+                break;
+            }
         }
         if (needs_invert_v) {
             pdMatrixMode(GL_TEXTURE);
             pdLoadIdentity();
+            pdTranslatef(0.0f, t_max, 0.0f);
             pdScalef(1.0f, -1.0f, 1.0f);
-            pdTranslatef(0.0f, -1.0f, 0.0f);
             pdMatrixMode(GL_MODELVIEW);
         }
     }
@@ -1415,9 +1451,76 @@ static void fb_copy_window_into_texture(GLESFramebuffer &dst) {
     glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, (GLsizei)dst.w, (GLsizei)dst.h);
     dst.valid = true;
 #else
-    // PSP: framebuffer readback is disabled; mark invalid and return.
-    (void)dst;
-    return;
+    // PSP: read the current draw buffer from the PSPGL surface and upload.
+    pspgl_surface *surf = reinterpret_cast<pspgl_surface*>(surface);
+    if (!surf || !surf->draw || !surf->draw->base) {
+        dst.valid = false;
+        return;
+    }
+
+    const uint16_t *src565 = static_cast<const uint16_t*>(surf->draw->base);
+    const uint32_t stride = surf->stride ? (uint32_t)surf->stride : (uint32_t)SCREEN_WIDTH;
+    const uint32_t src_w = (uint32_t)SCREEN_WIDTH;
+    const uint32_t src_h = (uint32_t)SCREEN_HEIGHT;
+    const uint32_t copy_w = std::min<uint32_t>(dst.w, src_w);
+    const uint32_t copy_h = std::min<uint32_t>(dst.h, src_h);
+    if (copy_w == 0 || copy_h == 0) {
+        dst.valid = false;
+        return;
+    }
+    static std::vector<uint16_t> psp_bb_tmp;
+    const size_t needed = (size_t)copy_w * (size_t)copy_h;
+    if (psp_bb_tmp.size() < needed) psp_bb_tmp.resize(needed);
+
+    const uint32_t factor_x = (copy_w != 0 && (src_w % copy_w) == 0) ? (src_w / copy_w) : 0;
+    const uint32_t factor_y = (copy_h != 0 && (src_h % copy_h) == 0) ? (src_h / copy_h) : 0;
+
+    if (factor_x >= 1 && factor_y >= 1) {
+        const uint32_t samples = factor_x * factor_y;
+        for (uint32_t y = 0; y < copy_h; ++y) {
+            uint16_t *drow = psp_bb_tmp.data() + (size_t)y * (size_t)copy_w;
+            const uint32_t src_y0 = y * factor_y;
+            for (uint32_t x = 0; x < copy_w; ++x) {
+                const uint32_t src_x0 = x * factor_x;
+                uint32_t sum_r = 0, sum_g = 0, sum_b = 0;
+                for (uint32_t sy = 0; sy < factor_y; ++sy) {
+                    const uint16_t *srow = src565 + (src_y0 + sy) * stride + src_x0;
+                    for (uint32_t sx = 0; sx < factor_x; ++sx) {
+                        const uint16_t c = srow[sx];
+                        sum_r += (c >> 11) & 0x1f;
+                        sum_g += (c >> 5)  & 0x3f;
+                        sum_b += c & 0x1f;
+                    }
+                }
+                const uint16_t r = (uint16_t)(sum_r / samples);
+                const uint16_t g = (uint16_t)(sum_g / samples);
+                const uint16_t b = (uint16_t)(sum_b / samples);
+                drow[x] = (uint16_t)(((r >> 1) << 12) | ((g >> 2) << 8) | ((b >> 1) << 4) | 0x000f);
+            }
+        }
+    } else {
+        // Fallback: nearest sampling (non-integer scale factors)
+        const float step_x = (float)src_w / (float)copy_w;
+        const float step_y = (float)src_h / (float)copy_h;
+
+        for (uint32_t y = 0; y < copy_h; ++y) {
+            const uint32_t src_y = std::min<uint32_t>(src_h - 1, (uint32_t)((y + 0.5f) * step_y));
+            const uint16_t *srow = src565 + src_y * stride;
+            uint16_t *drow = psp_bb_tmp.data() + (size_t)y * (size_t)copy_w;
+            for (uint32_t x = 0; x < copy_w; ++x) {
+                const uint32_t src_x = std::min<uint32_t>(src_w - 1, (uint32_t)((x + 0.5f) * step_x));
+                const uint16_t c = srow[src_x];
+                const uint16_t r = (c >> 11) & 0x1f;
+                const uint16_t g = (c >> 5)  & 0x3f;
+                const uint16_t b = c & 0x1f;
+                drow[x] = (uint16_t)(((r >> 1) << 12) | ((g >> 2) << 8) | ((b >> 1) << 4) | 0x000f);
+            }
+        }
+    }
+
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, (GLsizei)copy_w, (GLsizei)copy_h, GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4, psp_bb_tmp.data());
+    dst.valid = true;
 #endif
 }
 
@@ -1497,15 +1600,12 @@ void* gfx_opengl_get_framebuffer_texture_id(int fb_id) {
 }
 
 void gfx_opengl_clear_framebuffer(bool c, bool d) {
-    // Avoid clearing the visible buffer if we are supposedly drawing to a custom offscreen FB
-    if (s_current_draw_fb != 0 && s_current_draw_fb != s_system_game_fb_primary) {
-        return; // no-op for offscreen clears in fallback
-    }
+    // Always clear - we're always rendering to the window in this fallback implementation
     GLbitfield mask = 0;
     if (c) mask |= GL_COLOR_BUFFER_BIT;
     if (d) { glDepthMask(GL_TRUE); mask |= GL_DEPTH_BUFFER_BIT; }
-    glClear(mask);
-    glDepthMask(current_depth_mask);
+    if (mask) glClear(mask);
+    glDepthMask(current_depth_mask ? GL_TRUE : GL_FALSE);
 }
 
 void gfx_opengl_copy_framebuffer(int fb_dst, int fb_src, int l, int t, bool flip_y, bool use_back) {
@@ -1530,14 +1630,16 @@ void gfx_opengl_copy_framebuffer(int fb_dst, int fb_src, int l, int t, bool flip
     if (fb_src > 0 && fb_dst == 0) {
         // Only present to the window when we're drawing to the main buffer
         // and the source is the primary game framebuffer.
-        if (s_current_draw_fb == 0 && fb_src == s_system_game_fb_primary) {
-            const GLESFramebuffer &src = s_fbs[fb_src];
-            if (!src.allocated || src.tex == 0 || src.w == 0 || src.h == 0) return;
-            const float x = (float)l;
-            const float y = (float)t;
-            // Copy semantics: replace destination pixels in target region
-            fb_draw_textured_quad(src.tex, x, y, (float)src.w, (float)src.h, src.invert_y, true);
-        }
+     if (fb_src > 0 && fb_dst == 0) {
+    // Draw the framebuffer texture to the window
+    const GLESFramebuffer &src = s_fbs[fb_src];
+    if (!src.allocated || src.tex == 0 || src.w == 0 || src.h == 0) return;
+    const float x = (float)l;
+    const float y = (float)t;
+    // Copy semantics: replace destination pixels in target region
+    fb_draw_textured_quad(src.tex, x, y, (float)src.w, (float)src.h, src.invert_y, true);
+    return;
+}
         return;
     }
 

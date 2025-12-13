@@ -387,6 +387,22 @@ static bool fbActive = 0;
 static std::map<int, FBInfo>::iterator active_fb;
 static std::map<int, FBInfo> framebuffers;
 
+// Framebuffer textures (selected via G_SETTIMG_FB_EXT) are not part of the normal texture cache.
+// Track their POT sizes so we can normalize UVs correctly and avoid tiling.
+static int s_fb_tex_id0 = 0;
+static uint32_t s_fb_tex_pot_w0 = 1;
+static uint32_t s_fb_tex_pot_h0 = 1;
+static bool s_fb_tex_sampler_valid0 = false;
+static bool s_fb_tex_linear_filter0 = false;
+static uint8_t s_fb_tex_cms0 = 0;
+static uint8_t s_fb_tex_cmt0 = 0;
+
+static inline uint32_t next_pot_u32(uint32_t v) {
+    uint32_t p = 1;
+    while (p < v) p <<= 1;
+    return p;
+}
+
 static constexpr float clampf(const float x, const float min, const float max) {
     return (x < min) ? min : (x > max) ? max : x;
 }
@@ -2082,6 +2098,23 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
                                        rendering_state.textures[i]->second.pot_h,
                                        rendering_state.textures[i]->second.mirror_s_expanded,
                                        rendering_state.textures[i]->second.mirror_t_expanded);
+            } else if (i == 0 && s_fb_tex_id0 > 0) {
+                bool linear_filter = (rdp.other_mode_h & (3U << G_MDSFT_TEXTFILT)) != G_TF_POINT;
+                if (texture_edge || alpha_threshold) {
+                    linear_filter = false;
+                }
+
+                if (!s_fb_tex_sampler_valid0 || linear_filter != s_fb_tex_linear_filter0 ||
+                    cms != s_fb_tex_cms0 || cmt != s_fb_tex_cmt0) {
+                    gfx_flush();
+                    gfx_rapi->set_sampler_parameters(i, linear_filter, cms, cmt);
+                    s_fb_tex_sampler_valid0 = true;
+                    s_fb_tex_linear_filter0 = linear_filter;
+                    s_fb_tex_cms0 = cms;
+                    s_fb_tex_cmt0 = cmt;
+                }
+
+                publish_tile_transform(i, tile, s_fb_tex_pot_w0, s_fb_tex_pot_h0, false, false);
             }
         }
     }
@@ -2105,6 +2138,9 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
     if (rendering_state.textures[0]) {
         pot_w = rendering_state.textures[0]->second.pot_w;
         pot_h = rendering_state.textures[0]->second.pot_h;
+    } else if (s_fb_tex_id0 > 0) {
+        pot_w = s_fb_tex_pot_w0;
+        pot_h = s_fb_tex_pot_h0;
     }
     // Add safeguard for pot_w and pot_h
     if (pot_w == 0) pot_w = 1;
@@ -3168,12 +3204,41 @@ static void gfx_run_dl(Gfx* cmd) {
 
             // RDP Commands:
             case G_SETTIMG: {
+                // Switching back to a normal texture image: clear framebuffer-texture state.
+                s_fb_tex_id0 = 0;
+                s_fb_tex_pot_w0 = 1;
+                s_fb_tex_pot_h0 = 1;
+                s_fb_tex_sampler_valid0 = false;
                 gfx_dp_set_texture_image(C0(21, 3), C0(19, 2), C0(0, 10), 0, seg_addr(cmd->words.w1));
                 break;
             }
             case G_SETTIMG_FB_EXT:
                 gfx_flush();
-                gfx_rapi->select_texture_fb(cmd->words.w1);
+                {
+                    const int fb_id = (int)cmd->words.w1;
+                    gfx_rapi->select_texture_fb(fb_id);
+                    s_fb_tex_id0 = fb_id;
+                    s_fb_tex_sampler_valid0 = false;
+
+                    if (fb_id > 0) {
+                        auto it = framebuffers.find(fb_id);
+                        if (it != framebuffers.end()) {
+                            const uint32_t w = it->second.applied_width ? it->second.applied_width : 1;
+                            const uint32_t h = it->second.applied_height ? it->second.applied_height : 1;
+                            s_fb_tex_pot_w0 = next_pot_u32(w);
+                            s_fb_tex_pot_h0 = next_pot_u32(h);
+                        } else {
+                            s_fb_tex_pot_w0 = 1;
+                            s_fb_tex_pot_h0 = 1;
+                        }
+                    } else {
+                        s_fb_tex_pot_w0 = 1;
+                        s_fb_tex_pot_h0 = 1;
+                    }
+
+                    // Framebuffer textures are not cached; ensure stale cache state doesn't affect UV normalization.
+                    rendering_state.textures[0] = nullptr;
+                }
                 rdp.textures_changed[0] = false;
                 rdp.textures_changed[1] = false;
                 break;
