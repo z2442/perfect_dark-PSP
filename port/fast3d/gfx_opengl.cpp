@@ -293,6 +293,7 @@ static bool s_has_texenv_combine = false;
 
 #include <PR/gbi.h>
 #include "gfx_rendering_api.h"
+#include "gfx_api.h"
 
 static FilteringMode current_filter_mode = FILTER_LINEAR;
 
@@ -1391,7 +1392,12 @@ static const char* gfx_opengl_get_name(void) { return "OpenGL 1.1"; }
 
 static int gfx_opengl_get_max_texture_size(void) {
 #if defined(__PSP__)
-    return 256;
+    // PSP GU supports 512x512 textures; some wrappers may not report this reliably.
+    GLint size = 0;
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &size);
+    if (size <= 0) size = 512;
+    if (size < 512) size = 512;
+    return (int)size;
 #else
     GLint size = 0;
     glGetIntegerv(GL_MAX_TEXTURE_SIZE, &size);
@@ -1442,7 +1448,7 @@ static void allocate_fb_texture(GLESFramebuffer &fb) {
 #endif
 }
 
-static void fb_copy_window_into_texture(GLESFramebuffer &dst) {
+static void fb_copy_window_into_texture(GLESFramebuffer &dst, int src_x0, int src_y0, int src_w, int src_h, bool use_back) {
     if (!dst.allocated || dst.tex == 0 || dst.w == 0 || dst.h == 0) return;
     glBindTexture(GL_TEXTURE_2D, dst.tex);
     s_last_bound_tex = dst.tex;
@@ -1453,43 +1459,75 @@ static void fb_copy_window_into_texture(GLESFramebuffer &dst) {
 #else
     // PSP: read the current draw buffer from the PSPGL surface and upload.
     pspgl_surface *surf = reinterpret_cast<pspgl_surface*>(surface);
-    if (!surf || !surf->draw || !surf->draw->base) {
+    if (!surf) {
         dst.valid = false;
         return;
     }
 
-    const uint16_t *src565 = static_cast<const uint16_t*>(surf->draw->base);
-    const uint32_t stride = surf->stride ? (uint32_t)surf->stride : (uint32_t)SCREEN_WIDTH;
-    const uint32_t src_w = (uint32_t)SCREEN_WIDTH;
-    const uint32_t src_h = (uint32_t)SCREEN_HEIGHT;
-    const uint32_t copy_w = std::min<uint32_t>(dst.w, src_w);
-    const uint32_t copy_h = std::min<uint32_t>(dst.h, src_h);
+    pspgl_buffer *buf = use_back ? surf->draw : surf->display;
+    if (!buf || !buf->base) {
+        dst.valid = false;
+        return;
+    }
+
+    // Ensure the draw buffer contents are complete before CPU reads.
+    if (use_back) {
+        glFinish();
+    }
+
+    const uint16_t *src565 = static_cast<const uint16_t*>(buf->base);
+    const int win_w = (int)(gfx_current_dimensions.width ? gfx_current_dimensions.width : (uint32_t)SCREEN_WIDTH);
+    const int win_h = (int)(gfx_current_dimensions.height ? gfx_current_dimensions.height : (uint32_t)SCREEN_HEIGHT);
+    const uint32_t stride = surf->stride ? (uint32_t)surf->stride : (uint32_t)win_w;
+
+    int sx0 = src_x0;
+    int sy0 = src_y0;
+    int sx1 = src_x0 + src_w;
+    int sy1 = src_y0 + src_h;
+    if (sx0 < 0) sx0 = 0;
+    if (sy0 < 0) sy0 = 0;
+    if (sx1 > win_w) sx1 = win_w;
+    if (sy1 > win_h) sy1 = win_h;
+    const int region_w_i = sx1 - sx0;
+    const int region_h_i = sy1 - sy0;
+    if (region_w_i <= 0 || region_h_i <= 0) {
+        dst.valid = false;
+        return;
+    }
+
+    const uint32_t region_w = (uint32_t)region_w_i;
+    const uint32_t region_h = (uint32_t)region_h_i;
+    const uint32_t copy_w = dst.w;
+    const uint32_t copy_h = dst.h;
     if (copy_w == 0 || copy_h == 0) {
         dst.valid = false;
         return;
     }
+
     static std::vector<uint16_t> psp_bb_tmp;
     const size_t needed = (size_t)copy_w * (size_t)copy_h;
     if (psp_bb_tmp.size() < needed) psp_bb_tmp.resize(needed);
 
-    const uint32_t factor_x = (copy_w != 0 && (src_w % copy_w) == 0) ? (src_w / copy_w) : 0;
-    const uint32_t factor_y = (copy_h != 0 && (src_h % copy_h) == 0) ? (src_h / copy_h) : 0;
+    const uint32_t factor_x = (copy_w != 0 && (region_w % copy_w) == 0) ? (region_w / copy_w) : 0;
+    const uint32_t factor_y = (copy_h != 0 && (region_h % copy_h) == 0) ? (region_h / copy_h) : 0;
 
     if (factor_x >= 1 && factor_y >= 1) {
         const uint32_t samples = factor_x * factor_y;
         for (uint32_t y = 0; y < copy_h; ++y) {
             uint16_t *drow = psp_bb_tmp.data() + (size_t)y * (size_t)copy_w;
-            const uint32_t src_y0 = y * factor_y;
+            const uint32_t src_y0 = (uint32_t)sy0 + y * factor_y;
             for (uint32_t x = 0; x < copy_w; ++x) {
-                const uint32_t src_x0 = x * factor_x;
+                const uint32_t src_x0 = (uint32_t)sx0 + x * factor_x;
                 uint32_t sum_r = 0, sum_g = 0, sum_b = 0;
                 for (uint32_t sy = 0; sy < factor_y; ++sy) {
                     const uint16_t *srow = src565 + (src_y0 + sy) * stride + src_x0;
                     for (uint32_t sx = 0; sx < factor_x; ++sx) {
                         const uint16_t c = srow[sx];
-                        sum_r += (c >> 11) & 0x1f;
-                        sum_g += (c >> 5)  & 0x3f;
-                        sum_b += c & 0x1f;
+                        // PSP draw/display buffers are in BGR565 (GU_PSM_5650) layout.
+                        // Convert to RGBA4444 for GL texture upload.
+                        sum_r += c & 0x1f;
+                        sum_g += (c >> 5) & 0x3f;
+                        sum_b += (c >> 11) & 0x1f;
                     }
                 }
                 const uint16_t r = (uint16_t)(sum_r / samples);
@@ -1500,19 +1538,19 @@ static void fb_copy_window_into_texture(GLESFramebuffer &dst) {
         }
     } else {
         // Fallback: nearest sampling (non-integer scale factors)
-        const float step_x = (float)src_w / (float)copy_w;
-        const float step_y = (float)src_h / (float)copy_h;
+        const float step_x = (float)region_w / (float)copy_w;
+        const float step_y = (float)region_h / (float)copy_h;
 
         for (uint32_t y = 0; y < copy_h; ++y) {
-            const uint32_t src_y = std::min<uint32_t>(src_h - 1, (uint32_t)((y + 0.5f) * step_y));
+            const uint32_t src_y = (uint32_t)sy0 + std::min<uint32_t>(region_h - 1, (uint32_t)((y + 0.5f) * step_y));
             const uint16_t *srow = src565 + src_y * stride;
             uint16_t *drow = psp_bb_tmp.data() + (size_t)y * (size_t)copy_w;
             for (uint32_t x = 0; x < copy_w; ++x) {
-                const uint32_t src_x = std::min<uint32_t>(src_w - 1, (uint32_t)((x + 0.5f) * step_x));
+                const uint32_t src_x = (uint32_t)sx0 + std::min<uint32_t>(region_w - 1, (uint32_t)((x + 0.5f) * step_x));
                 const uint16_t c = srow[src_x];
-                const uint16_t r = (c >> 11) & 0x1f;
-                const uint16_t g = (c >> 5)  & 0x3f;
-                const uint16_t b = c & 0x1f;
+                const uint16_t r = c & 0x1f;
+                const uint16_t g = (c >> 5) & 0x3f;
+                const uint16_t b = (c >> 11) & 0x1f;
                 drow[x] = (uint16_t)(((r >> 1) << 12) | ((g >> 2) << 8) | ((b >> 1) << 4) | 0x000f);
             }
         }
@@ -1619,27 +1657,42 @@ void gfx_opengl_copy_framebuffer(int fb_dst, int fb_src, int l, int t, bool flip
     ensure_fb_index(fb_dst);
 
     if (fb_src == 0 && fb_dst > 0) {
-        // Copy the current window backbuffer into the destination texture
+        // Copy the window buffer into the destination texture.
         GLESFramebuffer &dst = s_fbs[fb_dst];
         if (!dst.allocated || dst.tex == 0 || dst.w == 0 || dst.h == 0) return;
-        // Copy full region; l/t are ignored for full-screen effects
-        fb_copy_window_into_texture(dst);
+        (void)flip_y;
+
+        const uint32_t native_w_u = gfx_current_native_viewport.width ? gfx_current_native_viewport.width : 1;
+        const uint32_t native_h_u = gfx_current_native_viewport.height ? gfx_current_native_viewport.height : 1;
+        const uint32_t win_w_u = gfx_current_dimensions.width ? gfx_current_dimensions.width : (uint32_t)SCREEN_WIDTH;
+        const uint32_t win_h_u = gfx_current_dimensions.height ? gfx_current_dimensions.height : (uint32_t)SCREEN_HEIGHT;
+
+        const bool want_full_viewport =
+            (l < 0 || t < 0) ||
+            (l == 0 && t == 0 && dst.w == native_w_u && dst.h == native_h_u);
+
+        if (want_full_viewport) {
+            fb_copy_window_into_texture(dst, 0, 0, (int)win_w_u, (int)win_h_u, use_back);
+        } else {
+            const float scale_x = (float)win_w_u / (float)native_w_u;
+            const float scale_y = (float)win_h_u / (float)native_h_u;
+            const int src_x0 = (int)floorf((float)l * scale_x);
+            const int src_y0 = (int)floorf((float)t * scale_y);
+            const int src_w = (int)ceilf((float)dst.w * scale_x);
+            const int src_h = (int)ceilf((float)dst.h * scale_y);
+            fb_copy_window_into_texture(dst, src_x0, src_y0, src_w, src_h, use_back);
+        }
         return;
     }
 
     if (fb_src > 0 && fb_dst == 0) {
-        // Only present to the window when we're drawing to the main buffer
-        // and the source is the primary game framebuffer.
-     if (fb_src > 0 && fb_dst == 0) {
-    // Draw the framebuffer texture to the window
-    const GLESFramebuffer &src = s_fbs[fb_src];
-    if (!src.allocated || src.tex == 0 || src.w == 0 || src.h == 0) return;
-    const float x = (float)l;
-    const float y = (float)t;
-    // Copy semantics: replace destination pixels in target region
-    fb_draw_textured_quad(src.tex, x, y, (float)src.w, (float)src.h, src.invert_y, true);
-    return;
-}
+        // Draw the framebuffer texture to the window.
+        const GLESFramebuffer &src = s_fbs[fb_src];
+        if (!src.allocated || src.tex == 0 || src.w == 0 || src.h == 0) return;
+        const float x = (float)l;
+        const float y = (float)t;
+        // Copy semantics: replace destination pixels in target region
+        fb_draw_textured_quad(src.tex, x, y, (float)src.w, (float)src.h, src.invert_y, true);
         return;
     }
 

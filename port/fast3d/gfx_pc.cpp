@@ -3498,8 +3498,14 @@ extern "C" void gfx_start_frame(void) {
                     gfx_adjust_width_height_for_scale(width, height);
                 } else {
                     // assume this is a fullscreen fb
+#if defined(__PSP__)
+                    // Keep "fullscreen" framebuffer effects in native resolution on PSP.
+                    width = gfx_current_native_viewport.width;
+                    height = gfx_current_native_viewport.height;
+#else
                     width = gfx_current_dimensions.width;
                     height = gfx_current_dimensions.height;
+#endif
                 }
                 if (width != fb.second.applied_width || height != fb.second.applied_height) {
                     gfx_rapi->update_framebuffer_parameters(fb.first, width, height, 1, true, true, true, true);
@@ -3633,8 +3639,16 @@ extern "C" void gfx_resize_framebuffer(int fb, uint32_t width, uint32_t height, 
         gfx_rapi->update_framebuffer_parameters(fb, width, height, 1, true, true, true, true);
     } else {
         // same size as main fb
+#if defined(__PSP__)
+        // On PSP we render the game in native coordinates (e.g. 320x220) and scale to the
+        // 480x272 display. Framebuffer effects sample using native coordinates, so keep
+        // "fullscreen" framebuffers in the native resolution.
+        orig_width = width = gfx_current_native_viewport.width;
+        orig_height = height = gfx_current_native_viewport.height;
+#else
         orig_width = width = gfx_current_dimensions.width;
         orig_height = height = gfx_current_dimensions.height;
+#endif
         upscale = false;
         autoresize = true;
         gfx_rapi->update_framebuffer_parameters(fb, width, height, 1, true, true, true, true);
@@ -3653,20 +3667,29 @@ extern "C" void gfx_copy_framebuffer(int fb_dst, int fb_src, int left, int top, 
     const bool is_main_fb = (fb_src == 0);
 
     if (is_main_fb) {
-        if (left > 0 && top > 0) {
+#if !defined(__PSP__)
+        // Desktop backends read from GL with a bottom-left origin.
+        // Treat negative left/top as "copy full viewport" (used by menu blur, etc).
+        if (left >= 0 && top >= 0) {
             // upscale the position
-            left = left * gfx_current_dimensions.width / gfx_current_native_viewport.width;
-            top = top * gfx_current_dimensions.height / gfx_current_native_viewport.height;
-            // flip Y
-            top = gfx_current_dimensions.height - top - 1;
+            left = left * (int)gfx_current_dimensions.width / (int)gfx_current_native_viewport.width;
+            top = top * (int)gfx_current_dimensions.height / (int)gfx_current_native_viewport.height;
+            // flip Y (origin difference)
+            top = (int)gfx_current_dimensions.height - top - 1;
         }
+#endif
         if (use_back && gfx_msaa_level > 1) {
             // read from the framebuffer we've been rendering to
             fb_src = game_framebuffer;
         }
     }
 
+#if defined(__PSP__)
+    // PSP backend maps native coordinates to the 480x272 draw/display buffers itself.
+    gfx_rapi->copy_framebuffer(fb_dst, fb_src, left, top, false, (bool)use_back);
+#else
     gfx_rapi->copy_framebuffer(fb_dst, fb_src, left, top, is_main_fb, (bool)use_back);
+#endif
 }
 
 extern "C" void gfx_reset_framebuffer(void) {
