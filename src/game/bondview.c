@@ -732,12 +732,14 @@ Gfx *bviewDrawFisheye(Gfx *gdl, u32 colour, u32 alpha, s32 shuttertime60, s8 sta
 
 	gdl = bviewPrepareStaticRgba16(gdl, colour, alpha);
 
-#ifndef PLATFORM_N64
+
+	#ifndef PLATFORM_N64 
 	// make a copy of the current back buffer contents that we will be using as a texture
 	gDPFlushEXT(gdl++);
-	gDPCopyFramebufferEXT(gdl++, g_PrevFrameFb, 0, 0, 0, G_ON);
+	//disabled for PSP it breaks the camspy. 
+	//gDPCopyFramebufferEXT(gdl++, g_PrevFrameFb, 0, 0, 0, G_ON);
 	gDPSetFramebufferTextureEXT(gdl++, 0, 0, 0, g_PrevFrameFb);
-#endif
+	#endif
 
 	if (starting) {
 		for (i = viewtop; i < viewtop + viewheight; i++) {
