@@ -290,11 +290,9 @@ Gfx *bviewDrawMotionBlur(Gfx *gdl, u32 colour, u32 alpha)
 		return gdl;
 	}
 
-	// capture fb at the end of this frame
-	g_BlurFbCapTimer = 0;
-
-	// don't render first blur frame as we haven't captured the fb yet
 	if (g_BlurFbDirty) {
+		videoCopyFramebuffer(g_BlurFb, 0, -1, -1);
+		g_BlurFbDirty = false;
 		return gdl;
 	}
 #endif
@@ -320,6 +318,10 @@ Gfx *bviewDrawMotionBlur(Gfx *gdl, u32 colour, u32 alpha)
 		viewleft << 2, viewtop << 2, viewleft, viewtop,
 		(viewleft + viewwidth) << 2, (viewtop + viewheight) << 2, viewleft + viewwidth, viewtop + viewheight,
 		0, videoGetNativeWidth(), videoGetNativeHeight());
+#endif
+
+#ifndef PLATFORM_N64
+	g_BlurFbDirty = true;
 #endif
 
 	return gdl;
@@ -529,11 +531,9 @@ Gfx *bviewDrawZoomBlur(Gfx *gdl, u32 colour, s32 alpha, f32 arg3, f32 arg4)
 		return gdl;
 	}
 
-	// capture fb at the end of this frame
-	g_BlurFbCapTimer = 0;
-
-	// don't render first blur frame as we haven't captured the fb yet
 	if (g_BlurFbDirty) {
+		videoCopyFramebuffer(g_BlurFb, 0, -1, -1);
+		g_BlurFbDirty = false;
 		return gdl;
 	}
 #endif
@@ -565,6 +565,10 @@ Gfx *bviewDrawZoomBlur(Gfx *gdl, u32 colour, s32 alpha, f32 arg3, f32 arg4)
 		left << 2, top << 2, viewleft, viewtop,
 		right << 2, bottom << 2, viewleft + viewwidth, viewtop + viewheight,
 		0, videoGetNativeWidth(), videoGetNativeHeight());
+#endif
+
+#ifndef PLATFORM_N64
+	g_BlurFbDirty = true;
 #endif
 
 	return gdl;
