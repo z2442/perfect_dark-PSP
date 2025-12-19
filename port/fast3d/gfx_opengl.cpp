@@ -117,6 +117,17 @@ struct CpuTex {
 static std::unordered_map<GLuint, CpuTex> s_cpu_tex;   // GL tex id -> CPU copy
 static uint32_t s_cpu_tex_generation = 1;              // global monotonically increasing version
 
+// Track GL texture storage so we can prefer glTexSubImage2D over glTexImage2D.
+// On PSPGL, avoiding repeated reallocations tends to reduce stalls when many textures are uploaded.
+struct TexAllocInfo {
+    uint32_t w = 0;
+    uint32_t h = 0;
+    GLenum fmt = 0;
+    GLenum type = 0;
+    bool initialized = false;
+};
+static std::unordered_map<GLuint, TexAllocInfo> s_tex_alloc;
+
 struct CompositeKey { GLuint a, b; uint8_t mode; };
 struct CompositeVal { GLuint gl_tex = 0; int w = 0, h = 0; uint32_t ver_a = 0, ver_b = 0; };
 
@@ -215,25 +226,35 @@ static GLuint get_or_build_composite(GLuint tex0, GLuint tex1, uint8_t mode) {
 
     // Upload composite
     CompositeVal cv{}; if (itC != s_composites.end()) cv = itC->second;
+    const bool need_alloc = (cv.gl_tex == 0) || (cv.w != W) || (cv.h != H);
     if (cv.gl_tex == 0) glGenTextures(1, &cv.gl_tex);
     cv.w = W; cv.h = H; cv.ver_a = A.version; cv.ver_b = B.version;
 
     glBindTexture(GL_TEXTURE_2D, cv.gl_tex);
     s_last_bound_tex = cv.gl_tex;
-    // Default to linear filtering for composites to avoid dependency on undeclared globals.
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    if (need_alloc) {
+        // Default to linear filtering for composites to avoid dependency on undeclared globals.
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     psp_clear_gl_errors();
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, (GLsizei)W, (GLsizei)H, 0, GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4, out4444.data());
-    if (psp_check_gl_error("glTexImage2D composite", W, H, GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4) != GL_NO_ERROR) {
-        if (cv.gl_tex != 0) {
-            glDeleteTextures(1, &cv.gl_tex);
-            cv.gl_tex = 0;
+    if (need_alloc) {
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, (GLsizei)W, (GLsizei)H, 0, GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4, out4444.data());
+        if (psp_check_gl_error("glTexImage2D composite", W, H, GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4) != GL_NO_ERROR) {
+            if (cv.gl_tex != 0) {
+                glDeleteTextures(1, &cv.gl_tex);
+                cv.gl_tex = 0;
+            }
+            return 0;
         }
-        return 0;
+    } else {
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, (GLsizei)W, (GLsizei)H, GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4, out4444.data());
+        if (psp_check_gl_error("glTexSubImage2D composite", W, H, GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4) != GL_NO_ERROR) {
+            return 0;
+        }
     }
 
     s_composites[key] = cv;
@@ -381,6 +402,7 @@ extern "C" volatile uint8_t g_es1_prim_rgba[4];
 extern "C" volatile uint8_t g_es1_env_rgba[4];
 extern "C" volatile uint8_t g_es1_use_tex0;          // 0/1: whether TEXEL0 is used in this draw
 extern "C" volatile uint8_t g_es1_use_tex1;          // 0/1: whether TEXEL1 is used in this draw
+extern "C" volatile uint8_t g_es1_text_outline;      // 0/1: outlined font combiner active
 extern "C" volatile uint8_t g_es1_front_face_cw;     // 0/1: front faces are CW when mirrored
 extern "C" volatile uint8_t g_es1_depth_clamp_active; // 0/1: projection currently applies depth clamp
 
@@ -587,6 +609,10 @@ static GLuint gfx_opengl_new_texture(void) {
 static void gfx_opengl_delete_texture(uint32_t texID) {
     GLuint gl_tex_id = (GLuint)texID;
     glDeleteTextures(1, &gl_tex_id);
+    if (gl_tex_id) {
+        s_cpu_tex.erase(gl_tex_id);
+        s_tex_alloc.erase(gl_tex_id);
+    }
 }
 
 static void gfx_opengl_select_texture(int tile, GLuint texture_id, bool linear_filter) {
@@ -615,6 +641,12 @@ static void gfx_opengl_upload_texture(const uint8_t* rgba32_buf, uint32_t width,
 
     rgba4444.resize(num_pixels);
 
+    const GLuint upload_bound_tex = s_last_bound_tex;
+    TexAllocInfo *alloc = nullptr;
+    if (upload_bound_tex != 0) {
+        alloc = &s_tex_alloc[upload_bound_tex];
+    }
+
     const uint8_t* src = rgba32_buf;
     for (size_t i = 0; i < num_pixels; ++i) {
         if ((i & 0xF) == 0) {
@@ -635,11 +667,41 @@ static void gfx_opengl_upload_texture(const uint8_t* rgba32_buf, uint32_t width,
 
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     psp_clear_gl_errors();
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
-                 (GLsizei)width, (GLsizei)height, 0,
-                 GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4,
-                 rgba4444.data());
-    GLenum upload_err = psp_check_gl_error("glTexImage2D upload (PSP RGBA4444)", (int)width, (int)height, GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4);
+    GLenum upload_err = GL_NO_ERROR;
+    bool uploaded = false;
+
+    const GLenum fmt4444 = GL_RGBA;
+    const GLenum type4444 = GL_UNSIGNED_SHORT_4_4_4_4;
+    const bool can_sub_4444 = (alloc != nullptr) && alloc->initialized &&
+                              alloc->w == width && alloc->h == height &&
+                              alloc->fmt == fmt4444 && alloc->type == type4444;
+
+    if (can_sub_4444) {
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0,
+                        (GLsizei)width, (GLsizei)height,
+                        fmt4444, type4444,
+                        rgba4444.data());
+        upload_err = psp_check_gl_error("glTexSubImage2D upload (PSP RGBA4444)", (int)width, (int)height, fmt4444, type4444);
+        uploaded = (upload_err == GL_NO_ERROR);
+    }
+
+    if (!uploaded) {
+        psp_clear_gl_errors();
+        glTexImage2D(GL_TEXTURE_2D, 0, fmt4444,
+                     (GLsizei)width, (GLsizei)height, 0,
+                     fmt4444, type4444,
+                     rgba4444.data());
+        upload_err = psp_check_gl_error("glTexImage2D upload (PSP RGBA4444)", (int)width, (int)height, fmt4444, type4444);
+        uploaded = (upload_err == GL_NO_ERROR);
+        if (uploaded && alloc != nullptr) {
+            alloc->w = width;
+            alloc->h = height;
+            alloc->fmt = fmt4444;
+            alloc->type = type4444;
+            alloc->initialized = true;
+        }
+    }
+
     if (upload_err != GL_NO_ERROR) {
         // Fall back to RGBA8888 (premultiplied) if 16-bit upload fails
         rgba8888.resize(num_pixels * 4u);
@@ -660,11 +722,43 @@ static void gfx_opengl_upload_texture(const uint8_t* rgba32_buf, uint32_t width,
         }
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
         psp_clear_gl_errors();
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
-                     (GLsizei)width, (GLsizei)height, 0,
-                     GL_RGBA, GL_UNSIGNED_BYTE,
-                     rgba8888.data());
-        if (psp_check_gl_error("glTexImage2D upload fallback (PSP RGBA8888)", (int)width, (int)height, GL_RGBA, GL_UNSIGNED_BYTE) != GL_NO_ERROR) {
+
+        const GLenum fmt8888 = GL_RGBA;
+        const GLenum type8888 = GL_UNSIGNED_BYTE;
+        const bool can_sub_8888 = (alloc != nullptr) && alloc->initialized &&
+                                  alloc->w == width && alloc->h == height &&
+                                  alloc->fmt == fmt8888 && alloc->type == type8888;
+
+        GLenum err8888 = GL_NO_ERROR;
+        bool uploaded8888 = false;
+
+        if (can_sub_8888) {
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0,
+                            (GLsizei)width, (GLsizei)height,
+                            fmt8888, type8888,
+                            rgba8888.data());
+            err8888 = psp_check_gl_error("glTexSubImage2D upload fallback (PSP RGBA8888)", (int)width, (int)height, fmt8888, type8888);
+            uploaded8888 = (err8888 == GL_NO_ERROR);
+        }
+
+        if (!uploaded8888) {
+            psp_clear_gl_errors();
+            glTexImage2D(GL_TEXTURE_2D, 0, fmt8888,
+                         (GLsizei)width, (GLsizei)height, 0,
+                         fmt8888, type8888,
+                         rgba8888.data());
+            err8888 = psp_check_gl_error("glTexImage2D upload fallback (PSP RGBA8888)", (int)width, (int)height, fmt8888, type8888);
+            uploaded8888 = (err8888 == GL_NO_ERROR);
+            if (uploaded8888 && alloc != nullptr) {
+                alloc->w = width;
+                alloc->h = height;
+                alloc->fmt = fmt8888;
+                alloc->type = type8888;
+                alloc->initialized = true;
+            }
+        }
+
+        if (!uploaded8888) {
             return;
         }
         if (!psp_warned_8888) {
@@ -998,7 +1092,10 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
 
     // --- Pass 1: base (TEXEL0) ---
     if (g_es1_use_tex0 && s_tex_id[0] != 0) {
-        glBindTexture(GL_TEXTURE_2D, s_tex_id[0]);
+        if (s_last_bound_tex != s_tex_id[0]) {
+            glBindTexture(GL_TEXTURE_2D, s_tex_id[0]);
+            s_last_bound_tex = s_tex_id[0];
+        }
         // If TEXEL0 is a framebuffer texture with inverted V, apply via texture matrix.
         // Important: if the framebuffer uses a POT texture, only the [0..t_max] sub-rect is valid;
         // flip within that range so we don't sample uninitialized padding.
@@ -1143,7 +1240,51 @@ if (using_two_pass) {
     glDepthMask(prevDepthMask ? GL_TRUE : GL_FALSE);
     glDepthFunc(prevDepthFunc);
 
-    glDrawArrays(GL_TRIANGLES, 0, buf_vbo_num_tris * 3);
+    // Special-case: Perfect Dark outlined font combiner.
+    // The N64 path mixes PRIM/ENV using TEXEL1_ALPHA while alpha comes from TEXEL0.
+    // GLES 1.1 backend doesn't have an exact combiner, so emulate via two draws:
+    // 1) draw outline mask (TEXEL0) using PRIM RGB, alpha scaled by ENV alpha
+    // 2) draw fill mask (TEXEL1) using ENV RGB, alpha scaled by ENV alpha
+    const bool do_text_outline =
+        (g_es1_text_outline != 0) &&
+        !using_two_pass &&
+        (g_es1_use_tex0 != 0) && (g_es1_use_tex1 != 0) &&
+        (s_tex_id[0] != 0) && (s_tex_id[1] != 0);
+
+    if (do_text_outline) {
+        if (colorArrayEnabled) {
+            glDisableClientState(GL_COLOR_ARRAY);
+            colorArrayEnabled = false;
+        }
+
+        set_texenv_modulate();
+
+        const float af = (float)g_es1_env_rgba[3] / 255.0f;
+
+        // Pass 1: outline (TEXEL0 mask) with PRIM colour
+        if (s_last_bound_tex != s_tex_id[0]) {
+            glBindTexture(GL_TEXTURE_2D, s_tex_id[0]);
+            s_last_bound_tex = s_tex_id[0];
+        }
+        glColor4f((g_es1_prim_rgba[0] / 255.0f) * af,
+                  (g_es1_prim_rgba[1] / 255.0f) * af,
+                  (g_es1_prim_rgba[2] / 255.0f) * af,
+                  af);
+        glDrawArrays(GL_TRIANGLES, 0, buf_vbo_num_tris * 3);
+
+        // Pass 2: fill (TEXEL1 mask) with ENV colour
+        if (s_last_bound_tex != s_tex_id[1]) {
+            glBindTexture(GL_TEXTURE_2D, s_tex_id[1]);
+            s_last_bound_tex = s_tex_id[1];
+        }
+        glColor4f((g_es1_env_rgba[0] / 255.0f) * af,
+                  (g_es1_env_rgba[1] / 255.0f) * af,
+                  (g_es1_env_rgba[2] / 255.0f) * af,
+                  af);
+        glDrawArrays(GL_TRIANGLES, 0, buf_vbo_num_tris * 3);
+    } else {
+        glDrawArrays(GL_TRIANGLES, 0, buf_vbo_num_tris * 3);
+    }
 
     if (!using_two_pass) {
         glDisable(GL_ALPHA_TEST);
@@ -1153,7 +1294,10 @@ if (using_two_pass) {
     if (using_two_pass) {
         // Draw the exact same geometry again, using destination color as base
         // and blend mode based on s_last_modulate (ignore s_last_use_alpha).
-        glBindTexture(GL_TEXTURE_2D, s_tex_id[1]);
+        if (s_last_bound_tex != s_tex_id[1]) {
+            glBindTexture(GL_TEXTURE_2D, s_tex_id[1]);
+            s_last_bound_tex = s_tex_id[1];
+        }
         // Use texture1's alpha directly for blending (ignore vertex color alpha)
         set_texenv_replace();
 
@@ -1226,7 +1370,10 @@ if (using_two_pass) {
         s_blend_enabled = prevBlend; // keep shadow in sync
 
         // Rebind TEXEL0 and restore base texenv for subsequent single-pass draws
-        if (s_tex_id[0] != 0) glBindTexture(GL_TEXTURE_2D, s_tex_id[0]);
+        if (s_tex_id[0] != 0 && s_last_bound_tex != s_tex_id[0]) {
+            glBindTexture(GL_TEXTURE_2D, s_tex_id[0]);
+            s_last_bound_tex = s_tex_id[0];
+        }
         if (g_es1_highp_alpha && g_es1_alpha_test_enable && !g_es1_tex0_in_rgb) set_texenv_font_combine(); else if (g_es1_base_modulate) set_texenv_modulate(); else set_texenv_replace();
     }
 
@@ -1379,6 +1526,7 @@ extern "C" volatile uint8_t g_es1_prim_rgba[4]      = {255,255,255,255};
 extern "C" volatile uint8_t g_es1_env_rgba[4]       = {255,255,255,255};
 extern "C" volatile uint8_t g_es1_use_tex0          = 1;
 extern "C" volatile uint8_t g_es1_use_tex1          = 0;
+extern "C" volatile uint8_t g_es1_text_outline      = 0;
 
 
 

@@ -21,6 +21,8 @@ extern "C" volatile uint8_t g_es1_env_rgba[4];
 // Hint which textures are actually used this draw
 extern "C" volatile uint8_t g_es1_use_tex0;
 extern "C" volatile uint8_t g_es1_use_tex1;
+// Special-case combiner hint: outlined font rendering (uses PRIM+ENV + TEXEL1_ALPHA)
+extern "C" volatile uint8_t g_es1_text_outline;
 #define NOMINMAX
 
 #include <cmath>
@@ -87,6 +89,10 @@ uintptr_t gfxFramebuffer;
 
 //fix this later size is touchy on phats.
 #define TEXTURE_CACHE_MAX_SIZE 256
+
+// Perfect Dark outlined-font combiner used by `textRender()`:
+// RGB = PRIM + (ENV - PRIM) * TEXEL1_ALPHA, A = TEXEL0 * ENV_ALPHA (2-cycle)
+static constexpr uint64_t kTextOutlineCombineMode = 0x14000002006935ULL;
 
 #define C0(pos, width) ((cmd->words.w0 >> (pos)) & ((1U << width) - 1))
 #define C1(pos, width) ((cmd->words.w1 >> (pos)) & ((1U << width) - 1))
@@ -2021,6 +2027,18 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
     g_es1_use_tex1 = comb->used_textures[1] ? 1 : 0;
     // Publish hint whether TEXEL0 contributes to RGB for the current combiner
     g_es1_tex0_in_rgb = comb->tex0_in_rgb ? 1 : 0;
+    // Publish hint for outlined-font rendering (needs PRIM vs ENV split on CI4 fonts).
+    // Prefer heuristic detection (more robust than a single combine_mode constant).
+    const bool is_text_outline =
+        use_2cyc &&
+        comb->used_textures[0] && comb->used_textures[1] &&
+        comb->tex1a_in_rgb &&
+        comb->prim_in_rgb && comb->env_in_rgb &&
+        !comb->tex0_in_rgb && !comb->tex1_in_rgb &&
+        (rdp.palette_fmt == G_TT_IA16) &&
+        (rdp.texture_tile[rdp.first_tile_index].fmt == G_IM_FMT_CI);
+
+    g_es1_text_outline = (key.combine_mode == kTextOutlineCombineMode || is_text_outline) ? 1 : 0;
 
     uint32_t tm = 0;
     uint32_t tex_width[2], tex_height[2], tex_width2[2], tex_height2[2];

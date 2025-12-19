@@ -5,7 +5,7 @@
 #include "lib/mtx.h"
 #include "types.h"
 
-f32 var8005ef10[] = {65536, 65536};
+f32 var8005ef10[] __attribute__((aligned(16))) = {65536, 65536};
 
 void mtx4LoadIdentity(Mtxf *mtx)
 {
