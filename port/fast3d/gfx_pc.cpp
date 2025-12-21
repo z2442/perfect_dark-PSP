@@ -1937,6 +1937,8 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
     uint64_t cc_options = 0;
     bool use_alpha =
         (rdp.other_mode_l & (3 << 20)) == (G_BL_CLR_MEM << 20) && (rdp.other_mode_l & (3 << 16)) == (G_BL_1MA << 16);
+    const bool force_blend = (rdp.other_mode_l & FORCE_BL) == FORCE_BL;
+    const bool alpha_cvg_sel = (rdp.other_mode_l & ALPHA_CVG_SEL) == ALPHA_CVG_SEL;
     const bool use_fog = ((rdp.other_mode_l >> 30) == G_BL_CLR_FOG) || ((rdp.other_mode_l >> 26) == G_BL_A_FOG);
     const bool texture_edge = (rdp.other_mode_l & CVG_X_ALPHA) == CVG_X_ALPHA;
     const bool use_noise = (rdp.other_mode_l & (3U << G_MDSFT_ALPHACOMPARE)) == G_AC_DITHER;
@@ -1944,12 +1946,21 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
     const bool alpha_threshold = (rdp.other_mode_l & (3U << G_MDSFT_ALPHACOMPARE)) == G_AC_THRESHOLD;
     const bool invisible = (rdp.other_mode_l & (3 << 24)) == (G_BL_0 << 24) && (rdp.other_mode_l & (3 << 20)) == (G_BL_CLR_MEM << 20);
     const bool use_grayscale = rdp.grayscale;
-    const bool use_modulate = use_alpha && (rsp.extra_geometry_mode & G_MODULATE_EXT) != 0;
     const bool use_blur = (rdp.other_mode_h & (3U << G_MDSFT_TEXTFILT)) == G_TF_BLUR_EXT;
 
     if (texture_edge) {
         use_alpha = true;
     }
+
+    // Some opaque render modes (eg. *_OPA_TERR / *_SUB_TERR) set ALPHA_CVG_SEL but still use
+    // CLR_MEM, 1MA in the blender. On N64 the effective blender alpha comes from coverage
+    // (opaque interior, AA edges). If we treat these as true alpha blending, SHADE_ALPHA can
+    // leak in (often fog), making solid geometry appear glass-like.
+    if (alpha_cvg_sel && !force_blend && !texture_edge) {
+        use_alpha = false;
+    }
+
+    const bool use_modulate = use_alpha && (rsp.extra_geometry_mode & G_MODULATE_EXT) != 0;
 
     // Publish alpha-test intent for GLES 1.1 backend (text edges, threshold compare)
     {
