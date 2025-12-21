@@ -323,6 +323,8 @@ static FilteringMode current_filter_mode = FILTER_LINEAR;
 
 static bool es_depth_test  = false; /* GL_DEPTH_TEST currently enabled? */
 static bool es_depth_write = false;  /* TRUE if glDepthMask(GL_TRUE)      */
+static bool es_scissor_test = false; /* GL_SCISSOR_TEST currently enabled? */
+static int  es_scissor_x = 0, es_scissor_y = 0, es_scissor_w = 0, es_scissor_h = 0;
 
 static float P_matrix[4][4]; // Global matrix for projection
 
@@ -990,6 +992,11 @@ static void gfx_opengl_set_viewport(int x, int y, int width, int height) {
 static void gfx_opengl_set_scissor(int x, int y, int width, int height) {
     glEnable(GL_SCISSOR_TEST);
     glScissor(x, y, width, height);
+    es_scissor_test = true;
+    es_scissor_x = x;
+    es_scissor_y = y;
+    es_scissor_w = width;
+    es_scissor_h = height;
 }
 
 static void gfx_opengl_set_use_alpha(bool use_alpha, bool modulate) {
@@ -1790,7 +1797,17 @@ void gfx_opengl_clear_framebuffer(bool c, bool d) {
     GLbitfield mask = 0;
     if (c) mask |= GL_COLOR_BUFFER_BIT;
     if (d) { glDepthMask(GL_TRUE); mask |= GL_DEPTH_BUFFER_BIT; }
+    // glClear is affected by scissor; for PD we need depth clears to cover the full buffer
+    // even if the caller hasn't installed a new scissor yet (eg. viPrepareZbuf()).
+    const bool restore_scissor = es_scissor_test;
+    if (restore_scissor) glDisable(GL_SCISSOR_TEST);
+
     if (mask) glClear(mask);
+
+    if (restore_scissor) {
+        glEnable(GL_SCISSOR_TEST);
+        glScissor(es_scissor_x, es_scissor_y, es_scissor_w, es_scissor_h);
+    }
     glDepthMask(current_depth_mask ? GL_TRUE : GL_FALSE);
 }
 
