@@ -2719,7 +2719,7 @@ Gfx *bviewDrawHorizonScanner(Gfx *gdl)
 	}
 	// make a copy of what we have drawn so far and use it as a texture
 	gDPFlushEXT(gdl++);
-	gDPCopyFramebufferEXT(gdl++, g_PrevFrameFb, 0, 0, 0, G_ON);
+	//gDPCopyFramebufferEXT(gdl++, g_PrevFrameFb, 0, 0, 0, G_ON);
 	gDPSetFramebufferTextureEXT(gdl++, 0, 0, 0, g_PrevFrameFb);
 #endif
 
