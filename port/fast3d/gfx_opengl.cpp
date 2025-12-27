@@ -331,6 +331,7 @@ static float P_matrix[4][4]; // Global matrix for projection
 static bool s_supports_depth_clamp = false;
 static bool s_emulate_depth_clamp = true;
 static const float kDepthClampScale = 0.3f; // matches desktop fallback when depth clamp is unavailable
+extern "C" volatile float g_es1_depth_clamp_scale = 1.0f;
 
 extern "C" volatile uint8_t g_es1_depth_clamp_active;
 
@@ -388,7 +389,7 @@ static void end_2d_batch() {
     pdMatrixMode(GL_MODELVIEW);
 }
 
-extern "C" float g_es1_P[4][4];
+extern "C" float g_es1_P[4][4];                                                                                       
 extern "C" float g_es1_M[4][4];
 extern "C" volatile int g_es1_matrix_dirty;
 extern "C" volatile uint8_t g_es1_cull_mode; // 0=disable, 1=back, 2=front
@@ -407,6 +408,7 @@ extern "C" volatile uint8_t g_es1_use_tex1;          // 0/1: whether TEXEL1 is u
 extern "C" volatile uint8_t g_es1_text_outline;      // 0/1: outlined font combiner active
 extern "C" volatile uint8_t g_es1_front_face_cw;     // 0/1: front faces are CW when mirrored
 extern "C" volatile uint8_t g_es1_depth_clamp_active; // 0/1: projection currently applies depth clamp
+extern "C" volatile uint8_t g_es1_cpu_transform;     // 0/1: CPU computes clip-space positions
 
 static void glLoadRowMajorMatrixf(const float m[4][4]) {
     // Our matrices are laid out the way OpenGL expects already; load directly.
@@ -416,8 +418,10 @@ static void glLoadRowMajorMatrixf(const float m[4][4]) {
 static void load_projection_matrix_with_depth_clamp(const float m[4][4]) {
     if (s_supports_depth_clamp) {
         g_es1_depth_clamp_active = 1;
+        g_es1_depth_clamp_scale = 1.0f;
     } else if (!s_emulate_depth_clamp) {
         g_es1_depth_clamp_active = 0;
+        g_es1_depth_clamp_scale = 1.0f;
     }
     if (s_emulate_depth_clamp) {
         float adjusted[4][4];
@@ -427,11 +431,13 @@ static void load_projection_matrix_with_depth_clamp(const float m[4][4]) {
         }
         pdLoadMatrixf(&adjusted[0][0]);
         g_es1_depth_clamp_active = 1;
+        g_es1_depth_clamp_scale = kDepthClampScale;
     } else {
         pdLoadMatrixf(&m[0][0]);
         if (!s_supports_depth_clamp) {
             g_es1_depth_clamp_active = 0;
         }
+        g_es1_depth_clamp_scale = 1.0f;
     }
 }
 
@@ -1059,17 +1065,25 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
     } else {
         if (g_es1_matrix_dirty) {
             pdMatrixMode(GL_PROJECTION);
-            load_projection_matrix_with_depth_clamp(g_es1_P);
+            if (g_es1_cpu_transform) {
+                pdLoadIdentity();
+            } else {
+                load_projection_matrix_with_depth_clamp(g_es1_P);
+            }
             pdMatrixMode(GL_MODELVIEW);
-            glLoadRowMajorMatrixf(g_es1_M);
+            if (g_es1_cpu_transform) {
+                pdLoadIdentity();
+            } else {
+                glLoadRowMajorMatrixf(g_es1_M);
+            }
             g_es1_matrix_dirty = 0;
         }
     }
 
     // Depth test state is managed by set_depth_mode; do not toggle here.
 
-    // Keep CCW winding; CPU flips per-limb if mirrored.
-    //glFrontFace(GL_CCW);
+    // Flip front face when mirrored so GL culling matches CPU winding decisions.
+    glFrontFace(g_es1_front_face_cw ? GL_CW : GL_CCW);
     // Apply N64 cull mode (was disabled above for forced 2D)
     if (!forced2D && g_es1_cull_mode == 0) {
         glDisable(GL_CULL_FACE);
@@ -1534,6 +1548,7 @@ extern "C" volatile uint8_t g_es1_env_rgba[4]       = {255,255,255,255};
 extern "C" volatile uint8_t g_es1_use_tex0          = 1;
 extern "C" volatile uint8_t g_es1_use_tex1          = 0;
 extern "C" volatile uint8_t g_es1_text_outline      = 0;
+extern "C" volatile uint8_t g_es1_cpu_transform     = 0;
 
 
 

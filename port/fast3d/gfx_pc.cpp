@@ -14,6 +14,8 @@ extern "C" volatile uint8_t g_es1_tex0_in_rgb;
 extern "C" volatile uint8_t g_es1_front_face_cw;
 extern "C" volatile uint8_t g_es1_force_2d;
 extern "C" volatile uint8_t g_es1_depth_clamp_active;
+extern "C" volatile uint8_t g_es1_cpu_transform;
+extern "C" volatile float   g_es1_depth_clamp_scale;
 extern "C" volatile uint8_t g_es1_base_modulate;
 extern "C" volatile uint8_t g_es1_base_color_mode; // 0=none,1=shade,2=prim,3=env
 extern "C" volatile uint8_t g_es1_prim_rgba[4];
@@ -280,6 +282,10 @@ float g_es1_MP[4][4] = { {0} };
 volatile int g_es1_matrix_dirty = 1;
 float g_es1_P[4][4] = { {0} };
 float g_es1_M[4][4] = { {0} };
+#if defined(__PSP__)
+static uint8_t s_psp_model_mtx_fix = 0;
+static uint8_t s_psp_model_mtx_fix_stack[11] = { 0 };
+#endif
 extern "C" volatile uint8_t g_es1_cull_mode; // 0=disable, 1=cull back, 2=cull front
 volatile uint8_t g_es1_cull_mode = 1;
 
@@ -1620,6 +1626,56 @@ static void gfx_matrix_mul(float res[4][4], const float a[4][4], const float b[4
     memcpy(res, tmp, sizeof(tmp));
 }
 
+#if defined(__PSP__)
+static void gfx_matrix_transpose(float m[4][4]) {
+    for (int i = 0; i < 4; ++i) {
+        for (int j = i + 1; j < 4; ++j) {
+            float tmp = m[i][j];
+            m[i][j] = m[j][i];
+            m[j][i] = tmp;
+        }
+    }
+}
+
+static void gfx_matrix_identity(float m[4][4]) {
+    memset(m, 0, sizeof(float) * 16);
+    m[0][0] = 1.0f;
+    m[1][1] = 1.0f;
+    m[2][2] = 1.0f;
+    m[3][3] = 1.0f;
+}
+
+static void gfx_apply_aspect_to_mp(float mp[4][4]) {
+    if (fbActive) {
+        return;
+    }
+    const float scale = rsp.aspect_scale / gfx_current_dimensions.aspect_ratio;
+    const float ofs = rsp.aspect_ofs;
+    float tmp[4][4];
+    memcpy(tmp, mp, sizeof(tmp));
+    for (int i = 0; i < 4; ++i) {
+        mp[i][0] = tmp[i][0] * scale + tmp[i][3] * (scale * ofs);
+        mp[i][1] = tmp[i][1];
+        mp[i][2] = tmp[i][2];
+        mp[i][3] = tmp[i][3];
+    }
+}
+
+static void gfx_publish_es1_matrices(void) {
+    if (s_psp_model_mtx_fix) {
+        float tmpMP[4][4];
+        memcpy(tmpMP, rsp.MP_matrix, sizeof(tmpMP));
+        gfx_apply_aspect_to_mp(tmpMP);
+        memcpy(g_es1_P, tmpMP, sizeof(tmpMP));
+        gfx_matrix_identity(g_es1_M);
+    } else {
+        memcpy(g_es1_P, rsp.P_matrix, sizeof(rsp.P_matrix));
+        memcpy(g_es1_M, rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], sizeof(rsp.P_matrix));
+    }
+    g_es1_matrix_dirty = 1;
+}
+#endif
+
 static float mat3_det_mv(const float M[4][4]) {
     // Treat M as column-major (matching how we load into GL without transposing)
     const float c0x = M[0][0], c0y = M[1][0], c0z = M[2][0];
@@ -1667,22 +1723,40 @@ static void gfx_sp_matrix(uint8_t parameters, const int32_t* addr) {
             ++rsp.modelview_matrix_stack_size;
             memcpy(rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1],
                    rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 2], sizeof(matrix));
+#if defined(__PSP__)
+            s_psp_model_mtx_fix_stack[rsp.modelview_matrix_stack_size - 1] =
+                s_psp_model_mtx_fix_stack[rsp.modelview_matrix_stack_size - 2];
+#endif
         }
         if (parameters & G_MTX_LOAD) {
             memcpy(rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], matrix, sizeof(matrix));
         } else {
+#if defined(__PSP__)
+            // PSP: match N64 modelview post-multiply order (M = M_old * M_new).
+            gfx_matrix_mul(rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1],
+                           rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], matrix);
+#else
             // Match desktop path: M = M_new * M_old
             gfx_matrix_mul(rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], matrix,
                            rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1]);
+#endif
         }
+#if defined(__PSP__)
+        s_psp_model_mtx_fix_stack[rsp.modelview_matrix_stack_size - 1] = s_psp_model_mtx_fix;
+        s_psp_model_mtx_fix = s_psp_model_mtx_fix_stack[rsp.modelview_matrix_stack_size - 1];
+#endif
         rsp.lights_changed = 1;
     }
     gfx_matrix_mul(rsp.MP_matrix, rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], rsp.P_matrix);
 
     // Publish raw P and M to GLES (no aspect bake)
+#if defined(__PSP__)
+    gfx_publish_es1_matrices();
+#else
     memcpy(g_es1_P, rsp.P_matrix, sizeof(rsp.P_matrix));
     memcpy(g_es1_M, rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], sizeof(rsp.P_matrix));
     g_es1_matrix_dirty = 1;
+#endif
 }
 
 static void gfx_sp_pop_matrix(uint32_t count) {
@@ -1692,14 +1766,26 @@ static void gfx_sp_pop_matrix(uint32_t count) {
         if (rsp.modelview_matrix_stack_size > 0) {
             --rsp.modelview_matrix_stack_size;
             if (rsp.modelview_matrix_stack_size > 0) {
+#if defined(__PSP__)
+                s_psp_model_mtx_fix = s_psp_model_mtx_fix_stack[rsp.modelview_matrix_stack_size - 1];
+#endif
                 gfx_matrix_mul(rsp.MP_matrix, rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1],
                                rsp.P_matrix);
                 // Publish raw P and M to GLES (no aspect bake)
+#if defined(__PSP__)
+                gfx_publish_es1_matrices();
+#else
                 memcpy(g_es1_P, rsp.P_matrix, sizeof(rsp.P_matrix));
                 memcpy(g_es1_M, rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], sizeof(rsp.P_matrix));
                 g_es1_matrix_dirty = 1;
+#endif
                 rsp.lights_changed = 1;
             }
+#if defined(__PSP__)
+            if (rsp.modelview_matrix_stack_size == 0) {
+                s_psp_model_mtx_fix = 0;
+            }
+#endif
         }
     }
 }
@@ -1730,11 +1816,35 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* verti
         const Vtx* v = &vertices[i];
         struct LoadedVertex* d = &rsp.loaded_vertices[dest_index];
 
+        float x;
+        float y;
+        float z;
+        float w;
+
         // Store object-space position; GL fixed pipeline will apply M and P
-        float x = (float)v->v[0];
-        float y = (float)v->v[1];
-        float z = (float)v->v[2];
-        float w = 1.0f;
+#if defined(__PSP__)
+        if (g_es1_cpu_transform) {
+            const float (*MP)[4] = rsp.MP_matrix;
+            x = (float)v->v[0] * MP[0][0] + (float)v->v[1] * MP[1][0] + (float)v->v[2] * MP[2][0] + MP[3][0];
+            y = (float)v->v[0] * MP[0][1] + (float)v->v[1] * MP[1][1] + (float)v->v[2] * MP[2][1] + MP[3][1];
+            z = (float)v->v[0] * MP[0][2] + (float)v->v[1] * MP[1][2] + (float)v->v[2] * MP[2][2] + MP[3][2];
+            w = (float)v->v[0] * MP[0][3] + (float)v->v[1] * MP[1][3] + (float)v->v[2] * MP[2][3] + MP[3][3];
+            if (g_es1_depth_clamp_active && g_es1_depth_clamp_scale != 1.0f) {
+                z *= g_es1_depth_clamp_scale;
+            }
+            x = gfx_adjust_x_for_aspect_ratio(x, w);
+        } else {
+            x = (float)v->v[0];
+            y = (float)v->v[1];
+            z = (float)v->v[2];
+            w = 1.0f;
+        }
+#else
+        x = (float)v->v[0];
+        y = (float)v->v[1];
+        z = (float)v->v[2];
+        w = 1.0f;
+#endif
 
         short U = v->s * rsp.texture_scaling_factor.s >> 16;
         short V = v->t * rsp.texture_scaling_factor.t >> 16;
@@ -1880,10 +1990,6 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
     struct LoadedVertex* v3 = &rsp.loaded_vertices[vtx3_idx];
     struct LoadedVertex* v_arr[3] = { v1, v2, v3 };
 
-    // Detect if the current ModelView flips handedness (negative determinant)
-    const float (*MV)[4] = rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1];
-    const bool mv_mirrored = (mat3_det_mv(MV) < 0.0f);
-
     // Map N64 G_CULL_* geometry bits to GL culling. We keep GL front-face=CCW;
     // CPU will swap winding per limb if mirrored.
     uint8_t new_cull = 1; // default: cull back
@@ -1894,9 +2000,23 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
     else if (!want_cull_back && !want_cull_front) new_cull = 0;   // no culling
     else /* both set */ new_cull = 1; // prefer back; matches most microcode uses
     // Honor extra-geometry invert culling flag if set by microcode
-    if (rsp.extra_geometry_mode & G_INVERT_CULLING_EXT) {
+#if defined(__PSP__)
+    // PSP: CPU culling handles orientation; disable GL culling.
+    new_cull = 0;
+#else
+    // Detect if the current ModelView flips handedness (negative determinant)
+    const float (*MV)[4] = rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1];
+    const bool mv_mirrored = (mat3_det_mv(MV) < 0.0f);
+    const bool invert_culling_ext = (rsp.extra_geometry_mode & G_INVERT_CULLING_EXT) != 0;
+    const bool invert_culling = mv_mirrored ^ invert_culling_ext;
+    if (invert_culling) {
         if (new_cull == 1) new_cull = 2; else if (new_cull == 2) new_cull = 1;
     }
+    if (g_es1_front_face_cw != (invert_culling ? 1 : 0)) {
+        gfx_flush();
+        g_es1_front_face_cw = invert_culling ? 1 : 0;
+    }
+#endif
     if (new_cull != g_es1_cull_mode) {
         gfx_flush();
         g_es1_cull_mode = new_cull;
@@ -2196,29 +2316,109 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
 
         const float alpha = vtx->color.a / 255.0f;
         TempV &tv = TV[i];
+#if defined(__PSP__)
+        if (g_es1_cpu_transform) {
+            // vtx positions are already in clip space (from gfx_sp_vertex).
+            tv.x = vtx->x;
+            tv.y = vtx->y;
+            tv.z = vtx->z;
+            tv.w = w;
+            tv.clip_x = tv.x;
+            tv.clip_y = tv.y;
+            tv.clip_z = tv.z;
+            tv.clip_w = tv.w;
+        } else {
+            tv.x = vtx->x;
+            tv.y = vtx->y;
+            tv.z = vtx->z;
+            tv.w = w;
+            const float (*MP)[4] = rsp.MP_matrix;
+            // Multiply by columns so the clip vector matches the GPU's column-major transform.
+            tv.clip_x = tv.x * MP[0][0] + tv.y * MP[1][0] + tv.z * MP[2][0] + tv.w * MP[3][0];
+            tv.clip_y = tv.x * MP[0][1] + tv.y * MP[1][1] + tv.z * MP[2][1] + tv.w * MP[3][1];
+            tv.clip_z = tv.x * MP[0][2] + tv.y * MP[1][2] + tv.z * MP[2][2] + tv.w * MP[3][2];
+            tv.clip_w = tv.x * MP[0][3] + tv.y * MP[1][3] + tv.z * MP[2][3] + tv.w * MP[3][3];
+        }
+#else
         tv.x = vtx->x;
         tv.y = vtx->y;
         tv.z = vtx->z;
         tv.w = w;
-        tv.u = u;
-        tv.v = v;
-        tv.a = alpha;
-        tv.r = (vtx->color.r / 255.0f) * alpha;
-        tv.g = (vtx->color.g / 255.0f) * alpha;
-        tv.b = (vtx->color.b / 255.0f) * alpha;
-
         const float (*MP)[4] = rsp.MP_matrix;
         // Multiply by columns so the clip vector matches the GPU's column-major transform.
         tv.clip_x = tv.x * MP[0][0] + tv.y * MP[1][0] + tv.z * MP[2][0] + tv.w * MP[3][0];
         tv.clip_y = tv.x * MP[0][1] + tv.y * MP[1][1] + tv.z * MP[2][1] + tv.w * MP[3][1];
         tv.clip_z = tv.x * MP[0][2] + tv.y * MP[1][2] + tv.z * MP[2][2] + tv.w * MP[3][2];
         tv.clip_w = tv.x * MP[0][3] + tv.y * MP[1][3] + tv.z * MP[2][3] + tv.w * MP[3][3];
+#endif
+        tv.u = u;
+        tv.v = v;
+        tv.a = alpha;
+        tv.r = (vtx->color.r / 255.0f) * alpha;
+        tv.g = (vtx->color.g / 255.0f) * alpha;
+        tv.b = (vtx->color.b / 255.0f) * alpha;
     }
 
-        auto push9 = [&](const TempV& V){
-        buf_vbo[buf_vbo_len++] = V.x;
-        buf_vbo[buf_vbo_len++] = V.y;
-        buf_vbo[buf_vbo_len++] = V.z;
+#if defined(__PSP__)
+    // CPU-side culling in clip space, matching original GL3 path.
+    if (rsp.geometry_mode & G_CULL_BOTH) {
+        const float w1 = (fabsf(TV[0].clip_w) < 1e-5f) ? 1e-5f : TV[0].clip_w;
+        const float w2 = (fabsf(TV[1].clip_w) < 1e-5f) ? 1e-5f : TV[1].clip_w;
+        const float w3 = (fabsf(TV[2].clip_w) < 1e-5f) ? 1e-5f : TV[2].clip_w;
+
+        const float x1 = TV[0].clip_x / w1;
+        const float y1 = TV[0].clip_y / w1;
+        const float x2 = TV[1].clip_x / w2;
+        const float y2 = TV[1].clip_y / w2;
+        const float x3 = TV[2].clip_x / w3;
+        const float y3 = TV[2].clip_y / w3;
+
+        float dx1 = x1 - x2;
+        float dy1 = y1 - y2;
+        float dx2 = x3 - x2;
+        float dy2 = y3 - y2;
+        float cross = dx1 * dy2 - dy1 * dx2;
+
+        if ((TV[0].clip_w < 0) ^ (TV[1].clip_w < 0) ^ (TV[2].clip_w < 0)) {
+            cross = -cross;
+        }
+
+        if (rsp.extra_geometry_mode & G_INVERT_CULLING_EXT) {
+            cross = -cross;
+        }
+
+        switch (rsp.geometry_mode & G_CULL_BOTH) {
+        case G_CULL_FRONT:
+            if (cross <= 0.0f) {
+                return;
+            }
+            break;
+        case G_CULL_BACK:
+            if (cross >= 0.0f) {
+                return;
+            }
+            break;
+        case G_CULL_BOTH:
+            return;
+        }
+    }
+#endif
+
+    auto push9 = [&](const TempV& V){
+        float x = V.x;
+        float y = V.y;
+        float z = V.z;
+#if defined(__PSP__)
+        if (g_es1_cpu_transform) {
+            const float w = (fabsf(V.w) < 1e-5f) ? 1e-5f : V.w;
+            x /= w;
+            y /= w;
+            z /= w;
+        }
+#endif
+        buf_vbo[buf_vbo_len++] = x;
+        buf_vbo[buf_vbo_len++] = y;
+        buf_vbo[buf_vbo_len++] = z;
         buf_vbo[buf_vbo_len++] = V.u;
         buf_vbo[buf_vbo_len++] = V.v;
         buf_vbo[buf_vbo_len++] = V.r;
@@ -2232,9 +2432,11 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
         if (++buf_vbo_num_tris == MAX_BUFFERED) gfx_flush();
     };
 
+    const bool swap_winding = false;
+
     if (g_es1_force_2d || is_rect || g_force_two_pass) {
         // Screen-space batches and two-pass composites rely on GPU-side clipping/depth handling.
-        if (mv_mirrored) {
+        if (swap_winding) {
             emit_tri(TV[0], TV[2], TV[1]);
         } else {
             emit_tri(TV[0], TV[1], TV[2]);
@@ -2318,7 +2520,7 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
     }
 
     if (all_inside) {
-        if (mv_mirrored) {
+        if (swap_winding) {
             emit_tri(TV[0], TV[2], TV[1]);
         } else {
             emit_tri(TV[0], TV[1], TV[2]);
@@ -2395,7 +2597,7 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
     }
 
     for (int i = 1; i < poly_count - 1; ++i) {
-        if (mv_mirrored) {
+        if (swap_winding) {
             emit_tri(poly[0], poly[i + 1], poly[i]);
         } else {
             emit_tri(poly[0], poly[i], poly[i + 1]);
@@ -3161,7 +3363,6 @@ static void gfx_run_dl(Gfx* cmd) {
     int dummy = 0;
     char dlName[128];
     const char* fileName;
-
     Gfx* dListStart = cmd;
     uint64_t ourHash = -1;
 
@@ -3173,6 +3374,18 @@ static void gfx_run_dl(Gfx* cmd) {
             case G_NOOP:
                 break;
             case G_MTX: {
+#if defined(__PSP__)
+                const uint8_t params = C0(16, 8);
+                if ((params & G_MTX_PROJECTION) == 0) {
+                    if ((cmd->words.w1 & 1) != 0) {
+                        constexpr uintptr_t kModelMtxSeg = 3;
+                        const uintptr_t seg = (cmd->words.w1 & 0x0f000000) >> 24;
+                        s_psp_model_mtx_fix = (seg == kModelMtxSeg) ? 1 : 0;
+                    } else {
+                        s_psp_model_mtx_fix = 0;
+                    }
+                }
+#endif
                 gfx_sp_matrix(C0(16, 8), (const int32_t*)seg_addr(cmd->words.w1));
                 break;
             }
@@ -3189,6 +3402,23 @@ static void gfx_run_dl(Gfx* cmd) {
                 gfx_sp_texture(C1(16, 16), C1(0, 16), C0(11, 3), C0(8, 3), C0(0, 8));
                 break;
             case G_VTX:
+#if defined(__PSP__)
+                if ((cmd->words.w1 & 1) != 0) {
+                    constexpr uintptr_t kModelVtxSeg = 4;
+                    const uintptr_t seg = (cmd->words.w1 & 0x0f000000) >> 24;
+                    const uint8_t want_model_fix = (seg == kModelVtxSeg) ? 1 : 0;
+                    if (want_model_fix != s_psp_model_mtx_fix) {
+                        s_psp_model_mtx_fix = want_model_fix;
+                        gfx_publish_es1_matrices();
+                    }
+                    const uint8_t want_cpu = want_model_fix;
+                    if (want_cpu != g_es1_cpu_transform) {
+                        gfx_flush();
+                        g_es1_cpu_transform = want_cpu;
+                        g_es1_matrix_dirty = 1;
+                    }
+                }
+#endif
                 gfx_sp_vertex(C0(0, 16) / sizeof(Vtx), C0(16, 4), (const Vtx*)seg_addr(cmd->words.w1));
                 break;
             case G_DL:
@@ -3449,6 +3679,11 @@ static void gfx_run_dl(Gfx* cmd) {
 
 static void gfx_sp_reset() {
     rsp.modelview_matrix_stack_size = 1;
+#if defined(__PSP__)
+    s_psp_model_mtx_fix = 0;
+    s_psp_model_mtx_fix_stack[0] = 0;
+    g_es1_cpu_transform = 0;
+#endif
     rsp.current_num_lights = 2;
     rsp.lights_changed = true;
 }
@@ -3487,6 +3722,7 @@ extern "C" void gfx_init(const GfxInitSettings *settings) {
     rsp.lookat[0].dir[0] = rsp.lookat[1].dir[1] = 0x7F;
     rsp.current_lookat_coeffs[0][0] = rsp.current_lookat_coeffs[1][1] = 1.f;
     rsp.lookat_enabled = true;
+
 }
 
 extern "C" void gfx_destroy(void) {
