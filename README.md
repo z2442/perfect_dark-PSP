@@ -5,20 +5,10 @@
 3)run the EBOOT placed in the build-psp directory 
 
 - Current Status-
+- Running on PSP GL ES 1.1
 - Runs on PSP Phats(32MB), Slims(64MB) and Vita EPSP(64MB)
+- Framerate could be improved but rendering is completed under GL and started with PSP GU native. 
 
-- Current Issues -
--Texture bugs
-
-- Next Steps-
-- Improve Rendering 
-- Improve performance on PSP.
-- Replace psp GL with native pspGU -> Started!
-- Both rendering methods are being developed side by side. The PSPGL version that uses GL ES 1.1 is much more developed and playable. 
-
-- 
-- Replace SDL2 audio with psp audio lib -> Done!
-- Replace SDL2 input with psp native -> Done!
 
 Video:
 https://youtu.be/tW5jyqPiTaI?si=Pu8vZp1W-zcNEr6i
