@@ -54,6 +54,8 @@ PSP_MAIN_THREAD_STACK_SIZE_KB(256); // Increase stack size if needed (default is
 
 
 int exit_callback(int arg1, int arg2, void *common) {
+    inputSaveBinds();
+    configSave(CONFIG_PATH);
     sceKernelExitGame();
     return 0;
 }

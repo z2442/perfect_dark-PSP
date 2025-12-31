@@ -17,10 +17,27 @@
 #include "fs.h"
 
 #define MAX_BIND_STR 256
+#define PSP_CONTROLS_FNAME "pspcontrols.ini"
+#define PSP_CONTROLS_PATH "$E/" PSP_CONTROLS_FNAME
+#define PSP_ESCAPE_COMBO (PSP_CTRL_START | PSP_CTRL_SELECT)
+#define PSP_DELETE_COMBO (PSP_CTRL_LTRIGGER | PSP_CTRL_RTRIGGER | PSP_CTRL_SELECT)
 
 // PSP: Remove controller config, pads, and all SDL controller state.
 static u32 binds[MAXCONTROLLERS][CK_TOTAL_COUNT][INPUT_MAX_BINDS];
 static char bindStrs[MAXCONTROLLERS][CK_TOTAL_COUNT][256];
+static s32 inputSwapSticks[MAXCONTROLLERS];
+static s32 inputDualAnalog[MAXCONTROLLERS];
+static s32 inputCancelCButtons[MAXCONTROLLERS];
+static f32 inputAxisScale[MAXCONTROLLERS][2][2];
+static f32 inputAxisDeadzone[MAXCONTROLLERS][2][2];
+static SceCtrlData pspPad;
+static u32 pspButtons;
+static u32 pspButtonsPrev;
+static s32 pspAnalogX;
+static s32 pspAnalogY;
+static s32 inputSaveDirty = 0;
+static s32 inputSaveCountdown = 0;
+static s32 inputSuppressDirty = 0;
 static s32 fakeControllers = 0;
 static s32 firstController = 0;
 static s32 connectedMask = 1;
@@ -129,9 +146,139 @@ static char vkNames[VK_TOTAL_COUNT][64];
 
 static s8 vkPrevState[VK_TOTAL_COUNT];
 
+#define INPUT_ARRAYCOUNT(a) ((s32)(sizeof(a) / sizeof((a)[0])))
+
+static void inputMarkDirty(void)
+{
+	if (inputSuppressDirty) {
+		return;
+	}
+	inputSaveDirty = 1;
+	inputSaveCountdown = 30;
+}
+
+static void inputMaybeSave(void)
+{
+	if (!inputSaveDirty) {
+		return;
+	}
+	if (inputSaveCountdown > 0) {
+		--inputSaveCountdown;
+		if (inputSaveCountdown > 0) {
+			return;
+		}
+	}
+	inputSaveDirty = 0;
+	inputSaveBinds();
+}
+
+enum {
+	VK_JOY1_A = VK_JOY1_BEGIN + 0,
+	VK_JOY1_B = VK_JOY1_BEGIN + 1,
+	VK_JOY1_X = VK_JOY1_BEGIN + 2,
+	VK_JOY1_Y = VK_JOY1_BEGIN + 3,
+	VK_JOY1_BACK = VK_JOY1_BEGIN + 4,
+	VK_JOY1_GUIDE = VK_JOY1_BEGIN + 5,
+	VK_JOY1_START = VK_JOY1_BEGIN + 6,
+	VK_JOY1_LSTICK = VK_JOY1_BEGIN + 7,
+	VK_JOY1_RSTICK = VK_JOY1_BEGIN + 8,
+	VK_JOY1_LSHOULDER = VK_JOY1_BEGIN + 9,
+	VK_JOY1_RSHOULDER = VK_JOY1_BEGIN + 10,
+	VK_JOY1_DPAD_UP = VK_JOY1_BEGIN + 11,
+	VK_JOY1_DPAD_DOWN = VK_JOY1_BEGIN + 12,
+	VK_JOY1_DPAD_LEFT = VK_JOY1_BEGIN + 13,
+	VK_JOY1_DPAD_RIGHT = VK_JOY1_BEGIN + 14,
+	VK_JOY1_BUTTON_15 = VK_JOY1_BEGIN + 15,
+	VK_JOY1_BUTTON_16 = VK_JOY1_BEGIN + 16,
+	VK_JOY1_BUTTON_17 = VK_JOY1_BEGIN + 17,
+	VK_JOY1_BUTTON_18 = VK_JOY1_BEGIN + 18,
+	VK_JOY1_BUTTON_19 = VK_JOY1_BEGIN + 19,
+	VK_JOY1_TOUCHPAD = VK_JOY1_BEGIN + 20,
+	VK_JOY1_BUTTON_21 = VK_JOY1_BEGIN + 21,
+	VK_JOY1_BUTTON_22 = VK_JOY1_BEGIN + 22,
+	VK_JOY1_BUTTON_23 = VK_JOY1_BEGIN + 23,
+	VK_JOY1_BUTTON_24 = VK_JOY1_BEGIN + 24,
+	VK_JOY1_BUTTON_25 = VK_JOY1_BEGIN + 25,
+	VK_JOY1_BUTTON_26 = VK_JOY1_BEGIN + 26,
+	VK_JOY1_BUTTON_27 = VK_JOY1_BEGIN + 27,
+	VK_JOY1_BUTTON_28 = VK_JOY1_BEGIN + 28,
+	VK_JOY1_BUTTON_29 = VK_JOY1_BEGIN + 29,
+};
+
+struct pspvkmap {
+	u32 vk;
+	u32 button;
+	const char *name;
+};
+
+static const struct pspvkmap pspKeyMap[] = {
+	{ VK_JOY1_A,       PSP_CTRL_CROSS,    "PSP_CROSS" },
+	{ VK_JOY1_B,       PSP_CTRL_CIRCLE,   "PSP_CIRCLE" },
+	{ VK_JOY1_X,       PSP_CTRL_SQUARE,   "PSP_SQUARE" },
+	{ VK_JOY1_Y,       PSP_CTRL_TRIANGLE, "PSP_TRIANGLE" },
+	{ VK_JOY1_LTRIG,   PSP_CTRL_LTRIGGER, "PSP_LTRIGGER" },
+	{ VK_JOY1_RTRIG,   PSP_CTRL_RTRIGGER, "PSP_RTRIGGER" },
+	{ VK_JOY1_START,   PSP_CTRL_START,    "PSP_START" },
+	{ VK_JOY1_BACK,    PSP_CTRL_SELECT,   "PSP_SELECT" },
+	{ VK_JOY1_DPAD_UP,    PSP_CTRL_UP,    "PSP_DPAD_UP" },
+	{ VK_JOY1_DPAD_DOWN,  PSP_CTRL_DOWN,  "PSP_DPAD_DOWN" },
+	{ VK_JOY1_DPAD_LEFT,  PSP_CTRL_LEFT,  "PSP_DPAD_LEFT" },
+	{ VK_JOY1_DPAD_RIGHT, PSP_CTRL_RIGHT, "PSP_DPAD_RIGHT" },
+};
+
+static void inputSetDefaultKeyBindsInternal(s32 cidx, s32 n64mode, s32 markDirty)
+{
+	if (cidx < 0 || cidx >= INPUT_MAX_CONTROLLERS) {
+		return;
+	}
+
+	memset(binds[cidx], 0, sizeof(binds[cidx]));
+
+	(void)n64mode;
+
+	inputKeyBind(cidx, CK_C_U,   -1, VK_JOY1_Y);
+	inputKeyBind(cidx, CK_C_D,   -1, VK_JOY1_A);
+	inputKeyBind(cidx, CK_C_L,   -1, VK_JOY1_X);
+	inputKeyBind(cidx, CK_C_R,   -1, VK_JOY1_B);
+	inputKeyBind(cidx, CK_ZTRIG, -1, VK_JOY1_RTRIG);
+	inputKeyBind(cidx, CK_LTRIG, -1, VK_JOY1_LTRIG);
+	inputKeyBind(cidx, CK_START, -1, VK_JOY1_START);
+	inputKeyBind(cidx, CK_RTRIG, -1, VK_JOY1_BACK);
+	inputKeyBind(cidx, CK_DPAD_U, -1, VK_JOY1_DPAD_UP);
+	inputKeyBind(cidx, CK_DPAD_D, -1, VK_JOY1_DPAD_DOWN);
+	inputKeyBind(cidx, CK_B, -1, VK_JOY1_DPAD_LEFT);
+	inputKeyBind(cidx, CK_A, -1, VK_JOY1_DPAD_RIGHT);
+
+	if (markDirty) {
+		inputMarkDirty();
+	}
+}
+
 void inputSetDefaultKeyBinds(s32 cidx, s32 n64mode)
 {
-	memset(binds[cidx], 0, sizeof(binds[cidx]));
+	inputSetDefaultKeyBindsInternal(cidx, n64mode, 1);
+}
+
+static void inputResetDefaults(void)
+{
+	inputSaveDirty = 0;
+	inputSaveCountdown = 0;
+
+	for (s32 i = 0; i < MAXCONTROLLERS; ++i) {
+		memset(bindStrs[i], 0, sizeof(bindStrs[i]));
+		inputSwapSticks[i] = 0;
+		inputDualAnalog[i] = 1;
+		inputCancelCButtons[i] = 0;
+
+		for (s32 stick = 0; stick < 2; ++stick) {
+			for (s32 axis = 0; axis < 2; ++axis) {
+				inputAxisScale[i][stick][axis] = 1.0f;
+				inputAxisDeadzone[i][stick][axis] = 0.078125f;
+			}
+		}
+
+		inputSetDefaultKeyBindsInternal(i, 0, 0);
+	}
 }
 
 // PSP: No controller hotplug or SDL event filter needed.
@@ -160,6 +307,8 @@ void inputSaveBinds(void)
 			}
 		}
 	}
+
+	configSavePrefix(PSP_CONTROLS_PATH, "Input.");
 }
 
 static inline void inputParseBindString(const s32 ctrl, const u32 ck, char *bindstr)
@@ -191,11 +340,13 @@ static inline void inputParseBindString(const s32 ctrl, const u32 ck, char *bind
 
 static inline void inputLoadBinds(void)
 {
+	inputSuppressDirty = 1;
 	for (s32 i = 0; i < MAXCONTROLLERS; ++i) {
 		for (u32 ck = 0; ck < CK_TOTAL_COUNT; ++ck) {
 			inputParseBindString(i, ck, bindStrs[i][ck]);
 		}
 	}
+	inputSuppressDirty = 0;
 }
 
 // PSP: Replace inputInit with controller setup
@@ -203,6 +354,13 @@ s32 inputInit(void)
 {
     sceCtrlSetSamplingCycle(0);
     sceCtrlSetSamplingMode(PSP_CTRL_MODE_ANALOG);
+	inputResetDefaults();
+	if (fsFileSize(PSP_CONTROLS_PATH) > 0) {
+		configLoad(PSP_CONTROLS_PATH);
+		inputLoadBinds();
+	} else {
+		inputSaveBinds();
+	}
     return 1;
 }
 
@@ -218,7 +376,7 @@ static inline s32 inputBindPressed(const s32 idx, const u32 ck)
 	return 0;
 }
 
-static inline s32 inputAxisScale(s32 x, const s32 deadzone, const f32 scale)
+static inline s32 inputApplyAxisScale(s32 x, const s32 deadzone, const f32 scale)
 {
 	if (abs(x) < deadzone) {
 		return 0;
@@ -236,45 +394,71 @@ static inline s32 inputAxisScale(s32 x, const s32 deadzone, const f32 scale)
 	}
 }
 
-// Added helper function for deadzone application
-static inline s32 apply_deadzone(s32 value, s32 deadzone) {
-    if (value > -deadzone && value < deadzone)
-        return 0;
-    return value;
+static inline f32 inputClampFloat(f32 val, f32 min, f32 max)
+{
+	if (val < min) return min;
+	if (val > max) return max;
+	return val;
+}
+
+static inline s8 inputScaleAxisToN64(s32 raw, f32 deadzone, f32 scale)
+{
+	const f32 clampedDeadzone = inputClampFloat(deadzone, 0.f, 1.f);
+	const f32 clampedScale = inputClampFloat(scale, 0.f, 10.f);
+	const s32 raw16 = raw << 8;
+	const s32 dz = (s32)(clampedDeadzone * 32768.f + 0.5f);
+	if (dz >= 32768) {
+		return 0;
+	}
+	const s32 scaled = inputApplyAxisScale(raw16, dz, clampedScale);
+	s32 stick = (scaled * 80) / 32768;
+	if (stick > 80) stick = 80;
+	if (stick < -80) stick = -80;
+	return (s8)stick;
 }
 
 // PSP: Replace inputReadController with direct SceCtrlData reading.
 s32 inputReadController(s32 idx, OSContPad *npad)
 {
-    if (idx != 0 || !npad) return -1;
+	if (idx != 0 || !npad) return -1;
 
-    SceCtrlData pad;
-    sceCtrlPeekBufferPositive(&pad, 1);
+	npad->button = 0;
+	npad->stick_x = 0;
+	npad->stick_y = 0;
+	npad->rstick_x = 0;
+	npad->rstick_y = 0;
 
-    npad->button = 0;
-    s32 raw_x = pad.Lx - 128;
-    s32 raw_y = pad.Ly - 128;
-    npad->stick_x = apply_deadzone(raw_x, 10);
-    npad->stick_y = apply_deadzone(raw_y, 10);
-    npad->rstick_x = 0;
-    npad->rstick_y = 0;
+	const s32 swap = inputControllerGetSticksSwapped(idx);
+	const s32 stickIdx = swap ? 1 : 0;
+	const s8 scaledX = inputScaleAxisToN64(pspAnalogX, inputAxisDeadzone[idx][stickIdx][0], inputAxisScale[idx][stickIdx][0]);
+	const s8 scaledY = inputScaleAxisToN64(pspAnalogY, inputAxisDeadzone[idx][stickIdx][1], inputAxisScale[idx][stickIdx][1]);
 
-    if (pad.Buttons & PSP_CTRL_TRIANGLE) npad->button |= U_CBUTTONS;
-    if (pad.Buttons & PSP_CTRL_CROSS)    npad->button |= D_CBUTTONS;
-    if (pad.Buttons & PSP_CTRL_SQUARE)   npad->button |= L_CBUTTONS;
-    if (pad.Buttons & PSP_CTRL_CIRCLE)   npad->button |= R_CBUTTONS;
-    if (pad.Buttons & PSP_CTRL_RTRIGGER) npad->button |= Z_TRIG;
-    if (pad.Buttons & PSP_CTRL_LTRIGGER) npad->button |= L_TRIG;
-    if (pad.Buttons & PSP_CTRL_START)    npad->button |= START_BUTTON;
-    if (pad.Buttons & PSP_CTRL_SELECT)   npad->button |= R_TRIG;
-    if (pad.Buttons & PSP_CTRL_UP)       npad->button |= U_JPAD;
-    if (pad.Buttons & PSP_CTRL_DOWN)     npad->button |= D_JPAD;
-    if (pad.Buttons & PSP_CTRL_LEFT)     npad->button |= B_BUTTON;
-    if (pad.Buttons & PSP_CTRL_RIGHT)    npad->button |= A_BUTTON;
-    //if (pad.Buttons & PSP_CTRL_HOME)     npad->button |= B_BUTTON;
-    //if (pad.Buttons & PSP_CTRL_HOLD)     npad->button |= A_BUTTON;
+	s32 useMovement = inputControllerGetDualAnalog(idx) ? 1 : 0;
+	if (swap) {
+		useMovement = !useMovement;
+	}
 
-    return 0;
+	if (useMovement) {
+		npad->stick_x = scaledX;
+		npad->stick_y = scaledY;
+	} else {
+		if (scaledX > 0) npad->button |= R_CBUTTONS;
+		else if (scaledX < 0) npad->button |= L_CBUTTONS;
+		if (scaledY > 0) npad->button |= D_CBUTTONS;
+		else if (scaledY < 0) npad->button |= U_CBUTTONS;
+	}
+
+	const s32 cancelC = inputControllerGetCancelCButtons(idx);
+	for (u32 ck = 0; ck < CK_TOTAL_COUNT; ++ck) {
+		if (cancelC && (ck == CK_C_U || ck == CK_C_D || ck == CK_C_L || ck == CK_C_R)) {
+			continue;
+		}
+		if (inputBindPressed(idx, ck)) {
+			npad->button |= (1u << ck);
+		}
+	}
+
+	return 0;
 }
 
 // PSP: No mouse, stub
@@ -282,7 +466,38 @@ static inline void inputUpdateMouse(void) {}
 
 void inputUpdate(void)
 {
-    // PSP: nothing needed
+	pspButtonsPrev = pspButtons;
+	sceCtrlPeekBufferPositive(&pspPad, 1);
+	pspButtons = pspPad.Buttons;
+	pspAnalogX = (s32)pspPad.Lx - 128;
+	pspAnalogY = 128 - (s32)pspPad.Ly;
+
+	s32 captured = 0;
+	if ((pspButtons & PSP_DELETE_COMBO) == PSP_DELETE_COMBO &&
+			(pspButtonsPrev & PSP_DELETE_COMBO) != PSP_DELETE_COMBO) {
+		lastKey = VK_DELETE;
+		captured = 1;
+	}
+
+	if ((pspButtons & PSP_ESCAPE_COMBO) == PSP_ESCAPE_COMBO &&
+			(pspButtonsPrev & PSP_ESCAPE_COMBO) != PSP_ESCAPE_COMBO) {
+		lastKey = VK_ESCAPE;
+		captured = 1;
+	}
+
+	if (!captured) {
+		const u32 newButtons = pspButtons & ~pspButtonsPrev;
+		if (newButtons) {
+			for (s32 i = 0; i < INPUT_ARRAYCOUNT(pspKeyMap); ++i) {
+				if (newButtons & pspKeyMap[i].button) {
+					lastKey = pspKeyMap[i].vk;
+					break;
+				}
+			}
+		}
+	}
+
+	inputMaybeSave();
 }
 
 s32 inputControllerConnected(s32 idx)
@@ -320,52 +535,102 @@ s32 inputControllerMask(void)
 
 s32 inputControllerGetSticksSwapped(s32 cidx)
 {
-    return 0;
+	if (cidx < 0 || cidx >= INPUT_MAX_CONTROLLERS) {
+		return 0;
+	}
+	return inputSwapSticks[cidx];
 }
 
 void inputControllerSetSticksSwapped(s32 cidx, s32 swapped)
 {
-    // PSP: no-op
+	if (cidx < 0 || cidx >= INPUT_MAX_CONTROLLERS) {
+		return;
+	}
+	swapped = swapped ? 1 : 0;
+	if (inputSwapSticks[cidx] != swapped) {
+		inputSwapSticks[cidx] = swapped;
+		inputMarkDirty();
+	}
 }
 
 s32 inputControllerGetDualAnalog(s32 cidx)
 {
-    return 1;
+	if (cidx < 0 || cidx >= INPUT_MAX_CONTROLLERS) {
+		return 1;
+	}
+	return inputDualAnalog[cidx];
 }
 
 void inputControllerSetDualAnalog(s32 cidx, s32 enable)
 {
-    // PSP: no-op
+	if (cidx < 0 || cidx >= INPUT_MAX_CONTROLLERS) {
+		return;
+	}
+	enable = enable ? 1 : 0;
+	if (inputDualAnalog[cidx] != enable) {
+		inputDualAnalog[cidx] = enable;
+		inputMarkDirty();
+	}
 }
 
 s32 inputControllerGetCancelCButtons(s32 cidx)
 {
-    return 0;
+	if (cidx < 0 || cidx >= INPUT_MAX_CONTROLLERS) {
+		return 0;
+	}
+	return inputCancelCButtons[cidx];
 }
 
 void inputControllerSetCancelCButtons(s32 cidx, s32 cancel)
 {
-    // PSP: no-op
+	if (cidx < 0 || cidx >= INPUT_MAX_CONTROLLERS) {
+		return;
+	}
+	cancel = cancel ? 1 : 0;
+	if (inputCancelCButtons[cidx] != cancel) {
+		inputCancelCButtons[cidx] = cancel;
+		inputMarkDirty();
+	}
 }
 
 f32 inputControllerGetAxisScale(s32 cidx, s32 stick, s32 axis)
 {
-    return 1.0f;
+	if (cidx < 0 || cidx >= INPUT_MAX_CONTROLLERS || stick < 0 || stick > 1 || axis < 0 || axis > 1) {
+		return 1.0f;
+	}
+	return inputAxisScale[cidx][stick][axis];
 }
 
 void inputControllerSetAxisScale(s32 cidx, s32 stick, s32 axis, f32 value)
 {
-    // PSP: no-op
+	if (cidx < 0 || cidx >= INPUT_MAX_CONTROLLERS || stick < 0 || stick > 1 || axis < 0 || axis > 1) {
+		return;
+	}
+	const f32 clamped = inputClampFloat(value, 0.f, 10.f);
+	if (inputAxisScale[cidx][stick][axis] != clamped) {
+		inputAxisScale[cidx][stick][axis] = clamped;
+		inputMarkDirty();
+	}
 }
 
 f32 inputControllerGetAxisDeadzone(s32 cidx, s32 stick, s32 axis)
 {
-    return 0.0f;
+	if (cidx < 0 || cidx >= INPUT_MAX_CONTROLLERS || stick < 0 || stick > 1 || axis < 0 || axis > 1) {
+		return 0.0f;
+	}
+	return inputAxisDeadzone[cidx][stick][axis];
 }
 
 void inputControllerSetAxisDeadzone(s32 cidx, s32 stick, s32 axis, f32 value)
 {
-    // PSP: no-op
+	if (cidx < 0 || cidx >= INPUT_MAX_CONTROLLERS || stick < 0 || stick > 1 || axis < 0 || axis > 1) {
+		return;
+	}
+	const f32 clamped = inputClampFloat(value, 0.f, 1.f);
+	if (inputAxisDeadzone[cidx][stick][axis] != clamped) {
+		inputAxisDeadzone[cidx][stick][axis] = clamped;
+		inputMarkDirty();
+	}
 }
 
 s32 inputGetConnectedControllers(s32 *out)
@@ -409,6 +674,7 @@ void inputKeyBind(s32 idx, u32 ck, s32 bind, u32 vk)
 	}
 
 	binds[idx][ck][bind] = vk;
+	inputMarkDirty();
 }
 
 const u32 *inputKeyGetBinds(s32 idx, u32 ck)
@@ -419,14 +685,68 @@ const u32 *inputKeyGetBinds(s32 idx, u32 ck)
 	return binds[idx][ck];
 }
 
+static inline s32 inputPspNameMatches(const char *name, const char *pspName)
+{
+	if (!strcasecmp(name, pspName)) {
+		return 1;
+	}
+	if (!strncasecmp(pspName, "PSP_", 4)) {
+		return !strcasecmp(name, pspName + 4);
+	}
+	return 0;
+}
+
+static const struct pspvkmap *inputFindPspKeyByVk(u32 vk)
+{
+	for (s32 i = 0; i < INPUT_ARRAYCOUNT(pspKeyMap); ++i) {
+		if (pspKeyMap[i].vk == vk) {
+			return &pspKeyMap[i];
+		}
+	}
+	return NULL;
+}
+
+static const struct pspvkmap *inputFindPspKeyByName(const char *name)
+{
+	for (s32 i = 0; i < INPUT_ARRAYCOUNT(pspKeyMap); ++i) {
+		if (inputPspNameMatches(name, pspKeyMap[i].name)) {
+			return &pspKeyMap[i];
+		}
+	}
+	return NULL;
+}
+
 s32 inputKeyPressed(u32 vk)
 {
-    // PSP: not used, always 0
-    return 0;
+	if (vk == VK_ESCAPE) {
+		if ((pspButtons & PSP_DELETE_COMBO) == PSP_DELETE_COMBO) {
+			return 0;
+		}
+		return (pspButtons & PSP_ESCAPE_COMBO) == PSP_ESCAPE_COMBO;
+	}
+	if (vk == VK_DELETE) {
+		return (pspButtons & PSP_DELETE_COMBO) == PSP_DELETE_COMBO;
+	}
+	if (vk == VK_JOY1_LSHOULDER) {
+		return (pspButtons & PSP_CTRL_LTRIGGER) != 0;
+	}
+	if (vk == VK_JOY1_RSHOULDER) {
+		return (pspButtons & PSP_CTRL_RTRIGGER) != 0;
+	}
+
+	const struct pspvkmap *map = inputFindPspKeyByVk(vk);
+	if (map) {
+		return (pspButtons & map->button) != 0;
+	}
+
+	return 0;
 }
 
 s32 inputKeyJustPressed(u32 vk)
 {
+	if (vk >= VK_TOTAL_COUNT) {
+		return 0;
+	}
 	const s8 pressed = inputKeyPressed(vk);
 	const s32 result = pressed && !vkPrevState[vk];
 	vkPrevState[vk] = pressed;
@@ -444,7 +764,19 @@ static inline u32 inputContToContKey(const u32 cont)
 
 s32 inputButtonPressed(s32 idx, u32 contbtn)
 {
-    return 0;
+	if (idx < 0 || idx >= INPUT_MAX_CONTROLLERS || contbtn == 0) {
+		return 0;
+	}
+
+	for (u32 ck = 0; ck < CK_TOTAL_COUNT; ++ck) {
+		if (contbtn & (1u << ck)) {
+			if (inputBindPressed(idx, ck)) {
+				return 1;
+			}
+		}
+	}
+
+	return 0;
 }
 
 void inputLockMouse(s32 lock)
@@ -542,22 +874,65 @@ s32 inputGetContKeyByName(const char *name)
 
 const char *inputGetKeyName(s32 vk)
 {
-    return "UNKNOWN";
+	const struct pspvkmap *map = inputFindPspKeyByVk(vk);
+	if (map) {
+		return map->name;
+	}
+	if (vk == VK_ESCAPE) {
+		return "ESCAPE";
+	}
+	if (vk == VK_DELETE) {
+		return "DELETE";
+	}
+	if (vk >= VK_JOY1_BEGIN && vk < VK_JOY1_BEGIN + INPUT_ARRAYCOUNT(vkJoyNames)) {
+		return vkJoyNames[vk - VK_JOY1_BEGIN];
+	}
+	if (vk >= VK_MOUSE_BEGIN && vk < VK_MOUSE_BEGIN + INPUT_ARRAYCOUNT(vkMouseNames)) {
+		return vkMouseNames[vk - VK_MOUSE_BEGIN];
+	}
+	return "UNKNOWN";
 }
 
 s32 inputGetKeyByName(const char *name)
 {
-    return -1;
+	if (!name || !name[0]) {
+		return -1;
+	}
+	if (!strcasecmp(name, "ESC") || !strcasecmp(name, "ESCAPE")) {
+		return VK_ESCAPE;
+	}
+	if (!strcasecmp(name, "DEL") || !strcasecmp(name, "DELETE")) {
+		return VK_DELETE;
+	}
+
+	const struct pspvkmap *map = inputFindPspKeyByName(name);
+	if (map) {
+		return map->vk;
+	}
+
+	for (s32 i = 0; i < INPUT_ARRAYCOUNT(vkJoyNames); ++i) {
+		if (!strcasecmp(name, vkJoyNames[i])) {
+			return VK_JOY1_BEGIN + i;
+		}
+	}
+
+	for (s32 i = 0; i < INPUT_ARRAYCOUNT(vkMouseNames); ++i) {
+		if (!strcasecmp(name, vkMouseNames[i])) {
+			return VK_MOUSE_BEGIN + i;
+		}
+	}
+
+	return -1;
 }
 
 void inputClearLastKey(void)
 {
-    // PSP: no-op
+	lastKey = 0;
 }
 
 s32 inputGetLastKey(void)
 {
-    return 0;
+	return lastKey;
 }
 
 void inputStartTextInput(void)
@@ -612,5 +987,23 @@ u32 inputGetKeyModState(void)
 
 PD_CONSTRUCTOR static void inputConfigInit(void)
 {
-    // PSP: nothing to register
+	inputResetDefaults();
+
+	for (s32 i = 0; i < MAXCONTROLLERS; ++i) {
+		configRegisterInt(strFmt("Input.Player%d.SwapSticks", i + 1), &inputSwapSticks[i], 0, 1);
+		configRegisterInt(strFmt("Input.Player%d.DualAnalog", i + 1), &inputDualAnalog[i], 0, 1);
+		configRegisterInt(strFmt("Input.Player%d.CancelCButtons", i + 1), &inputCancelCButtons[i], 0, 1);
+		configRegisterFloat(strFmt("Input.Player%d.AxisScale.LStickX", i + 1), &inputAxisScale[i][0][0], 0.f, 10.f);
+		configRegisterFloat(strFmt("Input.Player%d.AxisScale.LStickY", i + 1), &inputAxisScale[i][0][1], 0.f, 10.f);
+		configRegisterFloat(strFmt("Input.Player%d.AxisScale.RStickX", i + 1), &inputAxisScale[i][1][0], 0.f, 10.f);
+		configRegisterFloat(strFmt("Input.Player%d.AxisScale.RStickY", i + 1), &inputAxisScale[i][1][1], 0.f, 10.f);
+		configRegisterFloat(strFmt("Input.Player%d.AxisDeadzone.LStickX", i + 1), &inputAxisDeadzone[i][0][0], 0.f, 1.f);
+		configRegisterFloat(strFmt("Input.Player%d.AxisDeadzone.LStickY", i + 1), &inputAxisDeadzone[i][0][1], 0.f, 1.f);
+		configRegisterFloat(strFmt("Input.Player%d.AxisDeadzone.RStickX", i + 1), &inputAxisDeadzone[i][1][0], 0.f, 1.f);
+		configRegisterFloat(strFmt("Input.Player%d.AxisDeadzone.RStickY", i + 1), &inputAxisDeadzone[i][1][1], 0.f, 1.f);
+
+		for (u32 ck = 0; ck < CK_TOTAL_COUNT; ++ck) {
+			configRegisterString(strFmt("Input.Player%d.Bind.%s", i + 1, ckNames[ck]), bindStrs[i][ck], MAX_BIND_STR);
+		}
+	}
 }

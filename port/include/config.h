@@ -12,6 +12,8 @@ s32 configLoad(const char *fname);
 
 // saves config to file (path extensions such as ! apply)
 s32 configSave(const char *fname);
+// saves only config entries whose keys start with prefix (case-insensitive)
+s32 configSavePrefix(const char *fname, const char *prefix);
 
 // registers a variable in the config file
 // this should be done before configInit() is called, preferably in a module constructor

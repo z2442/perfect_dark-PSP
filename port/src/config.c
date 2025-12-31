@@ -237,6 +237,42 @@ s32 configSave(const char *fname)
 	return 1;
 }
 
+s32 configSavePrefix(const char *fname, const char *prefix)
+{
+	FILE *f = fsFileOpenWrite(fname);
+	if (!f) {
+		return 0;
+	}
+
+	const u32 prefixLen = prefix ? strlen(prefix) : 0;
+	char tmpSec[CONFIG_MAX_SECNAME + 1] = { 0 };
+	char curSec[CONFIG_MAX_SECNAME + 1] = { 0 };
+	s32 hasSection = 0;
+
+	for (s32 i = 0; i < numSettings; ++i) {
+		struct configentry *cfg = &settings[i];
+
+		if (prefixLen && strncasecmp(cfg->key, prefix, prefixLen) != 0) {
+			continue;
+		}
+
+		configGetSection(tmpSec, cfg);
+		if (!hasSection || strncmp(curSec, tmpSec, CONFIG_MAX_SECNAME) != 0) {
+			if (hasSection) {
+				fprintf(f, "\n");
+			}
+			fprintf(f, "[%s]\n", tmpSec);
+			strncpy(curSec, tmpSec, CONFIG_MAX_SECNAME);
+			hasSection = 1;
+		}
+
+		configSaveEntry(cfg, f);
+	}
+
+	fsFileFree(f);
+	return 1;
+}
+
 s32 configLoad(const char *fname)
 {
 	FILE *f = fsFileOpenRead(fname);

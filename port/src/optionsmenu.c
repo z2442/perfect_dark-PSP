@@ -1603,7 +1603,7 @@ struct menuitem g_ExtendedBindKeyMenuItems[] = {
 		MENUITEMTYPE_SELECTABLE,
 		0,
 		MENUITEMFLAG_SELECTABLE_CENTRE | MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"ESC to cancel, DEL to remove binding\n",
+		(uintptr_t)"START+SELECT to cancel, L+R+SELECT to remove binding\n",
 		0,
 		menuhandlerDoBind,
 	},
