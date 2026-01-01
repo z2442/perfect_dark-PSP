@@ -213,10 +213,6 @@ int main(int argc, const char **argv)
 
 	g_MempHeapSize = g_OsMemSize;
 
-	//PSP Phat 
-	//g_MempHeap = malloc_volatile_PSP(g_MempHeapSize);
-	
-	//PSP SLIM
 	g_MempHeap = sysMemZeroAlloc(g_MempHeapSize);
 
 
