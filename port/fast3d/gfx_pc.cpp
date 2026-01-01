@@ -69,6 +69,29 @@ uintptr_t gfxFramebuffer;
 
 #define SUPPORT_CHECK(x) assert(x)
 
+static inline void* aligned_malloc(size_t size, size_t alignment) {
+    if (alignment < sizeof(void*)) {
+        alignment = sizeof(void*);
+    }
+    const size_t mask = alignment - 1;
+    void* raw = malloc(size + alignment + sizeof(void*));
+    if (!raw) {
+        return nullptr;
+    }
+    const uintptr_t aligned = (reinterpret_cast<uintptr_t>(raw) + sizeof(void*) + mask) &
+                              ~static_cast<uintptr_t>(mask);
+    reinterpret_cast<void**>(aligned)[-1] = raw;
+    return reinterpret_cast<void*>(aligned);
+}
+
+static inline void aligned_free(void* ptr) {
+    if (!ptr) {
+        return;
+    }
+    void* raw = reinterpret_cast<void**>(ptr)[-1];
+    free(raw);
+}
+
 // SCALE_M_N: upscale/downscale M-bit integer to N-bit
 #define SCALE_5_8(VAL_) (((VAL_)*0xFF) / 0x1F)
 #define SCALE_8_5(VAL_) ((((VAL_) + 4) * 0x1F) / 0xFF)
@@ -76,6 +99,24 @@ uintptr_t gfxFramebuffer;
 #define SCALE_8_4(VAL_) ((VAL_) / 0x11)
 #define SCALE_3_8(VAL_) ((VAL_)*0x24)
 #define SCALE_8_3(VAL_) ((VAL_) / 0x24)
+
+static inline uint8_t expand_5_to_8(uint8_t v) {
+    return static_cast<uint8_t>((v << 3) | (v >> 2));
+}
+
+static inline uint32_t pack_rgba32(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    return static_cast<uint32_t>(r) |
+           (static_cast<uint32_t>(g) << 8) |
+           (static_cast<uint32_t>(b) << 16) |
+           (static_cast<uint32_t>(a) << 24);
+#else
+    return (static_cast<uint32_t>(r) << 24) |
+           (static_cast<uint32_t>(g) << 16) |
+           (static_cast<uint32_t>(b) << 8) |
+           static_cast<uint32_t>(a);
+#endif
+}
 
 // SCREEN_WIDTH and SCREEN_HEIGHT are defined in the headerfile
 #define HALF_SCREEN_WIDTH (SCREEN_WIDTH / 2.f)
@@ -144,6 +185,7 @@ struct ColorCombiner {
 static std::map<ColorCombinerKey, struct ColorCombiner> color_combiner_pool;
 static std::map<ColorCombinerKey, struct ColorCombiner>::iterator prev_combiner = color_combiner_pool.end();
 
+static constexpr size_t kTexUploadAlignment = 64;
 static uint8_t* tex_upload_buffer = nullptr;
 
 static struct RSP {
@@ -923,18 +965,19 @@ static void import_texture_rgba16(int unit, int tile, const LoadedTexture& loade
     // TODO: this trips in some places with a garbage size in full_image_line_size_bytes
     // probably wherever framebuffer effects are used
 
-    uint8_t *dest = tex_upload_buffer;
-    for (uint32_t i = 0; i < size_bytes / 2; i++, dest += 4) {
+    uint32_t* dest = reinterpret_cast<uint32_t*>(tex_upload_buffer);
+    for (uint32_t i = 0; i < size_bytes / 2; i++) {
         const uint16_t col16 = (addr[2 * i] << 8) | addr[2 * i + 1];
         const uint8_t a = col16 & 1;
         const uint8_t r = col16 >> 11;
         const uint8_t g = (col16 >> 6) & 0x1f;
         const uint8_t b = (col16 >> 1) & 0x1f;
-        dest[0] = SCALE_5_8(r);
-        dest[1] = SCALE_5_8(g);
-        dest[2] = SCALE_5_8(b);
-        dest[3] = a ? 255 : 0;
-        if (!a) { dest[0] = dest[1] = dest[2] = 0; }
+        uint8_t r8 = SCALE_5_8(r);
+        uint8_t g8 = SCALE_5_8(g);
+        uint8_t b8 = SCALE_5_8(b);
+        const uint8_t a8 = a ? 255 : 0;
+        if (!a) { r8 = g8 = b8 = 0; }
+        *dest++ = pack_rgba32(r8, g8, b8, a8);
     }
 
     const uint32_t width = rdp.texture_tile[tile].line_size_bytes / 2;
@@ -1035,18 +1078,22 @@ static void import_texture_ia4(int unit, int tile, const LoadedTexture& loaded_t
     const uint32_t line_size_bytes = loaded_texture.line_size_bytes;
     SUPPORT_CHECK(full_image_line_size_bytes == line_size_bytes);
 
-    uint8_t *dest = tex_upload_buffer;
-    for (uint32_t i = 0; i < size_bytes * 2; i++, dest += 4) {
-        const uint8_t byte = addr[i / 2];
-        const uint8_t part = (byte >> (4 - (i % 2) * 4)) & 0xf;
-        const uint8_t intensity = part >> 1;
-        const uint8_t alpha = part & 1;
-        const uint8_t c = SCALE_3_8(intensity);
-        dest[0] = c;
-        dest[1] = c;
-        dest[2] = c;
-        dest[3] = alpha ? 255 : 0;
-        if (!alpha) { dest[0] = dest[1] = dest[2] = 0; }
+    alignas(kTexUploadAlignment) uint32_t ia4_rgba[16];
+    for (uint32_t i = 0; i < 16; ++i) {
+        uint8_t intensity = SCALE_3_8(static_cast<uint8_t>(i >> 1));
+        const uint8_t alpha = (i & 1) ? 255 : 0;
+        if (alpha == 0) {
+            intensity = 0;
+        }
+        ia4_rgba[i] = pack_rgba32(intensity, intensity, intensity, alpha);
+    }
+
+    uint32_t* dest = reinterpret_cast<uint32_t*>(tex_upload_buffer);
+    for (uint32_t i = 0; i < size_bytes; ++i) {
+        const uint8_t byte = addr[i];
+        dest[0] = ia4_rgba[byte >> 4];
+        dest[1] = ia4_rgba[byte & 0xf];
+        dest += 2;
     }
 
     const uint32_t width = rdp.texture_tile[tile].line_size_bytes * 2;
@@ -1093,15 +1140,19 @@ static void import_texture_ia8(int unit, int tile, const LoadedTexture& loaded_t
     const uint32_t line_size_bytes = loaded_texture.line_size_bytes;
     SUPPORT_CHECK(full_image_line_size_bytes == line_size_bytes);
 
-    uint8_t *dest = tex_upload_buffer;
-    for (uint32_t i = 0; i < size_bytes; i++, dest += 4) {
-        const uint8_t intensity = SCALE_4_8(addr[i] >> 4);
-        const uint8_t alpha = SCALE_4_8(addr[i] & 0xf);
-        dest[0] = intensity;
-        dest[1] = intensity;
-        dest[2] = intensity;
-        dest[3] = alpha;
-        if (alpha == 0) { dest[0] = dest[1] = dest[2] = 0; }
+    alignas(kTexUploadAlignment) uint32_t ia8_rgba[256];
+    for (uint32_t i = 0; i < 256; ++i) {
+        uint8_t intensity = SCALE_4_8(static_cast<uint8_t>(i >> 4));
+        const uint8_t alpha = SCALE_4_8(static_cast<uint8_t>(i & 0xf));
+        if (alpha == 0) {
+            intensity = 0;
+        }
+        ia8_rgba[i] = pack_rgba32(intensity, intensity, intensity, alpha);
+    }
+
+    uint32_t* dest = reinterpret_cast<uint32_t*>(tex_upload_buffer);
+    for (uint32_t i = 0; i < size_bytes; ++i) {
+        *dest++ = ia8_rgba[addr[i]];
     }
 
     const uint32_t width = rdp.texture_tile[tile].line_size_bytes;
@@ -1149,15 +1200,14 @@ static void import_texture_ia16(int unit, int tile, const LoadedTexture& loaded_
     const uint32_t line_size_bytes = loaded_texture.line_size_bytes;
     SUPPORT_CHECK(full_image_line_size_bytes == line_size_bytes);
 
-    uint8_t *dest = tex_upload_buffer;
-    for (uint32_t i = 0; i < size_bytes / 2; i++, dest += 4) {
-        const uint8_t intensity = addr[2 * i];
+    uint32_t* dest = reinterpret_cast<uint32_t*>(tex_upload_buffer);
+    for (uint32_t i = 0; i < size_bytes / 2; i++) {
+        uint8_t intensity = addr[2 * i];
         const uint8_t alpha = addr[2 * i + 1];
-        dest[0] = intensity;
-        dest[1] = intensity;
-        dest[2] = intensity;
-        dest[3] = alpha;
-        if (alpha == 0) { dest[0] = dest[1] = dest[2] = 0; }
+        if (alpha == 0) {
+            intensity = 0;
+        }
+        *dest++ = pack_rgba32(intensity, intensity, intensity, alpha);
     }
 
     const uint32_t width = rdp.texture_tile[tile].line_size_bytes / 2;
@@ -1204,15 +1254,18 @@ static void import_texture_i4(int unit, int tile, const LoadedTexture& loaded_te
     const uint32_t line_size_bytes = loaded_texture.line_size_bytes;
     SUPPORT_CHECK(full_image_line_size_bytes == line_size_bytes);
 
-    uint8_t *dest = tex_upload_buffer;
-    for (uint32_t i = 0; i < size_bytes * 2; i++, dest += 4) {
-        const uint8_t byte = addr[i / 2];
-        const uint8_t part = (byte >> (4 - (i % 2) * 4)) & 0xf;
-        const uint8_t intensity = SCALE_4_8(part);
-        dest[0] = intensity;
-        dest[1] = intensity;
-        dest[2] = intensity;
-        dest[3] = intensity;
+    alignas(kTexUploadAlignment) uint32_t i4_rgba[16];
+    for (uint32_t i = 0; i < 16; ++i) {
+        const uint8_t intensity = SCALE_4_8(static_cast<uint8_t>(i));
+        i4_rgba[i] = pack_rgba32(intensity, intensity, intensity, intensity);
+    }
+
+    uint32_t* dest = reinterpret_cast<uint32_t*>(tex_upload_buffer);
+    for (uint32_t i = 0; i < size_bytes; ++i) {
+        const uint8_t byte = addr[i];
+        dest[0] = i4_rgba[byte >> 4];
+        dest[1] = i4_rgba[byte & 0xf];
+        dest += 2;
     }
 
     const uint32_t width = rdp.texture_tile[tile].line_size_bytes * 2;
@@ -1259,13 +1312,15 @@ static void import_texture_i8(int unit, int tile, const LoadedTexture& loaded_te
     const uint32_t line_size_bytes = loaded_texture.line_size_bytes;
     SUPPORT_CHECK(full_image_line_size_bytes == line_size_bytes);
 
-    uint8_t *dest = tex_upload_buffer;
-    for (uint32_t i = 0; i < size_bytes; i++, dest += 4) {
-        const uint8_t intensity = addr[i];
-        dest[0] = intensity;
-        dest[1] = intensity;
-        dest[2] = intensity;
-        dest[3] = intensity;
+    alignas(kTexUploadAlignment) uint32_t i8_rgba[256];
+    for (uint32_t i = 0; i < 256; ++i) {
+        const uint8_t intensity = static_cast<uint8_t>(i);
+        i8_rgba[i] = pack_rgba32(intensity, intensity, intensity, intensity);
+    }
+
+    uint32_t* dest = reinterpret_cast<uint32_t*>(tex_upload_buffer);
+    for (uint32_t i = 0; i < size_bytes; ++i) {
+        *dest++ = i8_rgba[addr[i]];
     }
 
     const uint32_t width = rdp.texture_tile[tile].line_size_bytes;
@@ -1303,30 +1358,21 @@ static void import_texture_i8(int unit, int tile, const LoadedTexture& loaded_te
     }
 }
 
-static inline void palette_to_rgba32(const uint16_t palentry, uint8_t *rgba32_buf) {
+static inline uint32_t palette_to_rgba32(uint16_t palentry) {
     if (rdp.palette_fmt == G_TT_IA16) {
-        const uint8_t intensity = (palentry & 0xff);
-        const uint8_t alpha = palentry >> 8;
-        rgba32_buf[0] = intensity;
-        rgba32_buf[1] = intensity;
-        rgba32_buf[2] = intensity;
-        rgba32_buf[3] = alpha;
-    } else {
-        // assume G_TT_RGBA16
-        const uint8_t a = palentry & 1;
-        const uint8_t r = palentry >> 11;
-        const uint8_t g = (palentry >> 6) & 0x1f;
-        const uint8_t b = (palentry >> 1) & 0x1f;
-        if (a) {
-            rgba32_buf[0] = SCALE_5_8(r);
-            rgba32_buf[1] = SCALE_5_8(g);
-            rgba32_buf[2] = SCALE_5_8(b);
-            rgba32_buf[3] = 255;
-        } else {
-            rgba32_buf[0] = rgba32_buf[1] = rgba32_buf[2] = 0;
-            rgba32_buf[3] = 0;
-        }
+        const uint8_t intensity = static_cast<uint8_t>(palentry & 0xff);
+        const uint8_t alpha = static_cast<uint8_t>(palentry >> 8);
+        return pack_rgba32(intensity, intensity, intensity, alpha);
     }
+
+    // assume G_TT_RGBA16
+    if ((palentry & 1) == 0) {
+        return 0;
+    }
+    const uint8_t r = static_cast<uint8_t>(palentry >> 11);
+    const uint8_t g = static_cast<uint8_t>((palentry >> 6) & 0x1f);
+    const uint8_t b = static_cast<uint8_t>((palentry >> 1) & 0x1f);
+    return pack_rgba32(expand_5_to_8(r), expand_5_to_8(g), expand_5_to_8(b), 255);
 }
 
 static void import_texture_ci4(int unit, int tile, const LoadedTexture& loaded_texture, bool importReplacement) {
@@ -1341,10 +1387,17 @@ static void import_texture_ci4(int unit, int tile, const LoadedTexture& loaded_t
     
     SUPPORT_CHECK(full_image_line_size_bytes == line_size_bytes);
 
-    for (uint32_t i = 0; i < size_bytes * 2; i++) {
-        const uint8_t byte = addr[i / 2];
-        const uint8_t idx = (byte >> (4 - (i % 2) * 4)) & 0xf;
-        palette_to_rgba32(palette[idx], tex_upload_buffer +4 * i);
+    alignas(kTexUploadAlignment) uint32_t pal_rgba[16];
+    for (uint32_t i = 0; i < 16; ++i) {
+        pal_rgba[i] = palette_to_rgba32(palette[i]);
+    }
+
+    uint32_t* dest = reinterpret_cast<uint32_t*>(tex_upload_buffer);
+    for (uint32_t i = 0; i < size_bytes; ++i) {
+        const uint8_t byte = addr[i];
+        dest[0] = pal_rgba[byte >> 4];
+        dest[1] = pal_rgba[byte & 0xf];
+        dest += 2;
     }
 
     uint32_t result_line_size = rdp.texture_tile[tile].line_size_bytes;
@@ -1396,10 +1449,17 @@ static void import_texture_ci8(int unit, int tile, const LoadedTexture& loaded_t
         loaded_texture.full_image_line_size_bytes;
     const uint32_t line_size_bytes = loaded_texture.line_size_bytes;
 
-    for (uint32_t i = 0, j = 0; i < size_bytes; j += full_image_line_size_bytes - line_size_bytes) {
-        for (uint32_t k = 0; k < line_size_bytes; i++, k++, j++) {
-            const uint8_t idx = addr[j];
-            palette_to_rgba32(rdp.palette[idx], tex_upload_buffer + 4 * i);
+    alignas(kTexUploadAlignment) uint32_t pal_rgba[256];
+    for (uint32_t i = 0; i < 256; ++i) {
+        pal_rgba[i] = palette_to_rgba32(rdp.palette[i]);
+    }
+
+    uint32_t* dest = reinterpret_cast<uint32_t*>(tex_upload_buffer);
+    const uint32_t src_height = size_bytes / line_size_bytes;
+    for (uint32_t y = 0; y < src_height; ++y) {
+        const uint8_t* src = addr + y * full_image_line_size_bytes;
+        for (uint32_t x = 0; x < line_size_bytes; ++x) {
+            *dest++ = pal_rgba[src[x]];
         }
     }
 
@@ -3716,7 +3776,11 @@ extern "C" void gfx_init(const GfxInitSettings *settings) {
     if (tex_upload_buffer == nullptr) {
         // We cap texture max to 8k, because why would you need more?
         int max_tex_size = std::min(8192, gfx_rapi->get_max_texture_size());
-        tex_upload_buffer = (uint8_t*)malloc(max_tex_size * max_tex_size * 4);
+        const size_t tex_upload_size =
+            static_cast<size_t>(max_tex_size) * static_cast<size_t>(max_tex_size) * 4;
+        const size_t tex_upload_size_aligned = ALIGN(tex_upload_size, kTexUploadAlignment);
+        tex_upload_buffer = static_cast<uint8_t*>(
+            aligned_malloc(tex_upload_size_aligned, kTexUploadAlignment));
     }
 
     rsp.lookat[0].dir[0] = rsp.lookat[1].dir[1] = 0x7F;
@@ -3730,6 +3794,8 @@ extern "C" void gfx_destroy(void) {
 
     // Texture cache and loaded textures store references to Resources which need to be unreferenced.
     gfx_texture_cache_clear();
+    aligned_free(tex_upload_buffer);
+    tex_upload_buffer = nullptr;
 }
 
 extern "C" struct GfxRenderingAPI* gfx_get_current_rendering_api(void) {
