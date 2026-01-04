@@ -278,6 +278,21 @@ void mtx00016784(void)
  */
 void mtx00016798(Mtxf *src, Mtxf *dst)
 {
+#ifdef GBI_FLOATS
+	s32 i;
+	s32 j;
+	f32 scale0 = var8005ef10[0] * (1.0f / 65536.0f);
+	f32 scale1 = var8005ef10[1] * (1.0f / 65536.0f);
+	f32 inv0 = scale0 != 0.0f ? (1.0f / scale0) : 0.0f;
+	f32 inv1 = scale1 != 0.0f ? (1.0f / scale1) : 0.0f;
+
+	for (i = 0; i < 4; i++) {
+		for (j = 0; j < 4; j++) {
+			f32 inv = (j == 3) ? inv1 : inv0;
+			dst->m[i][j] = src->m[i][j] * inv;
+		}
+	}
+#else
 	u32 *srcwords = (u32 *) src;
 	f32 *dstfloats = (f32 *) dst;
 	s32 i;
@@ -289,10 +304,16 @@ void mtx00016798(Mtxf *src, Mtxf *dst)
 		dstfloats[(i << 1) + 0] = (s32) ((word1 & 0xffff0000) | (word2 >> 16)) / var8005ef10[0];
 		dstfloats[(i << 1) + 1] = (s32) ((word1 << 16) | (word2 & 0xffff)) / var8005ef10[i & 1];
 	}
+#endif
 }
 
 void mtx00016820(Mtx *src, Mtx *dst)
 {
+#ifdef GBI_FLOATS
+	if (src != dst) {
+		bcopy(src, dst, sizeof(*dst));
+	}
+#else
 	u32 *srcwords = (u32 *) src;
 	u32 *dstwords = (u32 *) dst;
 	s32 i;
@@ -304,6 +325,7 @@ void mtx00016820(Mtx *src, Mtx *dst)
 		dstwords[(i << 1) + 0] = (word1 & 0xffff0000) | (word2 >> 16);
 		dstwords[(i << 1) + 1] = (word1 << 16) | (word2 & 0xffff);
 	}
+#endif
 }
 
 void mtx00016874(Mtxf *mtx, f32 posx, f32 posy, f32 posz, f32 lookx, f32 looky, f32 lookz, f32 upx, f32 upy, f32 upz)

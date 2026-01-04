@@ -366,8 +366,16 @@ void mtxF2L(Mtxf *src, Mtxf *dst)
 	dst->l[3][2] = src30 << 16 | (src31 & 0xffff);
 	dst->l[3][3] = src32 << 16 | (src33 & 0xffff);
 #else
-	if (src != dst) {
-		bcopy(src, dst, sizeof(*dst));
+	s32 i;
+	s32 j;
+	f32 scale0 = var8005ef10[0] * (1.0f / 65536.0f);
+	f32 scale1 = var8005ef10[1] * (1.0f / 65536.0f);
+
+	for (i = 0; i < 4; i++) {
+		for (j = 0; j < 4; j++) {
+			f32 scale = (j == 3) ? scale1 : scale0;
+			dst->m[i][j] = src->m[i][j] * scale;
+		}
 	}
 #endif
 }

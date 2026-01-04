@@ -8,6 +8,7 @@ project(pd C CXX) # <<< MOVED THIS LINE UP
 option(BUILD_PSP "Build for PlayStation Portable" OFF)
 
 if(BUILD_PSP)
+add_compile_definitions(GBI_FLOATS)
   if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
     message(WARNING "Building for PSP (BUILD_PSP=ON) but CMAKE_TOOLCHAIN_FILE is not set. "
                     "Cross-compilation might fail unless the toolchain is in your PATH and CMake detects it correctly. "

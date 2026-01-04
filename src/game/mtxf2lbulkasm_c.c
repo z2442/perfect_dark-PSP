@@ -346,5 +346,22 @@ void mtxF2LBulk(Mtxf *mtx, s32 count)
 		count--;
 	} while (count);
 #endif
+#else
+	s32 i;
+	s32 j;
+	f32 scale0 = var8005ef10[0] * (1.0f / 65536.0f);
+	f32 scale1 = var8005ef10[1] * (1.0f / 65536.0f);
+
+	while (count > 0) {
+		for (i = 0; i < 4; i++) {
+			for (j = 0; j < 4; j++) {
+				f32 scale = (j == 3) ? scale1 : scale0;
+				mtx->m[i][j] *= scale;
+			}
+		}
+
+		mtx++;
+		count--;
+	}
 #endif
 }
