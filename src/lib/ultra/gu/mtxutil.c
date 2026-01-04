@@ -1,9 +1,5 @@
 #include <ultra64.h>
-#ifdef PLATFORM_PSP
-#include <pspgu.h>
-#include <pspgum.h>
-#include <string.h>
-#endif
+
 
 void guMtxF2L(f32 mf[4][4], Mtx *m)
 {
@@ -33,16 +29,7 @@ void guMtxF2L(f32 mf[4][4], Mtx *m)
 
 void guMtxIdentF(float mf[4][4])
 {
-#ifdef PLATFORM_PSP
-	ScePspFMatrix4 gumMatrix;
 
-	sceGumPushMatrix();
-	sceGumLoadIdentity();
-	sceGumStoreMatrix(&gumMatrix);
-	sceGumPopMatrix();
-
-	memcpy(mf, &gumMatrix, sizeof(gumMatrix));
-#else
 	int	i, j;
 
 	for (i = 0; i < 4; i++) {
@@ -50,7 +37,7 @@ void guMtxIdentF(float mf[4][4])
 			mf[i][j] = i == j ? 1 : 0;
 		}
 	}
-#endif
+
 }
 
 void guMtxIdent(Mtx *m)

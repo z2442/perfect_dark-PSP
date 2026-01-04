@@ -7,10 +7,6 @@
 #include "types.h"
 #include "platform.h"
 
-#if defined(PLATFORM_PSP)
-#include <pspfpu.h>
-#endif
-
 struct t0slot {
 	u16 unk00;
 	u16 unk02;
@@ -1595,7 +1591,7 @@ static f32 modelasmAcosOrAsin(f32 f6)
 	return 0.000047937632189132f * t3;
 }
 
-#if !defined(PLATFORM_PSP)
+
 f32 cosf(f32 radians)
 {
 	return sinf(radians + 1.570796251297f);
@@ -1669,4 +1665,4 @@ f32 sinf(f32 radians)
 
 	return ret;
 }
-#endif
+
