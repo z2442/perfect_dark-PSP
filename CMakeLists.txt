@@ -189,10 +189,10 @@ if(BUILD_PSP)
   # CMake sets optimization flags per build type, adjust if needed:
   if(CMAKE_BUILD_TYPE MATCHES "Release|RelWithDebInfo")
       message(STATUS "Using -O2 optimization for PSP ${CMAKE_BUILD_TYPE} build")
-      set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -g -O2 -ffast-math -flto")
-      set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -g -O2 -ffast-math -flto")
-      set(CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} -g -O2 -ffast-math -flto")
-      set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -g -O2 -ffast-math -flto")
+      set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -g -O2 -ffast-math -flto -fipa-pta -fomit-frame-pointer")
+      set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -g -O2 -ffast-math -flto -fipa-pta -fomit-frame-pointer")
+      set(CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} -g -O2 -ffast-math -flto -fipa-pta -fomit-frame-pointer")
+      set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -g -O2 -ffast-math -flto -fipa-pta -fomit-frame-pointer")
   endif()
 
 else() # Non-PSP builds
@@ -425,7 +425,7 @@ set(BIN_NAME_ELF "pd${BIN_REGION}.${TARGET_ARCH}.elf") # Intermediate ELF name
 set(BIN_NAME_EBOOT "EBOOT.PBP") # Final PSP executable
 set(PD_TARGET_NAME "pd_elf") # Internal CMake target name for the ELF
 
-list(APPEND LIBS glut GLU GL pspge pspgum m pspmath pspfpu pspvfpu psppower pspdebug pspctrl pspdisplay pspaudiolib pspaudio  )
+list(APPEND LIBS glut GLU GL pspge pspgum m pspmath pspfpu pspvfpu psppower pspdebug pspctrl pspdisplay pspaudiolib pspaudio sh4zam  )
 
 # Use the combined SRC list directly
 add_executable(${PD_TARGET_NAME} ${SRC})
