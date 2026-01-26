@@ -20,6 +20,7 @@ jobs:
         run: ./psp.sh
       - name: Compress
         run: |
+          mkdir data
           cd build-psp
           mkdir -p PSP/GAME/perfect_dark-PSP
           cp EBOOT.PBP PSP/GAME/perfect_dark-PSP/
