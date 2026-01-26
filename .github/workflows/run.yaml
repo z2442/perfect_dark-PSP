@@ -2,7 +2,7 @@ name: perfect_dark-PSP
 on:
   push:
     branches:
-      - main
+      - PSP-Port
 permissions:
   contents: write
 jobs:
