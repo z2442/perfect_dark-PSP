@@ -52,6 +52,8 @@ jobs:
           name: perfect_dark-PSP
           prerelease: true
           files: perfect_dark-PSP.zip
+          body: |
+            Automated build from latest PSP-Port branch
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     
