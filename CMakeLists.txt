@@ -1,44 +1,23 @@
 cmake_minimum_required(VERSION 3.16)
 project(pd C CXX) # <<< MOVED THIS LINE UP
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_EXTENSIONS OFF)
+set(CMAKE_CXX_STANDARD 20) # Check if psp-g++ supports C++20, might need 17 or 14
+set(CMAKE_CXX_EXTENSIONS OFF)
 
-# --- PSP Build Configuration ---
-# To build for PSP, invoke CMake with:
-# cmake -S . -B build-psp -DCMAKE_TOOLCHAIN_FILE=${CMAKE_SOURCE_DIR}/cmake/psp.toolchain.cmake -DBUILD_PSP=ON [other options]
-# where psp.toolchain.cmake points to your PSP toolchain setup.
-option(BUILD_PSP "Build for PlayStation Portable" OFF)
+message(STATUS "Target arch: ${TARGET_ARCH}")
+message(CPU: ${CMAKE_SYSTEM_PROCESSOR})
 
-if(BUILD_PSP)
-add_compile_definitions(GBI_FLOATS)
-  if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
-    message(WARNING "Building for PSP (BUILD_PSP=ON) but CMAKE_TOOLCHAIN_FILE is not set. "
-                    "Cross-compilation might fail unless the toolchain is in your PATH and CMake detects it correctly. "
-                    "It is strongly recommended to use a toolchain file (e.g., cmake/psp.toolchain.cmake).")
-  endif()
-  # PSP environment checks (optional but helpful)
-  if(NOT DEFINED ENV{PSPSDK})
-      message(WARNING "PSPSDK environment variable is not set. Assuming PSP development libraries are findable in standard paths.")
-      set(PSPSDK "" CACHE PATH "Path to the PSPSDK root directory")
-  else()
-      set(PSPSDK "$ENV{PSPSDK}" CACHE PATH "Path to the PSPSDK root directory")
-      message(STATUS "Using PSPSDK: ${PSPSDK}")
-      # Add PSP SDK paths for finding headers and libraries if the toolchain file doesn't
-      list(APPEND CMAKE_SYSTEM_INCLUDE_PATH "${PSPSDK}/psp/sdk/include" "${PSPSDK}/psp/include")
-      list(APPEND CMAKE_SYSTEM_LIBRARY_PATH "${PSPSDK}/psp/sdk/lib" "${PSPSDK}/psp/lib")
-      # Make sure pkg-config uses the PSP paths if needed
-      set(ENV{PKG_CONFIG_PATH} "${PSPSDK}/psp/lib/pkgconfig:$ENV{PKG_CONFIG_PATH}")
-      set(ENV{PKG_CONFIG_LIBDIR} "${PSPSDK}/psp/lib:$ENV{PKG_CONFIG_LIBDIR}")
-  endif()
 
-  # Disable macOS specific settings when building for PSP
-  set(APPLE OFF)
-  set(UNIX OFF) # Usually set by CMake even for PSP, override if necessary for logic below
-  set(WIN32 OFF)
+if(PSP)
+  set(TARGET_OS "psp")
+  add_compile_definitions(GBI_FLOATS)
 endif()
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake)
 
 # --- macOS Deployment Target (Only if actually building for macOS) ---
-if(APPLE AND NOT BUILD_PSP)
+if(APPLE)
   if(CMAKE_OSX_ARCHITECTURES MATCHES "arm64")
     set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum OS X deployment version")
   else()
@@ -46,16 +25,10 @@ if(APPLE AND NOT BUILD_PSP)
   endif()
 endif()
 
-# project(pd C CXX) # <<< REMOVED FROM HERE
-
-include(TargetArch) # May need adjustments for PSP MIPS detection if not handled by toolchain
+include(CPUTest)
 include(FindPkgConfig)
 include(AssetUtils)
 
-set(CMAKE_C_STANDARD 11)
-set(CMAKE_C_EXTENSIONS OFF)
-set(CMAKE_CXX_STANDARD 20) # Check if psp-g++ supports C++20, might need 17 or 14
-set(CMAKE_CXX_EXTENSIONS OFF)
 
 # --- Build Type Default ---
 if (NOT EXISTS ${CMAKE_BINARY_DIR}/CMakeCache.txt)
@@ -66,50 +39,7 @@ endif()
 
 # --- Options ---
 set(ROMID "ntsc-final" CACHE STRING "Which ROM to build an executable for: ntsc-final, pal-final or jpn-final")
-# option(FORCE_CROSSCOMPILE "Force cross compiling" NO) # Less relevant when using toolchain file
 
-# --- Target Architecture & OS ---
-if(BUILD_PSP)
-  set(TARGET_ARCH "psp") # Specific identifier for PSP
-  set(TARGET_OS "psp")
-  set(TARGET_IS_64BIT FALSE)
-  set(TARGET_IS_BIG_ENDIAN FALSE) # PSP is MIPS Little Endian
-  set(CMAKE_SYSTEM_NAME "psp" CACHE STRING "System Name for PSP" FORCE) # Help CMake identify PSP
-else()
-  # Original desktop/switch architecture detection
-  target_architecture(TARGET_ARCH)
-  if(TARGET_ARCH STREQUAL "i386")
-    set(TARGET_ARCH "i686")
-  endif()
-
-  # TODO: Handle big endian if supporting other platforms
-  set(TARGET_IS_BIG_ENDIAN FALSE)
-
-  if((TARGET_ARCH MATCHES "unknown") OR (TARGET_ARCH STREQUAL ""))
-    message(FATAL_ERROR "Unknown target arch")
-  elseif(TARGET_ARCH MATCHES "64")
-    set(TARGET_IS_64BIT TRUE)
-  else()
-    set(TARGET_IS_64BIT FALSE)
-  endif()
-
-  message(STATUS "Target arch: ${TARGET_ARCH}")
-
-  if(WIN32)
-    set(TARGET_OS "windows")
-  elseif(APPLE)
-    set(TARGET_OS "osx")
-  elseif(NINTENDO_SWITCH) # Assuming NINTENDO_SWITCH is set by its toolchain/platform file
-    set(TARGET_OS "nswitch")
-  elseif(UNIX)
-    set(TARGET_OS "linux")
-  else()
-    message(FATAL_ERROR "Unknown target OS or compiler")
-  endif()
-endif()
-
-set(TARGET_PLATFORM "${TARGET_ARCH}-${TARGET_OS}")
-message(STATUS "Target platform: ${TARGET_PLATFORM}")
 
 # --- Version Info ---
 set(VERSION_IS_PAL 0)
@@ -149,8 +79,6 @@ set(ASSET_DIR "src/assets/${ROMID}")
 set(GENERATED_DIR "src/generated/${ROMID}")
 set(ENV{ROMID} ${ROMID})
 
-# --- Build Folder Postfix (remains the same) ---
-set(BUILD_ID "${VERSION_ROMID}-${VERSION_TARGET}")
 
 # --- Compiler Definitions ---
 add_definitions(
@@ -162,10 +90,6 @@ add_definitions(
   -DPAL=${VERSION_IS_PAL}
   -DVERSION=${VERSION}
 )
-
-if(TARGET_IS_64BIT) # This will be false for PSP
-  add_definitions(-DPLATFORM_64BIT=1)
-endif()
 
 # --- Include Directories ---
 include_directories("${CMAKE_SOURCE_DIR}/include")
@@ -179,7 +103,7 @@ include_directories("${CMAKE_BINARY_DIR}/port/include") # For configured version
 # --- Compiler Flags ---
 
 # PSP specific flags (add these *before* common flags if they need to override)
-if(BUILD_PSP)
+if(PSP)
   add_compile_options(
     -G0 # Often required for PSP startup code, handles global pointer. Toolchain might add this automatically.
     -Wall # Keep warnings enabled
@@ -243,7 +167,7 @@ add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Wno-unused-function>)
 # --- Dependencies ---
 set(LIBS)
 
-if(BUILD_PSP)
+if(PSP)
   # --- PSP Dependencies ---
 
   # SDL2 (PSP Port) - Requires SDL-PSP installed within PSPSDK or findable via pkg-config
@@ -254,24 +178,11 @@ if(BUILD_PSP)
 	find_package(fmt REQUIRED)
 	endif(GCC_LEGACY)
 
- 
-
   # ZLib (PSP Port)
   pkg_check_modules(ZLIB REQUIRED zlib)
   if(ZLIB_FOUND)
-    message(STATUS "Found ZLIB-PSP: ${ZLIB_LIBRARIES}")
     include_directories(SYSTEM ${ZLIB_INCLUDE_DIRS})
     list(APPEND LIBS ${ZLIB_LIBRARIES}) # Usually -lz
-  else()
-    message(STATUS "pkg-config failed for ZLIB-PSP, attempting manual find...")
-    find_path(ZLIB_INCLUDE_DIR zlib.h PATHS ${PSPSDK}/psp/include NO_SYSTEM_ENVIRONMENT_PATH)
-    find_library(ZLIB_LIBRARY NAMES z PATHS ${PSPSDK}/psp/lib NO_SYSTEM_ENVIRONMENT_PATH)
-    if(NOT ZLIB_INCLUDE_DIR OR NOT ZLIB_LIBRARY)
-        message(FATAL_ERROR "ZLIB for PSP not found. Ensure zlib is installed in your PSPSDK (${PSPSDK}).")
-    endif()
-    message(STATUS "Found ZLIB-PSP manually: ${ZLIB_LIBRARY}")
-    include_directories(SYSTEM "${ZLIB_INCLUDE_DIR}")
-    list(APPEND LIBS "${ZLIB_LIBRARY}")
   endif()
 
 else()
@@ -280,11 +191,6 @@ else()
   include_directories(SYSTEM "${SDL2_INCLUDE_DIR}")
   list(APPEND LIBS "${SDL2_LIBRARY}")
 
-  find_package(ZLIB REQUIRED)
-  if(ZLIB_FOUND)
-      include_directories(SYSTEM "${ZLIB_INCLUDE_DIR}")
-      list(APPEND LIBS "${ZLIB_LIBRARY}")
-  endif()
 
   # GL (Not for PSP)
   if(NOT TARGET_OS STREQUAL "nswitch") # Switch has its own graphics setup usually
@@ -301,21 +207,17 @@ else()
       # list(APPEND LIBS EGL glapi) # Example
   endif()
 
-
   # Platform-specific extra libs (Non-PSP)
-  if(NOT EXTRA_LIBRARIES)
       if(WIN32)
           set(EXTRA_LIBRARIES dbghelp -static-libstdc++)
-      elseif(NINTENDO_SWITCH)
-          set(EXTRA_LIBRARIES stdc++ pthread) # Add Switch specific libs
-      else() # Linux/macOS
-          set(EXTRA_LIBRARIES stdc++ m dl pthread) # Added pthread for consistency
+      elseif(APPLE OR UNIX)
+          set(EXTRA_LIBRARIES stdc++ pthread dl m pthread) 
+      else()
+          set(EXTRA_LIBRARIES stdc++) 
       endif()
-  endif()
   list(APPEND LIBS ${EXTRA_LIBRARIES})
 
 endif()
-
 
 # --- Sources ---
 # Use file(GLOB...) to find files. These usually return absolute paths.
@@ -392,21 +294,6 @@ set(SRC
   ${SRC_LIB_ABSOLUTE} # Use the list with absolute paths
 )
 
-# list(TRANSFORM SRC PREPEND "${CMAKE_SOURCE_DIR}/") # <<< REMOVED THIS LINE
-
-# Exclude platform-specific source files (Keep this logic if needed)
-if(NOT WIN32 OR BUILD_PSP)
-    # Exclude windows specific files if any were added
-endif()
-if(NOT APPLE OR BUILD_PSP)
-    # Exclude apple specific files if any were added
-endif()
-# Add PSP specific source files if necessary
-# if(BUILD_PSP)
-#   list(APPEND SRC "${CMAKE_SOURCE_DIR}/port/psp/psp_specific.c")
-# endif()
-
-
 # --- Asset Header Generation (Host Tool) ---
 # This should still run on the host machine, so it's mostly unchanged.
 # Ensure the tools path is correct. Using CMAKE_CURRENT_SOURCE_DIR might be safer.
@@ -419,32 +306,29 @@ generate_asset_headers("textures.json" "${CMAKE_CURRENT_SOURCE_DIR}/tools/assetm
 
 add_custom_target(pd_headers ALL DEPENDS ${JSON_HEADERS})
 
-
 # --- Game Target ---
-set(BIN_NAME_ELF "pd${BIN_REGION}.${TARGET_ARCH}.elf") # Intermediate ELF name
-set(BIN_NAME_EBOOT "EBOOT.PBP") # Final PSP executable
+set(BIN_NAME_ELF "pd${BIN_REGION}.${TARGET_ARCH}elf") # Intermediate ELF name
 set(PD_TARGET_NAME "pd_elf") # Internal CMake target name for the ELF
 
-list(APPEND LIBS glut GLU GL pspge pspgum m pspmath pspfpu pspvfpu psppower pspdebug pspctrl pspdisplay pspaudiolib pspaudio sh4zam  )
+list(APPEND LIBS glut GLU GL pspge pspgum m pspmath pspfpu pspvfpu psppower pspdebug pspctrl pspdisplay pspaudiolib pspaudio  )
 
 # Use the combined SRC list directly
-add_executable(${PD_TARGET_NAME} ${SRC})
-add_dependencies(${PD_TARGET_NAME} pd_headers) # Depend on generated headers
-target_link_libraries(${PD_TARGET_NAME} PRIVATE ${LIBS}) # Use PRIVATE for libraries
-set_target_properties(${PD_TARGET_NAME} PROPERTIES OUTPUT_NAME "${BIN_NAME_ELF}")
-
+add_executable(pd ${SRC})
+add_dependencies(pd pd_headers) # Depend on generated headers
+target_link_libraries(pd PRIVATE ${LIBS}) # Use PRIVATE for libraries
 
 # --- Post-Build Steps ---
 
-if(BUILD_PSP)
+if(PSP)
 create_pbp_file(
-  TARGET pd_elf
+  TARGET pd
   PREVIEW_PATH NULL
-  TITLE Perfect_Dark
+  ICON_PATH "${PROJECT_SOURCE_DIR}/dist/psp/ICON0.png"
+  TITLE "Perfect Dark"
   BUILD_PRX
   )
 
-elseif(NINTENDO_SWITCH)
+elseif(${CMAKE_SYSTEM_NAME} EQUAL NintendoSwitch)
   # --- Switch NRO Generation ---
   # Assuming elf2nro and nacptool are in PATH or found via toolchain
   find_program(ELF2NRO_EXECUTABLE NAMES aarch64-none-elf-elf2nro elf2nro REQUIRED) # Adjust name if needed
@@ -478,17 +362,12 @@ else()
     # list(APPEND SRC ${RC_FILE})
   endif()
 
-  # Define a final target 'pd' aliasing the ELF target for consistency
-  # Use add_custom_target + add_dependencies if you need build steps, ALIAS is just a name mapping
-  add_library(pd ALIAS ${PD_TARGET_NAME})
-
 endif()
 
 # Installation (Optional, adapt paths as needed)
-# install(TARGETS ${PD_TARGET_NAME} DESTINATION bin) # Install ELF/EXE
-# if(BUILD_PSP)
-#   install(FILES ${PSP_EBOOT_PATH} DESTINATION bin/psp) # Install EBOOT
-# elseif(NINTENDO_SWITCH)
-#    install(FILES ${SWITCH_NRO_PATH} DESTINATION bin/switch) # Install NRO
-# endif()
-# install(DIRECTORY ${ASSET_DIR}/ DESTINATION share/pd/assets) # Install assets
+message(${CMAKE_CURRENT_SOURCE_DIR})
+message("Binary:" ${CMAKE_BINARY_DIR})
+  install(FILES ${CMAKE_BINARY_DIR}/EBOOT.PBP DESTINATION PerfectDark)
+  install(FILES ${CMAKE_BINARY_DIR}/pd.prx DESTINATION PerfectDark)
+
+  install(DIRECTORY DESTINATION PerfectDark/data)
