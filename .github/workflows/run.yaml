@@ -23,7 +23,7 @@ jobs:
       - name: Compress
         run: |
           cd build-psp
-          mkdir -p PSP/GAME/perfect_dark-PSP
+          mkdir -p PSP/GAME/perfect_dark-PSP/data
           cp EBOOT.PBP PSP/GAME/perfect_dark-PSP/
           cat << EOF > README.txt
           Put your Perfect Dark Rom into PSP/GAME/perfect_dark-PSP/data/
