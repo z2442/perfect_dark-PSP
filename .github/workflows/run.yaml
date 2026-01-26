@@ -13,14 +13,15 @@ jobs:
     steps:
       - name: Dependencies
         run: |
-          apk add zip
+          apk add zip python3
       - name: Checkout
         uses: actions/checkout@v4
       - name: Compile
-        run: ./psp.sh
-      - name: Compress
         run: |
           mkdir data
+          ./psp.sh
+      - name: Compress
+        run: |
           cd build-psp
           mkdir -p PSP/GAME/perfect_dark-PSP
           cp EBOOT.PBP PSP/GAME/perfect_dark-PSP/
