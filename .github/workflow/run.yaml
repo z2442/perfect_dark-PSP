@@ -1,0 +1,45 @@
+name: perfect_dark-PSP
+on:
+  push:
+    branches:
+      - main
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: 
+      image: pspdev/pspdev
+    steps:
+      - name: Dependencies
+        run: |
+          apk add zip
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Compile
+        run: ./psp.sh
+      - name: Compress
+        run: |
+          cd build-psp
+          mkdir -p PSP/GAME/perfect_dark-PSP
+          cp EBOOT.PBP PSP/GAME/perfect_dark-PSP/
+          zip -r perfect_dark-PSP.zip PSP
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: perfect_dark-PSP
+          path: .
+      - name:
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: perfect_dark-PSP
+          prerelease: true
+          files: perfect_dark-PSP.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    
