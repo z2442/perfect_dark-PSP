@@ -1,0 +1,59 @@
+name: perfect_dark-PSP
+on:
+  push:
+    branches:
+      - PSP-Port
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: 
+      image: pspdev/pspdev
+    steps:
+      - name: Dependencies
+        run: |
+          apk add zip python3
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Compile
+        run: |
+          mkdir data
+          ./psp.sh
+      - name: Compress
+        run: |
+          cd build-psp
+          mkdir -p PSP/GAME/perfect_dark-PSP/data
+          cp EBOOT.PBP PSP/GAME/perfect_dark-PSP/
+          cat << EOF > README.txt
+          Put your Perfect Dark Rom into PSP/GAME/perfect_dark-PSP/data/
+          the name of the rom can be the following depending on region;
+          pd.ntsc-final.z64, pd.pal-final.z64, or pd.jpn-final.z64
+          EOF
+          zip -r ../perfect_dark-PSP.zip PSP README.txt
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: perfect_dark-PSP
+          path: perfect_dark-PSP.zip
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: perfect_dark-PSP
+          path: .
+      - name:
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: perfect_dark-PSP
+          prerelease: true
+          files: perfect_dark-PSP.zip
+          body: |
+            Automated build from latest PSP-Port branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    
