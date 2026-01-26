@@ -27,9 +27,9 @@ jobs:
           cp EBOOT.PBP PSP/GAME/perfect_dark-PSP/
           cat << EOF > README.txt
           Put your Perfect Dark Rom into PSP/GAME/perfect_dark-PSP/data/
-        the name of the rom can be the following depending on region;
-        pd.ntsc-final.z64, pd.pal-final.z64, or pd.jpn-final.z64
-        EOF
+          the name of the rom can be the following depending on region;
+          pd.ntsc-final.z64, pd.pal-final.z64, or pd.jpn-final.z64
+          EOF
           zip -r ../perfect_dark-PSP.zip PSP README.txt
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
