@@ -26,6 +26,11 @@ jobs:
           mkdir -p PSP/GAME/perfect_dark-PSP
           cp EBOOT.PBP PSP/GAME/perfect_dark-PSP/
           zip -r perfect_dark-PSP.zip PSP
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: perfect_dark-PSP
+          path: perfect_dark-PSP.zip
   release:
     needs: build
     runs-on: ubuntu-latest
