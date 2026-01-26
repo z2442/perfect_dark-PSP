@@ -13,6 +13,4 @@ psp-cmake -S . -B build-psp \
 
 # Build 
 cmake --build build-psp -j 4
-
-#copy the game data executable directory
-cp -r data build-psp/
+cmake --install build-psp -j 4 --prefix $PWD
