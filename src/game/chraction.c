@@ -14705,18 +14705,40 @@ s32 chrFindWaypointWithinPosQuadrant(struct coord *pos, RoomNum *rooms, f32 angl
 		}
 
 		if (waypointIsWithin90DegreesOfPosAngle(waypoint, pos, angle)) {
-			return waypoint->padnum;
+			s32 padnum_safe;
+			memcpy(&padnum_safe,
+			       (const u8 *)waypoint + offsetof(struct waypoint, padnum),
+			       sizeof(padnum_safe));
+			return padnum_safe;
 		}
 
-		for (i = 0; (neighbournum = waypoint->neighbours[i]) >= 0; i++) {
-			if ((neighbournum & 0x8000) == 0) {
-				neighbournum &= 0x3fff;
+		{
+			s32 *neighbours;
+			memcpy(&neighbours,
+			       (const u8 *)waypoint + offsetof(struct waypoint, neighbours),
+			       sizeof(neighbours));
 
-				if (waypointIsWithin90DegreesOfPosAngle(&g_StageSetup.waypoints[neighbournum], pos, angle)) {
-					return g_StageSetup.waypoints[neighbournum].padnum;
+			if (neighbours) {
+				for (i = 0;; i++) {
+					memcpy(&neighbournum,
+					       (const u8 *)neighbours + i * sizeof(*neighbours),
+					       sizeof(neighbournum));
+					if (neighbournum < 0) {
+						break;
+					}
+					if ((neighbournum & 0x8000) == 0) {
+						neighbournum &= 0x3fff;
+
+						if (waypointIsWithin90DegreesOfPosAngle(&g_StageSetup.waypoints[neighbournum], pos, angle)) {
+							s32 padnum_safe;
+							memcpy(&padnum_safe,
+							       (const u8 *)&g_StageSetup.waypoints[neighbournum] + offsetof(struct waypoint, padnum),
+							       sizeof(padnum_safe));
+							return padnum_safe;
+						}
+					}
 				}
 			}
-
 		}
 	}
 
