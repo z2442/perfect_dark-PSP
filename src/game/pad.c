@@ -4,6 +4,7 @@
 #include "bss.h"
 #include "data.h"
 #include "types.h"
+#include "unaligned.h"
 #include <string.h>
 
 struct padsfileheader *g_PadsFile;
@@ -20,7 +21,6 @@ void padUnpack(s32 padnum, u32 fields, struct pad *pad)
 {
 	s32 offset;
 	u32 header_val;
-	f32 *fbuffer;
 	u8 *ptr;
 
 	if (!pad) {
@@ -30,7 +30,7 @@ void padUnpack(s32 padnum, u32 fields, struct pad *pad)
 
 	offset = g_PadOffsets[padnum];
 	ptr = (u8 *) &g_StageSetup.padfiledata[offset];
-	memcpy(&header_val, ptr, 4);
+	header_val = pd_load_u32_unaligned(ptr);
 
 	// Header format:
 	// flags, room and liftnum
@@ -46,10 +46,9 @@ void padUnpack(s32 padnum, u32 fields, struct pad *pad)
 
 	if ((header_val >> 14) & PADFLAG_INTPOS) {
 		if (fields & PADFIELD_POS) {
-			int16_t sx, sy, sz;
-			memcpy(&sx, ptr + 0, 2);
-			memcpy(&sy, ptr + 2, 2);
-			memcpy(&sz, ptr + 4, 2);
+			int16_t sx = pd_load_s16_unaligned(ptr + 0);
+			int16_t sy = pd_load_s16_unaligned(ptr + 2);
+			int16_t sz = pd_load_s16_unaligned(ptr + 4);
 			pad->pos.x = sx;
 			pad->pos.y = sy;
 			pad->pos.z = sz;
@@ -57,10 +56,9 @@ void padUnpack(s32 padnum, u32 fields, struct pad *pad)
 		ptr += 8;
 	} else {
 		if (fields & PADFIELD_POS) {
-			float f;
-			memcpy(&f, ptr + 0, 4); pad->pos.x = f;
-			memcpy(&f, ptr + 4, 4); pad->pos.y = f;
-			memcpy(&f, ptr + 8, 4); pad->pos.z = f;
+			pad->pos.x = pd_load_f32_unaligned(ptr + 0);
+			pad->pos.y = pd_load_f32_unaligned(ptr + 4);
+			pad->pos.z = pd_load_f32_unaligned(ptr + 8);
 		}
 		ptr += 12;
 	}
@@ -83,10 +81,9 @@ void padUnpack(s32 padnum, u32 fields, struct pad *pad)
 		}
 	} else {
 		if (fields & (PADFIELD_UP | PADFIELD_NORMAL)) {
-			float f;
-			memcpy(&f, ptr + 0, 4); pad->up.x = f;
-			memcpy(&f, ptr + 4, 4); pad->up.y = f;
-			memcpy(&f, ptr + 8, 4); pad->up.z = f;
+			pad->up.x = pd_load_f32_unaligned(ptr + 0);
+			pad->up.y = pd_load_f32_unaligned(ptr + 4);
+			pad->up.z = pd_load_f32_unaligned(ptr + 8);
 		}
 		ptr += 12;
 	}
@@ -109,10 +106,9 @@ void padUnpack(s32 padnum, u32 fields, struct pad *pad)
 		}
 	} else {
 		if (fields & (PADFIELD_LOOK | PADFIELD_NORMAL)) {
-			float f;
-			memcpy(&f, ptr + 0, 4); pad->look.x = f;
-			memcpy(&f, ptr + 4, 4); pad->look.y = f;
-			memcpy(&f, ptr + 8, 4); pad->look.z = f;
+			pad->look.x = pd_load_f32_unaligned(ptr + 0);
+			pad->look.y = pd_load_f32_unaligned(ptr + 4);
+			pad->look.z = pd_load_f32_unaligned(ptr + 8);
 		}
 		ptr += 12;
 	}
@@ -125,13 +121,12 @@ void padUnpack(s32 padnum, u32 fields, struct pad *pad)
 
 	if ((header_val >> 14) & PADFLAG_HASBBOXDATA) {
 		if (fields & PADFIELD_BBOX) {
-			float f;
-			memcpy(&f, ptr +  0, 4); pad->bbox.xmin = f;
-			memcpy(&f, ptr +  4, 4); pad->bbox.xmax = f;
-			memcpy(&f, ptr +  8, 4); pad->bbox.ymin = f;
-			memcpy(&f, ptr + 12, 4); pad->bbox.ymax = f;
-			memcpy(&f, ptr + 16, 4); pad->bbox.zmin = f;
-			memcpy(&f, ptr + 20, 4); pad->bbox.zmax = f;
+			pad->bbox.xmin = pd_load_f32_unaligned(ptr + 0);
+			pad->bbox.xmax = pd_load_f32_unaligned(ptr + 4);
+			pad->bbox.ymin = pd_load_f32_unaligned(ptr + 8);
+			pad->bbox.ymax = pd_load_f32_unaligned(ptr + 12);
+			pad->bbox.zmin = pd_load_f32_unaligned(ptr + 16);
+			pad->bbox.zmax = pd_load_f32_unaligned(ptr + 20);
 		}
 		ptr += 24;
 	} else {
@@ -154,8 +149,7 @@ bool padHasBboxData(s32 padnum)
 {
 	u32 offset = g_PadOffsets[padnum];
 	u8 *p = (u8 *)&g_StageSetup.padfiledata[offset];
-	u32 header_val;
-	memcpy(&header_val, p, 4);
+	u32 header_val = pd_load_u32_unaligned(p);
 	return ((header_val >> 14) & PADFLAG_HASBBOXDATA) != 0;
 }
 
@@ -242,8 +236,7 @@ void padCopyBboxFromPad(s32 padnum, struct pad *src)
     u8 *p = (u8 *)&g_StageSetup.padfiledata[offset];
 
     /* Read header safely (unaligned OK) */
-    u32 header_val;
-    memcpy(&header_val, p, 4);
+    u32 header_val = pd_load_u32_unaligned(p);
 
     if ((header_val >> 14) & PADFLAG_HASBBOXDATA) {
         u8 *q = p + 4;
@@ -265,13 +258,12 @@ void padCopyBboxFromPad(s32 padnum, struct pad *src)
             q += 12;  /* 3 * f32 */
         }
 
-        /* Write bbox (6 floats) using memcpy to avoid unaligned stores */
-        memcpy(q +  0, &src->bbox.xmin, 4);
-        memcpy(q +  4, &src->bbox.xmax, 4);
-        memcpy(q +  8, &src->bbox.ymin, 4);
-        memcpy(q + 12, &src->bbox.ymax, 4);
-        memcpy(q + 16, &src->bbox.zmin, 4);
-        memcpy(q + 20, &src->bbox.zmax, 4);
+        pd_store_f32_unaligned(q + 0, src->bbox.xmin);
+        pd_store_f32_unaligned(q + 4, src->bbox.xmax);
+        pd_store_f32_unaligned(q + 8, src->bbox.ymin);
+        pd_store_f32_unaligned(q + 12, src->bbox.ymax);
+        pd_store_f32_unaligned(q + 16, src->bbox.zmin);
+        pd_store_f32_unaligned(q + 20, src->bbox.zmax);
     }
 }
 

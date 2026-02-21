@@ -56,8 +56,8 @@
 #include "lib/vi.h"
 #include "data.h"
 #include "types.h"
-#include <stddef.h> 
-#include <string.h> 
+#include "unaligned.h"
+#include <stddef.h>
 
 s32 g_RecentQuipsPlayed[5];
 u32 var8009cd84;
@@ -5395,11 +5395,10 @@ void chrGoPosGetCurWaypointInfoWithFlags(struct chrdata *chr, struct coord *pos,
 
 	if (waypoint) {
 		{
-    s32 padnum_safe;
-    /* waypoint->padnum may be unaligned on PSP; memcpy avoids unaligned loads */
-    memcpy(&padnum_safe, (const u8 *)waypoint + offsetof(struct waypoint, padnum), sizeof(padnum_safe));
-    padUnpack(padnum_safe, PADFIELD_POS | PADFIELD_ROOM | PADFIELD_FLAGS, &pad);
-	}
+			s32 padnum_safe;
+			padnum_safe = pd_load_s32_unaligned((const u8 *)waypoint + offsetof(struct waypoint, padnum));
+			padUnpack(padnum_safe, PADFIELD_POS | PADFIELD_ROOM | PADFIELD_FLAGS, &pad);
+		}
 
 		pos->x = pad.pos.x;
 		pos->y = pad.pos.y;
@@ -5754,7 +5753,7 @@ void chrNavTickMagic(struct chrdata *chr, struct waydata *waydata, f32 speed, st
 						if (chr->act_gopos.curindex >= 2) {
 							waypoint = chr->act_gopos.waypoints[chr->act_gopos.curindex - 2];
 							s32 padnum_safe;
-							memcpy(&padnum_safe, (const u8 *)waypoint + offsetof(struct waypoint, padnum), sizeof(padnum_safe));
+							padnum_safe = pd_load_s32_unaligned((const u8 *)waypoint + offsetof(struct waypoint, padnum));
 							padUnpack(padnum_safe, PADFIELD_POS, &pad);
 							chrSetLookAngle(chr, atan2f(prop->pos.x - pad.pos.x, prop->pos.z - pad.pos.z));
 						}
@@ -12760,7 +12759,11 @@ s32 chrIsUsingLift(struct chrdata *chr)
 s16 chrGoPosGetNextPadNum(struct chrdata *chr)
 {
 	if (chr->act_gopos.waypoints[chr->act_gopos.curindex + 1]) {
-		return chr->act_gopos.waypoints[chr->act_gopos.curindex + 1]->padnum;
+		s32 padnum_safe;
+		padnum_safe = pd_load_s32_unaligned(
+				(const u8 *)chr->act_gopos.waypoints[chr->act_gopos.curindex + 1]
+				+ offsetof(struct waypoint, padnum));
+		return padnum_safe;
 	}
 
 	return -1;
@@ -12883,14 +12886,12 @@ void chrTickGoPos(struct chrdata *chr)
 
 		waypoint = chr->act_gopos.waypoints[chr->act_gopos.curindex];
 
-		if (waypoint) {
-			{
-    		s32 padnum_safe;
-   			 memcpy(&padnum_safe,
-           (const u8 *)waypoint + offsetof(struct waypoint, padnum),
-           sizeof(padnum_safe));
-    		padUnpack(padnum_safe, PADFIELD_FLAGS | PADFIELD_POS, &pad);
-			}
+			if (waypoint) {
+				{
+					s32 padnum_safe;
+					padnum_safe = pd_load_s32_unaligned((const u8 *)waypoint + offsetof(struct waypoint, padnum));
+					padUnpack(padnum_safe, PADFIELD_FLAGS | PADFIELD_POS, &pad);
+				}
 
 			arrivingxyz = posIsArrivingAtPos(&chr->prevpos, &prop->pos, &pad.pos, 30);
 			arrivingxz = posIsArrivingLaterallyAtPos(&chr->prevpos, &prop->pos, &pad.pos, 30);
@@ -12901,9 +12902,10 @@ void chrTickGoPos(struct chrdata *chr)
 				chr->act_gopos.flags |= GOPOSFLAG_DUCK;
 			}
 
-			if ((pad.flags & PADFLAG_AIWAITLIFT) || (pad.flags & PADFLAG_AIONLIFT)) {
-				advance = chrGoPosUpdateLiftAction(chr, pad.flags, arrivingxz, arrivingxyz, waypoint->padnum, chrGoPosGetNextPadNum(chr));
-			} else {
+				if ((pad.flags & PADFLAG_AIWAITLIFT) || (pad.flags & PADFLAG_AIONLIFT)) {
+					s32 padnum_safe = pd_load_s32_unaligned((const u8 *)waypoint + offsetof(struct waypoint, padnum));
+					advance = chrGoPosUpdateLiftAction(chr, pad.flags, arrivingxz, arrivingxyz, padnum_safe, chrGoPosGetNextPadNum(chr));
+				} else {
 				if (arrivingxyz || (arrivingxz && (chr->inlift || (pad.flags & PADFLAG_AIIGNOREY)))) {
 					advance = true;
 				}
@@ -12933,14 +12935,12 @@ void chrTickGoPos(struct chrdata *chr)
 			// Load waypoint that the chr is running to
 			waypoint = chr->act_gopos.waypoints[chr->act_gopos.curindex];
 
-			if (waypoint) {
-				{
-    			s32 padnum_safe;
-   				 memcpy(&padnum_safe,
-        		   (const u8 *)waypoint + offsetof(struct waypoint, padnum),
-           		sizeof(padnum_safe));
-   				 padUnpack(padnum_safe, PADFIELD_FLAGS, &pad);
-				}
+				if (waypoint) {
+					{
+						s32 padnum_safe;
+						padnum_safe = pd_load_s32_unaligned((const u8 *)waypoint + offsetof(struct waypoint, padnum));
+						padUnpack(padnum_safe, PADFIELD_FLAGS, &pad);
+					}
 
 				if ((pad.flags & PADFLAG_AIWALKDIRECT) == 0) {
 					// The waypoint the chr is running to doesn't have
@@ -12950,28 +12950,24 @@ void chrTickGoPos(struct chrdata *chr)
 					// Load the next waypoint after the one the chr is running to
 					waypoint = chr->act_gopos.waypoints[chr->act_gopos.curindex + 1];
 
-					if (waypoint) {
-						{
-    					s32 padnum_safe;
-   						 memcpy(&padnum_safe,
-       			    (const u8 *)waypoint + offsetof(struct waypoint, padnum),
-         			  sizeof(padnum_safe));
-    					padUnpack(padnum_safe, PADFIELD_FLAGS, &pad);
-						}
+						if (waypoint) {
+							{
+								s32 padnum_safe;
+								padnum_safe = pd_load_s32_unaligned((const u8 *)waypoint + offsetof(struct waypoint, padnum));
+								padUnpack(padnum_safe, PADFIELD_FLAGS, &pad);
+							}
 
 						if ((pad.flags & PADFLAG_AIWALKDIRECT) == 0) {
 							// And this one doesn't have PADFLAG_AIWALKDIRECT either,
 							// so the chr can consider skipping this one too.
 							waypoint = chr->act_gopos.waypoints[chr->act_gopos.curindex + 2];
 
-							if (waypoint) {
-								{
-   								 s32 padnum_safe;
-   								 memcpy(&padnum_safe,
-     						      (const u8 *)waypoint + offsetof(struct waypoint, padnum),
-       							    sizeof(padnum_safe));
-   									 padUnpack(padnum_safe, PADFIELD_ROOM | PADFIELD_POS, &pad);
-								}
+								if (waypoint) {
+									{
+										s32 padnum_safe;
+										padnum_safe = pd_load_s32_unaligned((const u8 *)waypoint + offsetof(struct waypoint, padnum));
+										padUnpack(padnum_safe, PADFIELD_ROOM | PADFIELD_POS, &pad);
+									}
 
 								nextpos.x = pad.pos.x;
 								nextpos.y = pad.pos.y;
@@ -13001,26 +12997,21 @@ void chrTickGoPos(struct chrdata *chr)
 		if (chr->act_gopos.waydata.age % 10 == 0 || (chr->act_gopos.flags & GOPOSFLAG_INIT)) {
 			waypoint = chr->act_gopos.waypoints[chr->act_gopos.curindex];
 
-			if (waypoint) {
-				candosomething = (chr->act_gopos.flags & GOPOSFLAG_INIT) != 0;
+				if (waypoint) {
+					candosomething = (chr->act_gopos.flags & GOPOSFLAG_INIT) != 0;
 
-				{
-   				 s32 padnum_safe;
-   				 memcpy(&padnum_safe,
-          		 (const u8 *)waypoint + offsetof(struct waypoint, padnum),
-          		 sizeof(padnum_safe));
-   				 padUnpack(padnum_safe, PADFIELD_FLAGS | PADFIELD_POS, &pad);
-				}
+					{
+						s32 padnum_safe;
+						padnum_safe = pd_load_s32_unaligned((const u8 *)waypoint + offsetof(struct waypoint, padnum));
+						padUnpack(padnum_safe, PADFIELD_FLAGS | PADFIELD_POS, &pad);
+					}
 
 				next = chr->act_gopos.waypoints[chr->act_gopos.curindex + 1];
 
-				if (next) {
-   				 /* avoid unaligned access of next->padnum */
-    			s32 padnum_next_safe;
-   				 memcpy(&padnum_next_safe,
-           (const u8 *)next + offsetof(struct waypoint, padnum),
-           sizeof(padnum_next_safe));
-   			 padUnpack(padnum_next_safe, PADFIELD_ROOM | PADFIELD_POS, &pad2);
+					if (next) {
+						s32 padnum_next_safe;
+						padnum_next_safe = pd_load_s32_unaligned((const u8 *)next + offsetof(struct waypoint, padnum));
+						padUnpack(padnum_next_safe, PADFIELD_ROOM | PADFIELD_POS, &pad2);
 
 					if ((pad.flags & (PADFLAG_AIWAITLIFT | PADFLAG_AIONLIFT))
 							&& (pad2.flags & (PADFLAG_AIWAITLIFT | PADFLAG_AIONLIFT))) {
@@ -13076,17 +13067,15 @@ void chrTickGoPos(struct chrdata *chr)
 			chr->act_gopos.flags &= ~GOPOSFLAG_INIT;
 		}
 
-		waypoint = chr->act_gopos.waypoints[chr->act_gopos.curindex];
+			waypoint = chr->act_gopos.waypoints[chr->act_gopos.curindex];
 
-		if (waypoint) {
-    		s32 padnum_safe;
-    		memcpy(&padnum_safe,
-           (const u8 *)waypoint + offsetof(struct waypoint, padnum),
-           sizeof(padnum_safe));
-   		 padUnpack(padnum_safe, PADFIELD_POS, &pad);
+			if (waypoint) {
+				s32 padnum_safe;
+				padnum_safe = pd_load_s32_unaligned((const u8 *)waypoint + offsetof(struct waypoint, padnum));
+				padUnpack(padnum_safe, PADFIELD_POS, &pad);
 
 
-			nextpos.x = pad.pos.x;
+				nextpos.x = pad.pos.x;
 			nextpos.y = pad.pos.y;
 			nextpos.z = pad.pos.z;
 		} else {
@@ -14646,11 +14635,9 @@ bool waypointIsWithin90DegreesOfPosAngle(struct waypoint *waypoint, struct coord
 	struct pad pad;
 
 	{
-	    s32 padnum_safe;
-	    memcpy(&padnum_safe,
-	           (const u8 *)waypoint + offsetof(struct waypoint, padnum),
-	           sizeof(padnum_safe));
-	    padUnpack(padnum_safe, PADFIELD_POS, &pad);
+		s32 padnum_safe;
+		padnum_safe = pd_load_s32_unaligned((const u8 *)waypoint + offsetof(struct waypoint, padnum));
+		padUnpack(padnum_safe, PADFIELD_POS, &pad);
 	}
 
 	diffangle = angle - atan2f(pad.pos.x - pos->x, pad.pos.z - pos->z);
@@ -14706,23 +14693,17 @@ s32 chrFindWaypointWithinPosQuadrant(struct coord *pos, RoomNum *rooms, f32 angl
 
 		if (waypointIsWithin90DegreesOfPosAngle(waypoint, pos, angle)) {
 			s32 padnum_safe;
-			memcpy(&padnum_safe,
-			       (const u8 *)waypoint + offsetof(struct waypoint, padnum),
-			       sizeof(padnum_safe));
+			padnum_safe = pd_load_s32_unaligned((const u8 *)waypoint + offsetof(struct waypoint, padnum));
 			return padnum_safe;
 		}
 
 		{
 			s32 *neighbours;
-			memcpy(&neighbours,
-			       (const u8 *)waypoint + offsetof(struct waypoint, neighbours),
-			       sizeof(neighbours));
+			neighbours = (s32 *)(uintptr_t)pd_load_uptr_unaligned((const u8 *)waypoint + offsetof(struct waypoint, neighbours));
 
 			if (neighbours) {
 				for (i = 0;; i++) {
-					memcpy(&neighbournum,
-					       (const u8 *)neighbours + i * sizeof(*neighbours),
-					       sizeof(neighbournum));
+					neighbournum = pd_load_s32_unaligned((const u8 *)neighbours + i * sizeof(*neighbours));
 					if (neighbournum < 0) {
 						break;
 					}
@@ -14731,9 +14712,7 @@ s32 chrFindWaypointWithinPosQuadrant(struct coord *pos, RoomNum *rooms, f32 angl
 
 						if (waypointIsWithin90DegreesOfPosAngle(&g_StageSetup.waypoints[neighbournum], pos, angle)) {
 							s32 padnum_safe;
-							memcpy(&padnum_safe,
-							       (const u8 *)&g_StageSetup.waypoints[neighbournum] + offsetof(struct waypoint, padnum),
-							       sizeof(padnum_safe));
+							padnum_safe = pd_load_s32_unaligned((const u8 *)&g_StageSetup.waypoints[neighbournum] + offsetof(struct waypoint, padnum));
 							return padnum_safe;
 						}
 					}
@@ -14764,7 +14743,7 @@ bool func0f04a4ec(struct chrdata *chr, u8 quadrant)
 				navSetSeed(0, 0);
 
 				if (numwaypoints >= 3) {
-					chr->padpreset1 = waypoints[1]->padnum;
+					chr->padpreset1 = pd_load_s32_unaligned((const u8 *)waypoints[1] + offsetof(struct waypoint, padnum));
 					return true;
 				}
 			} else {
@@ -14773,7 +14752,7 @@ bool func0f04a4ec(struct chrdata *chr, u8 quadrant)
 				navSetSeed(0, 0);
 
 				if (chrwp) {
-					chr->padpreset1 = chrwp->padnum;
+					chr->padpreset1 = pd_load_s32_unaligned((const u8 *)chrwp + offsetof(struct waypoint, padnum));
 					return true;
 				}
 			}
@@ -15011,12 +14990,13 @@ bool chrSetPadPresetToPadOnRouteToTarget(struct chrdata *chr)
 			if (numwaypoints >= 3) {
 				for (i = 0; waypoints[i] != NULL; i++) {
 					struct waypoint *wp = waypoints[i];
+					s32 padnum_safe = pd_load_s32_unaligned((const u8 *)wp + offsetof(struct waypoint, padnum));
 
-					padUnpack(wp->padnum, PADFIELD_POS, &pad);
+					padUnpack(padnum_safe, PADFIELD_POS, &pad);
 
 					if (cdTestLos04(&target->pos, target->rooms, &pad.pos, CDTYPE_BG)) {
 						if (cdTestLos04(&prop->pos, prop->rooms, &pad.pos, CDTYPE_BG)) {
-							chr->padpreset1 = wp->padnum;
+							chr->padpreset1 = padnum_safe;
 							return true;
 						}
 					}

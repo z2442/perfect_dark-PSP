@@ -8,7 +8,7 @@
 #include "lib/anim.h"
 #include "data.h"
 #include "types.h"
-#include <string.h>
+#include "unaligned.h"
 
 void coverAllocateSpecial(u16 *specialcovernums)
 {
@@ -42,9 +42,7 @@ void setupPrepareCover(void)
 		alignedcovers = mempAlloc(ALIGN16(numcovers * sizeof(*alignedcovers)), MEMPOOL_STAGE);
 
 		if (alignedcovers != NULL) {
-			for (i = 0; i < numcovers; i++) {
-				memcpy(&alignedcovers[i], coverdata + i * sizeof(struct coverdefinition), sizeof(struct coverdefinition));
-			}
+			pd_copy_bytes_unaligned(alignedcovers, coverdata, (size_t)numcovers * sizeof(*alignedcovers));
 
 			g_StageSetup.cover = alignedcovers;
 		}
@@ -64,10 +62,9 @@ void setupPrepareCover(void)
 
 			if (coverUnpack(i, &cover)) {
 				/* Safely load look vector (may be unaligned) */
-				float lx, ly, lz;
-				memcpy(&lx, &cover.look->x, 4);
-				memcpy(&ly, &cover.look->y, 4);
-				memcpy(&lz, &cover.look->z, 4);
+				float lx = pd_load_f32_unaligned(&cover.look->x);
+				float ly = pd_load_f32_unaligned(&cover.look->y);
+				float lz = pd_load_f32_unaligned(&cover.look->z);
 
 				/* Skip covers with zero look vector */
 				if (lx != 0.0f || ly != 0.0f || lz != 0.0f) {
@@ -77,14 +74,13 @@ void setupPrepareCover(void)
 					}
 
 					/* Scale position safely */
-					float px, py, pz;
-					memcpy(&px, &cover.pos->x, 4);
-					memcpy(&py, &cover.pos->y, 4);
-					memcpy(&pz, &cover.pos->z, 4);
+					float px = pd_load_f32_unaligned(&cover.pos->x);
+					float py = pd_load_f32_unaligned(&cover.pos->y);
+					float pz = pd_load_f32_unaligned(&cover.pos->z);
 					px *= scale; py *= scale; pz *= scale;
-					memcpy(&cover.pos->x, &px, 4);
-					memcpy(&cover.pos->y, &py, 4);
-					memcpy(&cover.pos->z, &pz, 4);
+					pd_store_f32_unaligned(&cover.pos->x, px);
+					pd_store_f32_unaligned(&cover.pos->y, py);
+					pd_store_f32_unaligned(&cover.pos->z, pz);
 
 					/* Omnidirectional or normalize look (write back safely) */
 					if (lx == 1.0f && ly == 1.0f && lz == 1.0f) {
@@ -97,9 +93,9 @@ void setupPrepareCover(void)
 							float inv = 1.0f / len;
 							lx *= inv; ly *= inv; lz *= inv;
 						}
-						memcpy(&cover.look->x, &lx, 4);
-						memcpy(&cover.look->y, &ly, 4);
-						memcpy(&cover.look->z, &lz, 4);
+						pd_store_f32_unaligned(&cover.look->x, lx);
+						pd_store_f32_unaligned(&cover.look->y, ly);
+						pd_store_f32_unaligned(&cover.look->z, lz);
 					}
 
 					/* Find room for position (external fn expects coord*, original code passes cover.pos) */

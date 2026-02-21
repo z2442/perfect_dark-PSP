@@ -12,7 +12,7 @@
 #include "data.h"
 #include "types.h"
 #include "platform.h"
-#include <string.h>
+#include "unaligned.h"
 
 /**
  * The function assumes that a pad file's data has been loaded from the ROM
@@ -57,8 +57,7 @@ void setupPreparePads(void)
 		padUnpack(padnum, PADFIELD_POS | PADFIELD_BBOX, &pad);
 
 		/* Load header and room safely (unaligned OK). Room is a bit-field in the header. */
-		u32 header_val;
-		memcpy(&header_val, p, 4);
+		u32 header_val = pd_load_u32_unaligned(p);
 		/* room occupies bits [13:4] as signed 10-bit; extract like padUnpack: (hdr<<18)>>22 */
 		s32 packed_room = (s32)(header_val << 18) >> 22;
 
@@ -82,7 +81,7 @@ void setupPreparePads(void)
 				/* Clear room bits [13:4] and set them */
 				header_val &= ~0x00003FF0u;
 				header_val |= ((u32)(newroom & 0x3FF) << 4);
-				memcpy(p, &header_val, 4);
+				pd_store_u32_unaligned(p, header_val);
 			}
 		}
 
@@ -112,16 +111,14 @@ void setupPreparePads(void)
 	// Promote offsets to pointers in waypoints (unaligned-safe)
 	waypoint = g_StageSetup.waypoints;
 	for (;;) {
-		s32 padnum_val;
-		memcpy(&padnum_val, (u8 *)waypoint + offsetof(struct waypoint, padnum), 4);
+		s32 padnum_val = pd_load_s32_unaligned((u8 *)waypoint + offsetof(struct waypoint, padnum));
 		if (padnum_val < 0) {
 			break;
 		}
 
-		void *neiptr;
-		memcpy(&neiptr, (u8 *)waypoint + offsetof(struct waypoint, neighbours), sizeof(neiptr));
-		neiptr = (void *)((uintptr_t)g_StageSetup.padfiledata + (uintptr_t)neiptr);
-		memcpy((u8 *)waypoint + offsetof(struct waypoint, neighbours), &neiptr, sizeof(neiptr));
+		uintptr_t neiptr = pd_load_uptr_unaligned((u8 *)waypoint + offsetof(struct waypoint, neighbours));
+		neiptr = (uintptr_t)g_StageSetup.padfiledata + neiptr;
+		pd_store_uptr_unaligned((u8 *)waypoint + offsetof(struct waypoint, neighbours), neiptr);
 
 		waypoint = (struct waypoint *)((u8 *)waypoint + sizeof(struct waypoint));
 	}
@@ -129,19 +126,17 @@ void setupPreparePads(void)
 	// Promote offsets to pointers in waygroups (unaligned-safe)
 	waygroup = g_StageSetup.waygroups;
 	for (;;) {
-		void *neigh_val;
-		memcpy(&neigh_val, (u8 *)waygroup + offsetof(struct waygroup, neighbours), sizeof(neigh_val));
+		uintptr_t neigh_val = pd_load_uptr_unaligned((u8 *)waygroup + offsetof(struct waygroup, neighbours));
 		if (neigh_val == NULL) {
 			break;
 		}
 
-		void *new_neigh = (void *)((uintptr_t)g_StageSetup.padfiledata + (uintptr_t)neigh_val);
-		memcpy((u8 *)waygroup + offsetof(struct waygroup, neighbours), &new_neigh, sizeof(new_neigh));
+		uintptr_t new_neigh = (uintptr_t)g_StageSetup.padfiledata + neigh_val;
+		pd_store_uptr_unaligned((u8 *)waygroup + offsetof(struct waygroup, neighbours), new_neigh);
 
-		void *wps_val, *new_wps;
-		memcpy(&wps_val, (u8 *)waygroup + offsetof(struct waygroup, waypoints), sizeof(wps_val));
-		new_wps = (void *)((uintptr_t)g_StageSetup.padfiledata + (uintptr_t)wps_val);
-		memcpy((u8 *)waygroup + offsetof(struct waygroup, waypoints), &new_wps, sizeof(new_wps));
+		uintptr_t wps_val = pd_load_uptr_unaligned((u8 *)waygroup + offsetof(struct waygroup, waypoints));
+		uintptr_t new_wps = (uintptr_t)g_StageSetup.padfiledata + wps_val;
+		pd_store_uptr_unaligned((u8 *)waygroup + offsetof(struct waygroup, waypoints), new_wps);
 
 		waygroup = (struct waygroup *)((u8 *)waygroup + sizeof(struct waygroup));
 	}

@@ -1,5 +1,4 @@
 #include <ultra64.h>
-#include <string.h>
 #include "constants.h"
 #include "game/prop.h"
 #include "game/game_1531a0.h"
@@ -15,6 +14,7 @@
 #include "lib/libc/ll.h"
 #include "data.h"
 #include "types.h"
+#include "unaligned.h"
 
 #define SURFACE_FLOOR   0
 #define SURFACE_CEILING 1
@@ -901,10 +901,9 @@ bool cd00026a04(struct coord *pos, u8 *start, u8 *end, u16 geoflags, s32 room, s
 	struct geo *geo = (struct geo *) start;
 
 	/* Load pos components safely in case 'pos' is unaligned on PSP */
-	float px, py, pz;
-	memcpy(&px, &pos->x, 4);
-	memcpy(&py, &pos->y, 4);
-	memcpy(&pz, &pos->z, 4);
+	float px = pd_load_f32_unaligned(&pos->x);
+	float py = pd_load_f32_unaligned(&pos->y);
+	float pz = pd_load_f32_unaligned(&pos->z);
 
 	if (room);
 
@@ -913,13 +912,12 @@ bool cd00026a04(struct coord *pos, u8 *start, u8 *end, u16 geoflags, s32 room, s
 			struct geotilei *tile = (struct geotilei *) geo;
 
 			if (geo->flags & geoflags) {
-				s16 xmin, xmax, zmin, zmax, ymin, ymax;
-				memcpy(&xmin, (u8 *)tile + tile->xmin, 2);
-				memcpy(&xmax, (u8 *)tile + tile->xmax, 2);
-				memcpy(&zmin, (u8 *)tile + tile->zmin, 2);
-				memcpy(&zmax, (u8 *)tile + tile->zmax, 2);
-				memcpy(&ymin, (u8 *)tile + tile->ymin, 2);
-				memcpy(&ymax, (u8 *)tile + tile->ymax, 2);
+				s16 xmin = pd_load_s16_unaligned((u8 *)tile + tile->xmin);
+				s16 xmax = pd_load_s16_unaligned((u8 *)tile + tile->xmax);
+				s16 zmin = pd_load_s16_unaligned((u8 *)tile + tile->zmin);
+				s16 zmax = pd_load_s16_unaligned((u8 *)tile + tile->zmax);
+				s16 ymin = pd_load_s16_unaligned((u8 *)tile + tile->ymin);
+				s16 ymax = pd_load_s16_unaligned((u8 *)tile + tile->ymax);
 
 				if (px >= (f32)xmin
 						&& px <= (f32)xmax

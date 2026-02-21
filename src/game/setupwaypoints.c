@@ -5,7 +5,7 @@
 #include "lib/memp.h"
 #include "data.h"
 #include "types.h"
-#include <string.h>
+#include "unaligned.h"
 #include <stddef.h>
 
 void setupLoadWaypoints(void)
@@ -28,8 +28,7 @@ void setupLoadWaypoints(void)
 	waypoints = g_StageSetup.waypoints;
 
 	for (numwaypoints = 0; ; numwaypoints++) {
-		s32 padnum_val;
-		memcpy(&padnum_val, (u8 *)waypoints + offsetof(struct waypoint, padnum), sizeof(padnum_val));
+		s32 padnum_val = pd_load_s32_unaligned((u8 *)waypoints + offsetof(struct waypoint, padnum));
 		if (padnum_val < 0) {
 			break;
 		}
@@ -46,16 +45,14 @@ void setupLoadWaypoints(void)
 	// Populate g_Vars.waypointnums, ordering them by roomnum asc, padnum asc
 	for (i = 0; i < numwaypoints; i++) {
 		waypoint = &waypoints[i];
-		s32 wp_padnum;
-		memcpy(&wp_padnum, (u8 *)waypoint + offsetof(struct waypoint, padnum), sizeof(wp_padnum));
+		s32 wp_padnum = pd_load_s32_unaligned((u8 *)waypoint + offsetof(struct waypoint, padnum));
 		padUnpack(wp_padnum, PADFIELD_ROOM | PADFIELD_FLAGS, &pad);
 
 		// Iterate previously processed waypoints and bail if the outer loop's
 		// waypoint should be inserted prior to this one
 		for (j = 0; j < numinserted; j++) {
 			waypoint2 = &waypoints[g_Vars.waypointnums[j]];
-			s32 wp2_padnum;
-			memcpy(&wp2_padnum, (u8 *)waypoint2 + offsetof(struct waypoint, padnum), sizeof(wp2_padnum));
+			s32 wp2_padnum = pd_load_s32_unaligned((u8 *)waypoint2 + offsetof(struct waypoint, padnum));
 			padUnpack(wp2_padnum, PADFIELD_ROOM | PADFIELD_FLAGS, &pad2);
 
 			if (pad.room < pad2.room) {
@@ -90,8 +87,7 @@ void setupLoadWaypoints(void)
 	for (i = 0; i < numwaypoints; i++) {
 		waypoint = &g_StageSetup.waypoints[g_Vars.waypointnums[i]];
 		{
-			s32 wp_padnum2;
-			memcpy(&wp_padnum2, (u8 *)waypoint + offsetof(struct waypoint, padnum), sizeof(wp_padnum2));
+			s32 wp_padnum2 = pd_load_s32_unaligned((u8 *)waypoint + offsetof(struct waypoint, padnum));
 			padUnpack(wp_padnum2, PADFIELD_ROOM | PADFIELD_FLAGS, &pad);
 		}
 
