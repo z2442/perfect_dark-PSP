@@ -310,7 +310,7 @@ add_custom_target(pd_headers ALL DEPENDS ${JSON_HEADERS})
 set(BIN_NAME_ELF "pd${BIN_REGION}.${TARGET_ARCH}elf") # Intermediate ELF name
 set(PD_TARGET_NAME "pd_elf") # Internal CMake target name for the ELF
 
-list(APPEND LIBS glut GLU GL pspge pspgum m pspmath pspfpu pspvfpu psppower pspdebug pspctrl pspdisplay pspaudiolib pspaudio )
+list(APPEND LIBS glut GLU GL pspge pspgu pspgum m pspmath pspfpu pspvfpu psppower pspdebug pspctrl pspdisplay pspaudiolib pspaudio )
 
 # Use the combined SRC list directly
 add_executable(pd ${SRC})

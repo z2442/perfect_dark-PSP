@@ -23,11 +23,12 @@ struct GfxWindowManagerAPI;
 struct TextureCacheKey {
     const uint8_t* texture_addr;
     const uint8_t* palette_addrs[2];
+    uint32_t full_image_line_size_bytes;
+    uint32_t line_size_bytes;
+    uint32_t size_bytes;
     uint8_t fmt, siz;
     uint8_t palette_index;
-    uint16_t uls, ult, lrs, lrt;
-    uint8_t cms, cmt;
-    uint16_t width, height;
+    uint8_t mirror_s, mirror_t;
     uint8_t highp_alpha; // differentiate 4444 vs 8888 uploads when needed
 
     bool operator==(const TextureCacheKey&) const noexcept = default;
@@ -41,17 +42,14 @@ struct TextureCacheKey {
             hash_combine(h, (uintptr_t)key.texture_addr);
             hash_combine(h, (uintptr_t)key.palette_addrs[0]);
             hash_combine(h, (uintptr_t)key.palette_addrs[1]);
+            hash_combine(h, key.full_image_line_size_bytes);
+            hash_combine(h, key.line_size_bytes);
+            hash_combine(h, key.size_bytes);
             hash_combine(h, key.fmt);
             hash_combine(h, key.siz);
             hash_combine(h, key.palette_index);
-            hash_combine(h, key.uls);
-            hash_combine(h, key.ult);
-            hash_combine(h, key.lrs);
-            hash_combine(h, key.lrt);
-            hash_combine(h, key.cms);
-            hash_combine(h, key.cmt);
-            hash_combine(h, key.width);
-            hash_combine(h, key.height);
+            hash_combine(h, key.mirror_s);
+            hash_combine(h, key.mirror_t);
             hash_combine(h, key.highp_alpha);
             return h;
         }

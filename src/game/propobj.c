@@ -135,6 +135,9 @@ struct autogunobj *g_ThrownLaptops = NULL;
 struct beam *g_ThrownLaptopBeams = NULL;
 s32 g_MaxThrownLaptops = 0;
 
+static bool objShouldUseAggressiveOcclusionCull(struct defaultobj *obj);
+static bool objIsOccludedByWorldOrDoors(struct prop *prop);
+
 /**
  * Attempt to call a lift from the given door.
  *
@@ -11309,6 +11312,12 @@ s32 objTickPlayer(struct prop *prop)
 		pass2 = false;
 	}
 
+	if (pass2
+			&& objShouldUseAggressiveOcclusionCull(obj)
+			&& objIsOccludedByWorldOrDoors(prop)) {
+		pass2 = false;
+	}
+
 	if (pass2) {
 		if (sp592 == false) {
 			propCalculateShadeInfo(prop, obj->nextcol, obj->floorcol);
@@ -19990,6 +19999,94 @@ bool posIsInObjFadeDistance(struct coord *pos, f32 modelscale)
 	}
 
 	return result;
+}
+
+static bool objShouldUseAggressiveOcclusionCull(struct defaultobj *obj)
+{
+	struct modelrodata_bbox *bbox;
+	f32 sizex;
+	f32 sizey;
+	f32 sizez;
+	f32 maxsize;
+
+	if (obj->flags2 & (OBJFLAG2_CANFILLVIEWPORT | OBJFLAG2_DRAWONTOP | OBJFLAG2_INVISIBLE)) {
+		return false;
+	}
+
+	if (obj->flags & OBJFLAG_PATHBLOCKER) {
+		return false;
+	}
+
+	if (obj->hidden & (OBJHFLAG_EMBEDDED | OBJHFLAG_PROJECTILE | OBJHFLAG_GONE)) {
+		return false;
+	}
+
+	switch (obj->type) {
+	case OBJTYPE_BASIC:
+	case OBJTYPE_KEY:
+	case OBJTYPE_AMMOCRATE:
+	case OBJTYPE_MULTIAMMOCRATE:
+	case OBJTYPE_WEAPON:
+	case OBJTYPE_DEBRIS:
+	case OBJTYPE_HAT:
+	case OBJTYPE_GRENADEPROB:
+	case OBJTYPE_SHIELD:
+	case OBJTYPE_TAG:
+	case OBJTYPE_SAFEITEM:
+	case OBJTYPE_MINE:
+		break;
+	default:
+		return false;
+	}
+
+	bbox = objFindBboxRodata(obj);
+
+	if (!bbox) {
+		return false;
+	}
+
+	sizex = (bbox->xmax - bbox->xmin) * obj->model->scale;
+	sizey = (bbox->ymax - bbox->ymin) * obj->model->scale;
+	sizez = (bbox->zmax - bbox->zmin) * obj->model->scale;
+	maxsize = sizex;
+
+	if (sizey > maxsize) {
+		maxsize = sizey;
+	}
+
+	if (sizez > maxsize) {
+		maxsize = sizez;
+	}
+
+	return maxsize <= 400.0f;
+}
+
+static bool objIsOccludedByWorldOrDoors(struct prop *prop)
+{
+	RoomNum camrooms[2];
+	struct coord *campos = &g_Vars.currentplayer->cam_pos;
+	f32 xdiff = prop->pos.x - campos->x;
+	f32 ydiff = prop->pos.y - campos->y;
+	f32 zdiff = prop->pos.z - campos->z;
+
+	// Keep nearby interactions stable and cull only distant small props.
+	if (xdiff * xdiff + ydiff * ydiff + zdiff * zdiff < 60.0f * 60.0f) {
+		return false;
+	}
+
+	camrooms[0] = g_Vars.currentplayer->cam_room;
+
+	if (camrooms[0] <= 0 || camrooms[0] >= g_Vars.roomcount) {
+		camrooms[0] = g_Vars.currentplayer->prop ? g_Vars.currentplayer->prop->rooms[0] : -1;
+	}
+
+	camrooms[1] = -1;
+
+	if (camrooms[0] <= 0 || prop->rooms[0] <= 0) {
+		return false;
+	}
+
+	return !cdTestLos06(campos, camrooms, &prop->pos, prop->rooms, CDTYPE_BG | CDTYPE_DOORS);
 }
 
 bool func0f08e8ac(struct prop *prop, struct coord *pos, f32 arg2, bool arg3)

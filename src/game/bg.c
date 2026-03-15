@@ -983,9 +983,12 @@ Gfx *bgRenderScene(Gfx *gdl)
 	RoomNum *roomnumptr;
 	struct prop *prop;
 	s16 tmp;
+	f32 tmpf;
 	RoomNum *room;
 	s16 roomorder[60];
 	RoomNum roomnums[60];
+	f32 roomdists[60];
+	struct coord *campos = &g_Vars.currentplayer->cam_pos;
 
 #ifdef PLATFORM_N64
 	g_NumRoomsWithGlares = 0;
@@ -999,17 +1002,32 @@ Gfx *bgRenderScene(Gfx *gdl)
 	// Build an array of all room numbers, and a parallel array that contains
 	// their draw order (as defined by portal code).
 	for (roomnum = 0; roomnum < g_BgNumDrawSlots; roomnum++) {
+		RoomNum drawroom = g_BgDrawSlots[roomnum].roomnum;
+		f32 dist = MAXFLOAT;
+
 		roomorder[roomnum] = g_BgDrawSlots[roomnum].draworder;
 		roomnums[roomnum] = roomnum;
+
+		if (drawroom > 0 && drawroom < g_Vars.roomcount) {
+			f32 x = (g_Rooms[drawroom].bbmin[0] + g_Rooms[drawroom].bbmax[0]) * 0.5f - campos->x;
+			f32 y = (g_Rooms[drawroom].bbmin[1] + g_Rooms[drawroom].bbmax[1]) * 0.5f - campos->y;
+			f32 z = (g_Rooms[drawroom].bbmin[2] + g_Rooms[drawroom].bbmax[2]) * 0.5f - campos->z;
+
+			dist = x * x + y * y + z * z;
+		}
+
+		roomdists[roomnum] = dist;
 	}
 
-	// Sort them by distance ascending
+	// Sort by portal depth first, then by room distance (front to back).
 	if (g_BgNumDrawSlots >= 2) {
 		do {
 			i = false;
 
 			for (roomnum = 0; roomnum < g_BgNumDrawSlots - 1; roomnum++) {
-				if (roomorder[roomnum + 1] < roomorder[roomnum]) {
+				if (roomorder[roomnum + 1] < roomorder[roomnum]
+						|| (roomorder[roomnum + 1] == roomorder[roomnum]
+							&& roomdists[roomnum + 1] < roomdists[roomnum])) {
 					tmp = roomorder[roomnum];
 					roomorder[roomnum] = roomorder[roomnum + 1];
 					roomorder[roomnum + 1] = tmp;
@@ -1017,6 +1035,10 @@ Gfx *bgRenderScene(Gfx *gdl)
 					tmp = roomnums[roomnum];
 					roomnums[roomnum] = roomnums[roomnum + 1];
 					roomnums[roomnum + 1] = tmp;
+
+					tmpf = roomdists[roomnum];
+					roomdists[roomnum] = roomdists[roomnum + 1];
+					roomdists[roomnum + 1] = tmpf;
 
 					i = true;
 				}
