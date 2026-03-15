@@ -1778,11 +1778,6 @@ static void gfx_opengl_init(void) {
     pdLoadIdentity();
     glClearColor(0.0, 0.0, 0.0, 1.0);
 
-#if defined(__PSP__)
-    sysLogPrintf(LOG_NOTE, "F3D PSP: GU composite list=%p size=%u",
-                 (void*)s_gu_composite_list, (unsigned)sizeof(s_gu_composite_list));
-#endif
-
     const char* ext = (const char*) glGetString(GL_EXTENSIONS);
     if (ext) {
         if (strstr(ext, "GL_OES_texture_env_combine") ||
