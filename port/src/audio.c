@@ -41,23 +41,27 @@ static int audioThread(SceSize args, void *argp)
     while (audioThreadRunning)
     {
         u32 needFrames = pspFrames;          /* 44 kHz frame count */
+        u32 readPos = ringRead;
+        s16* mixPtr = mixBuf;
+        
         for (u32 f = 0; f < needFrames; ++f)
         {
-            u32 offMix  = f * AUDIO_FRAME_SAMPLES;
-            if (ringRead != ringWrite)
+            if (readPos != ringWrite)
             {
-                u32 offRing = ringRead * AUDIO_FRAME_SAMPLES;
-                mixBuf[offMix]     = audioRingBuf[offRing];
-                mixBuf[offMix + 1] = audioRingBuf[offRing + 1];
-                ringRead = (ringRead + 1) % AUDIO_RING_FRAMES;
+                u32 offRing = readPos * AUDIO_FRAME_SAMPLES;
+                *mixPtr++ = audioRingBuf[offRing];
+                *mixPtr++ = audioRingBuf[offRing + 1];
+                readPos = (readPos + 1) % AUDIO_RING_FRAMES;
             }
             else
             {
                 /* Silence when underrun */
-                mixBuf[offMix]     = 0;
-                mixBuf[offMix + 1] = 0;
+                *mixPtr++ = 0;
+                *mixPtr++ = 0;
             }
         }
+        ringRead = readPos;
+        
         sceAudioOutputBlocking(audioChan,
                                PSP_AUDIO_VOLUME_MAX,
                                mixBuf);
