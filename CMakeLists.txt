@@ -39,6 +39,7 @@ endif()
 
 # --- Options ---
 set(ROMID "ntsc-final" CACHE STRING "Which ROM to build an executable for: ntsc-final, pal-final or jpn-final")
+option(PSP_ENABLE_GPROF "Enable PSP gprof instrumentation and dump profiling data on exit" OFF)
 
 
 # --- Version Info ---
@@ -109,14 +110,28 @@ if(PSP)
     -Wall # Keep warnings enabled
     # Add other PSP specific flags as needed, e.g., -fno-builtin-printf for smaller code size if using pspDebugScreenPrintf
   )
+  if(PSP_ENABLE_GPROF)
+      message(STATUS "Enabling PSP gprof instrumentation")
+      add_compile_definitions(PD_PSP_GPROF=1)
+      add_compile_options(-pg -g -fno-omit-frame-pointer -fno-optimize-sibling-calls)
+      add_link_options(-pg -g)
+  endif()
   # Optimization: -O2 (optimize for speed) for PSP release builds
   # CMake sets optimization flags per build type, adjust if needed:
   if(CMAKE_BUILD_TYPE MATCHES "Release|RelWithDebInfo")
-      message(STATUS "Using -O2 optimization for PSP ${CMAKE_BUILD_TYPE} build")
-      set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -g -O2 -ffast-math -flto -fipa-pta -fomit-frame-pointer")
-      set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -g -O2 -ffast-math -flto -fipa-pta -fomit-frame-pointer")
-      set(CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} -g -O2 -ffast-math -flto -fipa-pta -fomit-frame-pointer")
-      set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -g -O2 -ffast-math -flto -fipa-pta -fomit-frame-pointer")
+      if(PSP_ENABLE_GPROF)
+          message(STATUS "Using profiling-friendly PSP ${CMAKE_BUILD_TYPE} flags")
+          set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -O2 -ffast-math")
+          set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O2 -ffast-math")
+          set(CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} -O2 -ffast-math")
+          set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -O2 -ffast-math")
+      else()
+          message(STATUS "Using -O2 optimization for PSP ${CMAKE_BUILD_TYPE} build")
+          set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -g -O2 -ffast-math -flto -fipa-pta -fomit-frame-pointer")
+          set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -g -O2 -ffast-math -flto -fipa-pta -fomit-frame-pointer")
+          set(CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} -g -O2 -ffast-math -flto -fipa-pta -fomit-frame-pointer")
+          set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -g -O2 -ffast-math -flto -fipa-pta -fomit-frame-pointer")
+      endif()
   endif()
 
 else() # Non-PSP builds
@@ -320,13 +335,22 @@ target_link_libraries(pd PRIVATE ${LIBS}) # Use PRIVATE for libraries
 # --- Post-Build Steps ---
 
 if(PSP)
-create_pbp_file(
-  TARGET pd
-  PREVIEW_PATH NULL
-  ICON_PATH "${PROJECT_SOURCE_DIR}/dist/psp/ICON0.png"
-  TITLE "Perfect Dark"
-  BUILD_PRX
-  )
+  if(BUILD_PRX)
+    create_pbp_file(
+      TARGET pd
+      PREVIEW_PATH NULL
+      ICON_PATH "${PROJECT_SOURCE_DIR}/dist/psp/ICON0.png"
+      TITLE "Perfect Dark"
+      BUILD_PRX
+    )
+  else()
+    create_pbp_file(
+      TARGET pd
+      PREVIEW_PATH NULL
+      ICON_PATH "${PROJECT_SOURCE_DIR}/dist/psp/ICON0.png"
+      TITLE "Perfect Dark"
+    )
+  endif()
 
 elseif(${CMAKE_SYSTEM_NAME} EQUAL NintendoSwitch)
   # --- Switch NRO Generation ---

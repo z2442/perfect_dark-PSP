@@ -168,13 +168,51 @@ struct LoadedVertex {
     uint8_t fog;
     uint8_t clip_rej;
     uint16_t transform_id;
+#if defined(__PSP__)
+    float clip_x, clip_y, clip_z, clip_w;
+#endif
 };
 
 struct TransformSnapshot {
-    float P[4][4];
-    float M[4][4];
-    float MP[4][4];
+    alignas(16) float P[4][4];
+    alignas(16) float M[4][4];
+    alignas(16) float MP[4][4];
 };
+
+#if defined(__PSP__)
+enum ClipRejectBits : uint8_t {
+    CLIP_REJECT_LEFT   = 1u << 0,
+    CLIP_REJECT_RIGHT  = 1u << 1,
+    CLIP_REJECT_BOTTOM = 1u << 2,
+    CLIP_REJECT_TOP    = 1u << 3,
+    CLIP_REJECT_NEAR   = 1u << 4,
+    CLIP_REJECT_FAR    = 1u << 5,
+};
+
+static inline uint8_t gfx_make_clip_reject_mask(float clip_x, float clip_y, float clip_z, float clip_w,
+                                                bool z_is_from_0_to_1) {
+    uint8_t mask = 0;
+    if (clip_w + clip_x < 0.0f) mask |= CLIP_REJECT_LEFT;
+    if (clip_w - clip_x < 0.0f) mask |= CLIP_REJECT_RIGHT;
+    if (clip_w + clip_y < 0.0f) mask |= CLIP_REJECT_BOTTOM;
+    if (clip_w - clip_y < 0.0f) mask |= CLIP_REJECT_TOP;
+    if (z_is_from_0_to_1) {
+        if (clip_z < 0.0f) mask |= CLIP_REJECT_NEAR;
+    } else {
+        if (clip_w + clip_z < 0.0f) mask |= CLIP_REJECT_NEAR;
+    }
+    if (clip_w - clip_z < 0.0f) mask |= CLIP_REJECT_FAR;
+    return mask;
+}
+
+static inline uint8_t gfx_get_active_clip_reject_mask(void) {
+    uint8_t mask = CLIP_REJECT_LEFT | CLIP_REJECT_RIGHT | CLIP_REJECT_BOTTOM | CLIP_REJECT_TOP;
+    if (!g_es1_depth_clamp_active) {
+        mask |= CLIP_REJECT_NEAR | CLIP_REJECT_FAR;
+    }
+    return mask;
+}
+#endif
 
 static struct {
     TextureCacheMap map;
@@ -207,11 +245,11 @@ static uint8_t* tex_upload_buffer = nullptr;
 static std::vector<uint8_t> s_texture_stage_buf;
 
 static struct RSP {
-    float modelview_matrix_stack[11][4][4];
+    alignas(16) float modelview_matrix_stack[11][4][4];
     uint8_t modelview_matrix_stack_size;
 
-    float MP_matrix[4][4];
-    float P_matrix[4][4];
+    alignas(16) float MP_matrix[4][4];
+    alignas(16) float P_matrix[4][4];
 
     Light_t lookat[2];
     bool lookat_enabled;
@@ -312,7 +350,11 @@ static struct RenderingState {
     bool modulate;
     struct XYWidthHeight viewport, scissor;
     struct ShaderProgram* shader_program;
+    struct ColorCombiner* color_combiner;
+    ColorCombinerKey color_combiner_key;
+    bool color_combiner_valid;
     TextureCacheNode* textures[SHADER_MAX_TEXTURES];
+    uint8_t texture_tiles[SHADER_MAX_TEXTURES];
 } rendering_state;
 
 struct GfxDimensions gfx_current_window_dimensions;
@@ -345,6 +387,7 @@ float g_es1_M[4][4] = { {0} };
 #if defined(__PSP__)
 static uint8_t s_psp_model_mtx_fix = 0;
 static uint8_t s_psp_model_mtx_fix_stack[11] = { 0 };
+static bool s_rsp_mp_matrix_dirty = true;
 static TransformSnapshot s_transform_snapshots[MAX_TRANSFORM_SNAPSHOTS];
 static uint16_t s_transform_snapshot_count = 1;
 static uint16_t s_current_transform_snapshot = 0;
@@ -369,12 +412,35 @@ static uint64_t s_batch_cc_mode = 0;
 static uint32_t s_batch_cc_opts = 0;
 static bool s_batch_uses_prim_color = false;
 static bool s_batch_uses_env_color = false;
+static struct PreparedTriPipelineState {
+    uint64_t batch_cc_mode = 0;
+    uint32_t batch_cc_opts = 0;
+    uint8_t base_mode = 0;
+    bool batch_uses_prim_color = false;
+    bool batch_uses_env_color = false;
+    bool bake_primary_constant_color = false;
+    bool bake_textured_constant = false;
+    uint32_t tex_width2[2] = { 0, 0 };
+    uint32_t tex_height2[2] = { 0, 0 };
+    uint32_t pot_w = 1;
+    uint32_t pot_h = 1;
+} s_prepared_tri_pipeline_state;
+static bool s_tri_pipeline_dirty = true;
 static bool s_rect_batch_active = false;
 static struct XYWidthHeight s_rect_batch_saved_viewport;
 static uint32_t s_rect_batch_saved_geometry_mode = 0;
 
 static struct GfxWindowManagerAPI* gfx_wapi;
 static struct GfxRenderingAPI* gfx_rapi;
+static struct GfxClipParameters gfx_cached_clip_parameters = { false, false };
+
+static inline void gfx_mark_tri_pipeline_dirty(void) {
+    s_tri_pipeline_dirty = true;
+}
+
+static inline bool gfx_xywh_equals(const XYWidthHeight &a, const XYWidthHeight &b) {
+    return a.x == b.x && a.y == b.y && a.width == b.width && a.height == b.height;
+}
 
 enum GfxFlushReason {
     GFX_FLUSH_UNKNOWN = 0,
@@ -680,6 +746,7 @@ static void gfx_begin_rect_batch(void) {
     rsp.geometry_mode = 0;
     g_es1_force_2d = 1;
     s_rect_batch_active = true;
+    gfx_mark_tri_pipeline_dirty();
 }
 
 static void gfx_end_rect_batch(void) {
@@ -693,6 +760,7 @@ static void gfx_end_rect_batch(void) {
     rdp.viewport = s_rect_batch_saved_viewport;
     rdp.viewport_or_scissor_changed = true;
     s_rect_batch_active = false;
+    gfx_mark_tri_pipeline_dirty();
 }
 
 static struct ShaderProgram* gfx_lookup_or_create_shader_program(uint64_t shader_id0, uint32_t shader_id1) {
@@ -1070,6 +1138,8 @@ void gfx_texture_cache_clear() {
     gfx_texture_cache.lru.clear();
     rdp.textures_changed[0] = rdp.textures_changed[1] = true;
     memset(rendering_state.textures, 0, sizeof(rendering_state.textures));
+    memset(rendering_state.texture_tiles, 0xff, sizeof(rendering_state.texture_tiles));
+    gfx_mark_tri_pipeline_dirty();
 }
 
 static bool gfx_texture_cache_lookup(int i, const TextureCacheKey& key) {
@@ -1077,8 +1147,11 @@ static bool gfx_texture_cache_lookup(int i, const TextureCacheKey& key) {
     TextureCacheNode** n = &rendering_state.textures[i];
 
     if (it != gfx_texture_cache.map.end()) {
-        gfx_rapi->select_texture(i, it->second.texture_id, it->second.linear_filter);
-        *n = &*it;
+        TextureCacheNode* node = &*it;
+        if (*n != node) {
+            gfx_rapi->select_texture(i, it->second.texture_id, it->second.linear_filter);
+            *n = node;
+        }
         gfx_texture_cache.lru.splice(gfx_texture_cache.lru.end(), gfx_texture_cache.lru,
                                      it->second.lru_location); // move to back
         return true;
@@ -1270,6 +1343,7 @@ void gfx_texture_cache_delete(const uint8_t* orig_addr) {
         if (rendering_state.textures[i] && rendering_state.textures[i]->first.texture_addr == orig_addr) {
             rdp.textures_changed[i] = true;
             rendering_state.textures[i] = nullptr;
+            rendering_state.texture_tiles[i] = 0xff;
         }
     }
 
@@ -1283,6 +1357,7 @@ void gfx_texture_cache_delete(const uint8_t* orig_addr) {
             ++it;
         }
     }
+    gfx_mark_tri_pipeline_dirty();
 }
 
 static void import_texture_rgba16(int unit, int tile, const LoadedTexture& loaded_texture, bool importReplacement) {
@@ -1700,21 +1775,73 @@ static inline void compute_lookat_dots(const struct NormalColor *normal,
 #endif
 }
 
-static void gfx_matrix_mul(float res[4][4], const float a[4][4], const float b[4][4]) {
-    if (res != a && res != b) {
-        for (int i = 0; i < 4; i++) {
-            for (int j = 0; j < 4; j++) {
-                res[i][j] = a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j] + a[i][3] * b[3][j];
-            }
+static inline void gfx_matrix_mul_scalar(float res[4][4], const float a[4][4], const float b[4][4]) {
+    for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 4; j++) {
+            res[i][j] = a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j] + a[i][3] * b[3][j];
         }
-    } else {
-        float tmp[4][4];
-        for (int i = 0; i < 4; i++) {
-            for (int j = 0; j < 4; j++) {
-                tmp[i][j] = a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j] + a[i][3] * b[3][j];
-            }
+    }
+}
+
+#if defined(__PSP__)
+static inline bool gfx_is_aligned_16(const void *ptr) {
+    return (reinterpret_cast<uintptr_t>(ptr) & 0xfu) == 0;
+}
+
+// VFPU matrix ops interpret memory as column-major. Our fast3d path stores matrices
+// in row-major order and uses row-vector math, so we reverse operands here:
+// VFPU(B, A) on row-major bytes yields the same layout as scalar(A * B).
+static inline void gfx_matrix_mul_vfpu_row_major(float res[4][4], const float a[4][4], const float b[4][4]) {
+    __asm__ __volatile__(
+        "lv.q C000, 0(%[b])\n"
+        "lv.q C010, 16(%[b])\n"
+        "lv.q C020, 32(%[b])\n"
+        "lv.q C030, 48(%[b])\n"
+        "lv.q C100, 0(%[a])\n"
+        "lv.q C110, 16(%[a])\n"
+        "lv.q C120, 32(%[a])\n"
+        "lv.q C130, 48(%[a])\n"
+        "vmmul.q M200, M000, M100\n"
+        "sv.q C200, 0(%[o])\n"
+        "sv.q C210, 16(%[o])\n"
+        "sv.q C220, 32(%[o])\n"
+        "sv.q C230, 48(%[o])\n"
+        :
+        : [a] "r"(a), [b] "r"(b), [o] "r"(res)
+        : "memory");
+}
+#endif
+
+static void gfx_matrix_mul(float res[4][4], const float a[4][4], const float b[4][4]) {
+#if defined(__PSP__)
+    if (res != a && res != b && gfx_is_aligned_16(res) && gfx_is_aligned_16(a) && gfx_is_aligned_16(b)) {
+        gfx_matrix_mul_vfpu_row_major(res, a, b);
+        return;
+    }
+
+    alignas(16) float tmp[4][4];
+    if (res == a || res == b) {
+        if (gfx_is_aligned_16(a) && gfx_is_aligned_16(b)) {
+            gfx_matrix_mul_vfpu_row_major(tmp, a, b);
+        } else {
+            gfx_matrix_mul_scalar(tmp, a, b);
         }
         gfx_copy_fixed(res, tmp, sizeof(tmp));
+        return;
+    }
+#endif
+
+    if (res != a && res != b) {
+        gfx_matrix_mul_scalar(res, a, b);
+    } else {
+#if defined(__PSP__)
+        // PSP aliasing case handled above; keep non-PSP stack alignment unchanged.
+        gfx_copy_fixed(res, tmp, sizeof(tmp));
+#else
+        float tmp[4][4];
+        gfx_matrix_mul_scalar(tmp, a, b);
+        gfx_copy_fixed(res, tmp, sizeof(tmp));
+#endif
     }
 }
 
@@ -1735,6 +1862,19 @@ static void gfx_matrix_identity(float m[4][4]) {
     m[1][1] = 1.0f;
     m[2][2] = 1.0f;
     m[3][3] = 1.0f;
+}
+
+static inline void gfx_mark_rsp_mp_matrix_dirty(void) {
+    s_rsp_mp_matrix_dirty = true;
+}
+
+static inline const float (*gfx_get_rsp_mp_matrix(void))[4] {
+    if (s_rsp_mp_matrix_dirty) {
+        gfx_matrix_mul(rsp.MP_matrix, rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1],
+                       rsp.P_matrix);
+        s_rsp_mp_matrix_dirty = false;
+    }
+    return rsp.MP_matrix;
 }
 
 static void gfx_publish_es1_matrices(void);
@@ -1804,7 +1944,7 @@ static void gfx_apply_aspect_to_mp(float mp[4][4]) {
 
 static void gfx_publish_es1_matrices(void) {
     if (s_psp_model_mtx_fix) {
-        gfx_copy_fixed(g_es1_P, rsp.MP_matrix, sizeof(g_es1_P));
+        gfx_copy_fixed(g_es1_P, gfx_get_rsp_mp_matrix(), sizeof(g_es1_P));
         gfx_apply_aspect_to_mp(g_es1_P);
         gfx_matrix_identity(g_es1_M);
     } else {
@@ -1829,7 +1969,7 @@ static float mat3_det_mv(const float M[4][4]) {
 
 
 static void gfx_sp_matrix(uint8_t parameters, const int32_t* addr) {
-    float matrix_buf[4][4];
+    alignas(16) float matrix_buf[4][4];
     const float (*matrix)[4];
 
 #ifndef GBI_FLOATS
@@ -1888,7 +2028,11 @@ static void gfx_sp_matrix(uint8_t parameters, const int32_t* addr) {
 #endif
         rsp.lights_changed = 1;
     }
+#if defined(__PSP__)
+    gfx_mark_rsp_mp_matrix_dirty();
+#else
     gfx_matrix_mul(rsp.MP_matrix, rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], rsp.P_matrix);
+#endif
 
     // Publish raw P and M to GLES (no aspect bake)
 #if defined(__PSP__)
@@ -1910,9 +2054,11 @@ static void gfx_sp_pop_matrix(uint32_t count) {
             if (rsp.modelview_matrix_stack_size > 0) {
 #if defined(__PSP__)
                 s_psp_model_mtx_fix = s_psp_model_mtx_fix_stack[rsp.modelview_matrix_stack_size - 1];
-#endif
+                gfx_mark_rsp_mp_matrix_dirty();
+#else
                 gfx_matrix_mul(rsp.MP_matrix, rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1],
                                rsp.P_matrix);
+#endif
                 // Publish raw P and M to GLES (no aspect bake)
 #if defined(__PSP__)
                 gfx_publish_es1_matrices();
@@ -1956,6 +2102,9 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* verti
 
 #if defined(__PSP__)
     const uint16_t transform_id = gfx_capture_current_transform_snapshot();
+    const TransformSnapshot &transform_snapshot = s_transform_snapshots[transform_id];
+    const float (*MP)[4] = transform_snapshot.MP;
+    const bool z_is_from_0_to_1 = gfx_cached_clip_parameters.z_is_from_0_to_1;
 #else
     const uint16_t transform_id = 0;
 #endif
@@ -2048,14 +2197,21 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* verti
         d->u = U;
         d->v = V;
 
-        // Let GL handle clipping
-        d->clip_rej = 0;
-
         // Store object-space position; GL fixed pipeline will transform
         d->x = x;
         d->y = y;
         d->z = z;
         d->w = w;
+
+#if defined(__PSP__)
+        d->clip_x = x * MP[0][0] + y * MP[1][0] + z * MP[2][0] + w * MP[3][0];
+        d->clip_y = x * MP[0][1] + y * MP[1][1] + z * MP[2][1] + w * MP[3][1];
+        d->clip_z = x * MP[0][2] + y * MP[1][2] + z * MP[2][2] + w * MP[3][2];
+        d->clip_w = x * MP[0][3] + y * MP[1][3] + z * MP[2][3] + w * MP[3][3];
+        d->clip_rej = gfx_make_clip_reject_mask(d->clip_x, d->clip_y, d->clip_z, d->clip_w, z_is_from_0_to_1);
+#else
+        d->clip_rej = 0;
+#endif
 
         if (rsp.geometry_mode & G_FOG) {
             float fog_w = w;
@@ -2097,6 +2253,376 @@ static inline int gfx_lod_tile_offset(const int i) {
     return (rdp.tex_lod ? rdp.tex_detail : i);
 }
 
+static void gfx_prepare_tri_pipeline_state(void) {
+    if (!s_tri_pipeline_dirty) {
+        if (!s_batch_has_cc) {
+            s_batch_has_cc = true;
+            s_batch_cc_mode = s_prepared_tri_pipeline_state.batch_cc_mode;
+            s_batch_cc_opts = s_prepared_tri_pipeline_state.batch_cc_opts;
+            s_batch_uses_prim_color = s_prepared_tri_pipeline_state.batch_uses_prim_color;
+            s_batch_uses_env_color = s_prepared_tri_pipeline_state.batch_uses_env_color;
+        }
+        return;
+    }
+
+    uint8_t new_cull = 1; // default: cull back
+    const bool want_cull_back  = (rsp.geometry_mode & G_CULL_BACK)  != 0;
+    const bool want_cull_front = (rsp.geometry_mode & G_CULL_FRONT) != 0;
+    if (want_cull_back && !want_cull_front) new_cull = 1;
+    else if (!want_cull_back && want_cull_front) new_cull = 2;
+    else if (!want_cull_back && !want_cull_front) new_cull = 0;
+    else new_cull = 1;
+#if defined(__PSP__)
+    new_cull = 0;
+#else
+    const float (*MV)[4] = rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1];
+    const bool mv_mirrored = (mat3_det_mv(MV) < 0.0f);
+    const bool invert_culling_ext = (rsp.extra_geometry_mode & G_INVERT_CULLING_EXT) != 0;
+    const bool invert_culling = mv_mirrored ^ invert_culling_ext;
+    if (invert_culling) {
+        if (new_cull == 1) new_cull = 2; else if (new_cull == 2) new_cull = 1;
+    }
+    if (g_es1_front_face_cw != (invert_culling ? 1 : 0)) {
+        gfx_flush_with_reason(GFX_FLUSH_FRONT_FACE);
+        g_es1_front_face_cw = invert_culling ? 1 : 0;
+    }
+#endif
+    if (new_cull != g_es1_cull_mode) {
+        gfx_flush_with_reason(GFX_FLUSH_CULL_MODE);
+        g_es1_cull_mode = new_cull;
+    }
+
+    const bool depth_test =
+        ((rsp.geometry_mode & G_ZBUFFER) == G_ZBUFFER || (rdp.other_mode_l & G_ZS_PRIM) == G_ZS_PRIM) &&
+        ((rdp.other_mode_h & G_CYC_1CYCLE) == G_CYC_1CYCLE || (rdp.other_mode_h & G_CYC_2CYCLE) == G_CYC_2CYCLE);
+    const bool depth_update = (rdp.other_mode_l & Z_UPD) != 0;
+    const bool depth_compare = (rdp.other_mode_l & Z_CMP) != 0;
+    const bool depth_source_prim = (rdp.other_mode_l & G_ZS_PRIM) != 0;
+    const uint16_t zmode = (rdp.other_mode_l & ZMODE_DEC) >> 6;
+    const uint8_t depth_mode =
+        (depth_test ? 1 : 0) |
+        (depth_update ? 2 : 0) |
+        (depth_compare ? 4 : 0) |
+        (depth_source_prim ? 8 : 0) |
+        (zmode << 4);
+
+    if (depth_mode != rendering_state.depth_mode) {
+        gfx_flush_with_reason(GFX_FLUSH_DEPTH_MODE);
+        gfx_rapi->set_depth_mode(depth_test, depth_update, depth_compare, depth_source_prim, zmode);
+        rendering_state.depth_mode = depth_mode;
+    }
+
+    if (rdp.viewport_or_scissor_changed) {
+        if (!gfx_xywh_equals(rdp.viewport, rendering_state.viewport)) {
+            gfx_flush_with_reason(GFX_FLUSH_VIEWPORT);
+            gfx_rapi->set_viewport(rdp.viewport.x, rdp.viewport.y, rdp.viewport.width, rdp.viewport.height);
+            rendering_state.viewport = rdp.viewport;
+        }
+        if (!gfx_xywh_equals(rdp.scissor, rendering_state.scissor)) {
+            gfx_flush_with_reason(GFX_FLUSH_SCISSOR);
+            gfx_rapi->set_scissor(rdp.scissor.x, rdp.scissor.y, rdp.scissor.width, rdp.scissor.height);
+            rendering_state.scissor = rdp.scissor;
+        }
+        rdp.viewport_or_scissor_changed = false;
+    }
+
+    uint64_t cc_options = 0;
+    bool use_alpha =
+        (rdp.other_mode_l & (3 << 20)) == (G_BL_CLR_MEM << 20) &&
+        (rdp.other_mode_l & (3 << 16)) == (G_BL_1MA << 16);
+    const bool force_blend = (rdp.other_mode_l & FORCE_BL) == FORCE_BL;
+    const bool alpha_cvg_sel = (rdp.other_mode_l & ALPHA_CVG_SEL) == ALPHA_CVG_SEL;
+    const bool use_fog = ((rdp.other_mode_l >> 30) == G_BL_CLR_FOG) || ((rdp.other_mode_l >> 26) == G_BL_A_FOG);
+    const bool texture_edge = (rdp.other_mode_l & CVG_X_ALPHA) == CVG_X_ALPHA;
+    const bool use_noise = (rdp.other_mode_l & (3U << G_MDSFT_ALPHACOMPARE)) == G_AC_DITHER;
+    const bool use_2cyc = (rdp.other_mode_h & (3U << G_MDSFT_CYCLETYPE)) == G_CYC_2CYCLE;
+    const bool alpha_threshold = (rdp.other_mode_l & (3U << G_MDSFT_ALPHACOMPARE)) == G_AC_THRESHOLD;
+    const bool invisible =
+        (rdp.other_mode_l & (3 << 24)) == (G_BL_0 << 24) &&
+        (rdp.other_mode_l & (3 << 20)) == (G_BL_CLR_MEM << 20);
+    const bool use_grayscale = rdp.grayscale;
+    const bool use_blur = (rdp.other_mode_h & (3U << G_MDSFT_TEXTFILT)) == G_TF_BLUR_EXT;
+
+    if (texture_edge) {
+        use_alpha = true;
+    }
+    if (alpha_cvg_sel && !force_blend && !texture_edge) {
+        use_alpha = false;
+    }
+
+    const bool use_modulate = use_alpha && (rsp.extra_geometry_mode & G_MODULATE_EXT) != 0;
+    const bool want_alpha_test = texture_edge || alpha_threshold;
+    const uint8_t want_highp_alpha = want_alpha_test ? 1 : 0;
+
+    if (use_alpha) cc_options |= (uint64_t)SHADER_OPT_ALPHA;
+    if (use_fog) cc_options |= (uint64_t)SHADER_OPT_FOG;
+    if (texture_edge) cc_options |= (uint64_t)SHADER_OPT_TEXTURE_EDGE;
+    if (use_noise) cc_options |= (uint64_t)SHADER_OPT_NOISE;
+    if (use_2cyc) cc_options |= (uint64_t)SHADER_OPT_2CYC;
+    if (alpha_threshold) cc_options |= (uint64_t)SHADER_OPT_ALPHA_THRESHOLD;
+    if (invisible) cc_options |= (uint64_t)SHADER_OPT_INVISIBLE;
+    if (use_grayscale) cc_options |= (uint64_t)SHADER_OPT_GRAYSCALE;
+    if (use_blur) cc_options |= (uint64_t)SHADER_OPT_BLUR;
+
+    if (!use_alpha) {
+        cc_options &= ~((0xfff << 16) | ((uint64_t)0xfff << 44));
+    }
+
+    ColorCombinerKey key;
+    key.combine_mode = rdp.combine_mode;
+    key.options = cc_options;
+
+    ColorCombiner* comb = rendering_state.color_combiner;
+    if (!rendering_state.color_combiner_valid || rendering_state.color_combiner_key != key) {
+        comb = gfx_lookup_or_create_color_combiner(key);
+        rendering_state.color_combiner = comb;
+        rendering_state.color_combiner_key = key;
+        rendering_state.color_combiner_valid = true;
+    }
+
+    uint8_t base_mode = 0;
+    if (comb->shade_in_rgb) {
+        base_mode = 1;
+    } else if (comb->env_in_rgb && (!comb->prim_in_rgb || (comb->tex1a_in_rgb && !comb->tex1_in_rgb))) {
+        base_mode = 3;
+    } else if (comb->prim_in_rgb) {
+        base_mode = 2;
+    } else if (comb->env_in_rgb) {
+        base_mode = 3;
+    }
+
+    const bool want_use_tex0 = comb->used_textures[0];
+    const bool want_use_tex1 = comb->used_textures[1];
+    const bool want_tex0_in_rgb = comb->tex0_in_rgb;
+    const bool want_font_combine = want_alpha_test && want_use_tex0 && !want_tex0_in_rgb;
+    const bool is_text_outline =
+        use_2cyc &&
+        want_use_tex0 && want_use_tex1 &&
+        comb->tex1a_in_rgb &&
+        comb->prim_in_rgb && comb->env_in_rgb &&
+        !comb->tex0_in_rgb && !comb->tex1_in_rgb &&
+        (rdp.palette_fmt == G_TT_IA16) &&
+        (rdp.texture_tile[rdp.first_tile_index].fmt == G_IM_FMT_CI);
+
+    const uint8_t want_text_outline = (key.combine_mode == kTextOutlineCombineMode || is_text_outline) ? 1 : 0;
+    bool want_backend_tex1 = want_use_tex1;
+#if defined(__PSP__)
+    want_backend_tex1 = (want_text_outline != 0) || (g_force_two_pass != 0 && want_use_tex1);
+#endif
+    uint8_t effective_base_mode = base_mode;
+    bool bake_primary_constant_color = false;
+    bool bake_textured_constant = false;
+#if defined(__PSP__)
+    if (want_text_outline == 0 && !want_backend_tex1 && (base_mode == 2 || base_mode == 3)) {
+        bake_primary_constant_color = true;
+        bake_textured_constant = want_use_tex0;
+        const uint8_t baked_primary_alpha = (base_mode == 2) ? rdp.prim_color.a : rdp.env_color.a;
+        const bool opaque_textured_constant = bake_textured_constant && !use_alpha && !want_alpha_test;
+        const bool opaque_font_like_constant = bake_textured_constant && want_font_combine && baked_primary_alpha == 255;
+        effective_base_mode =
+            (opaque_textured_constant || opaque_font_like_constant) ? 1 : (bake_textured_constant ? 2 : 1);
+    }
+#endif
+
+    uint64_t next_batch_cc_mode = 0;
+    uint32_t next_batch_cc_opts = 0;
+#if defined(__PSP__)
+    next_batch_cc_mode = gfx_make_psp_batch_signature(
+        want_use_tex0,
+        want_backend_tex1,
+        want_font_combine,
+        want_alpha_test,
+        want_highp_alpha,
+        effective_base_mode,
+        want_text_outline != 0);
+    if (!s_batch_has_cc || s_batch_cc_mode != next_batch_cc_mode) {
+        if (buf_vbo_len > 0) {
+            gfx_flush_with_reason(GFX_FLUSH_COMBINER_CHANGE);
+        }
+        s_batch_has_cc = true;
+        s_batch_cc_mode = next_batch_cc_mode;
+        s_batch_cc_opts = 0;
+    }
+#else
+    next_batch_cc_mode = key.combine_mode;
+    next_batch_cc_opts = key.options;
+    if (!s_batch_has_cc || s_batch_cc_mode != next_batch_cc_mode || s_batch_cc_opts != next_batch_cc_opts) {
+        if (buf_vbo_len > 0) {
+            gfx_flush_with_reason(GFX_FLUSH_COMBINER_CHANGE);
+        }
+        s_batch_has_cc = true;
+        s_batch_cc_mode = next_batch_cc_mode;
+        s_batch_cc_opts = next_batch_cc_opts;
+    }
+
+    if (buf_vbo_len > 0 && g_es1_text_outline != want_text_outline) {
+        gfx_flush_with_reason(GFX_FLUSH_TEXT_OUTLINE);
+    }
+#endif
+
+    g_es1_alpha_test_enable = want_alpha_test ? 1 : 0;
+    g_es1_alpha_test_ref = want_alpha_test ? 0.5f : 0.0f;
+    g_es1_highp_alpha = want_highp_alpha;
+    g_es1_base_color_mode = effective_base_mode;
+    g_es1_base_modulate = (effective_base_mode != 0) ? 1 : 0;
+    g_es1_use_tex0 = want_use_tex0 ? 1 : 0;
+    g_es1_use_tex1 = want_backend_tex1 ? 1 : 0;
+    g_es1_tex0_in_rgb = want_tex0_in_rgb ? 1 : 0;
+    g_es1_text_outline = want_text_outline;
+
+    uint32_t tex_width2[2] = { 0, 0 };
+    uint32_t tex_height2[2] = { 0, 0 };
+    const bool want_backend_textures[2] = { want_use_tex0, want_backend_tex1 };
+
+    for (int i = 0; i < 2; ++i) {
+        const uint32_t tile = rdp.first_tile_index + gfx_lod_tile_offset(i);
+
+        if (want_backend_textures[i]) {
+            const bool uses_fb_texture = gfx_texture_uses_framebuffer_source(i);
+            const bool tile_matches = rendering_state.textures[i] != nullptr &&
+                                      rendering_state.texture_tiles[i] == tile;
+            if (!uses_fb_texture && (rdp.textures_changed[i] || !tile_matches)) {
+                const bool texture_matches = gfx_texture_matches_current(i, tile);
+                if (!texture_matches) {
+                    gfx_flush_with_reason(GFX_FLUSH_TEXTURE_IMPORT);
+                    import_texture(i, tile, false);
+                }
+                rdp.textures_changed[i] = false;
+                if (rendering_state.textures[i] != nullptr) {
+                    rendering_state.texture_tiles[i] = tile;
+                }
+            }
+
+            uint8_t cms = rdp.texture_tile[tile].cms;
+            uint8_t cmt = rdp.texture_tile[tile].cmt;
+            uint32_t tex_size_bytes = rdp.loaded_texture[rdp.texture_tile[tile].tmem].orig_size_bytes;
+            uint32_t line_size = rdp.texture_tile[tile].line_size_bytes;
+
+            if (line_size == 0) {
+                line_size = 1;
+            }
+
+            uint32_t tex_height = tex_size_bytes / line_size;
+            switch (rdp.texture_tile[tile].siz) {
+                case G_IM_SIZ_4b:
+                    line_size <<= 1;
+                    break;
+                case G_IM_SIZ_8b:
+                    break;
+                case G_IM_SIZ_16b:
+                    line_size /= G_IM_SIZ_16b_LINE_BYTES;
+                    break;
+                case G_IM_SIZ_32b:
+                    line_size /= G_IM_SIZ_32b_LINE_BYTES;
+                    tex_height /= 2;
+                    break;
+            }
+
+            tex_width2[i] = (rdp.texture_tile[tile].lrs - rdp.texture_tile[tile].uls + 4) / 4;
+            tex_height2[i] = (rdp.texture_tile[tile].lrt - rdp.texture_tile[tile].ult + 4) / 4;
+
+            uint32_t tex_width1 = line_size << (cms & G_TX_MIRROR);
+            uint32_t tex_height1 = tex_height << (cmt & G_TX_MIRROR);
+
+            if ((cms & G_TX_CLAMP) && ((cms & G_TX_MIRROR) || tex_width1 != tex_width2[i])) {
+                cms &= ~G_TX_CLAMP;
+            }
+            if ((cmt & G_TX_CLAMP) && ((cmt & G_TX_MIRROR) || tex_height1 != tex_height2[i])) {
+                cmt &= ~G_TX_CLAMP;
+            }
+
+            if (rendering_state.textures[i]) {
+                bool linear_filter = (rdp.other_mode_h & (3U << G_MDSFT_TEXTFILT)) != G_TF_POINT;
+                if (texture_edge || alpha_threshold) {
+                    linear_filter = false;
+                }
+                if (linear_filter != rendering_state.textures[i]->second.linear_filter ||
+                    cms != rendering_state.textures[i]->second.cms ||
+                    cmt != rendering_state.textures[i]->second.cmt) {
+                    gfx_flush_with_reason(GFX_FLUSH_SAMPLER_STATE);
+                    gfx_rapi->set_sampler_parameters(i, linear_filter, cms, cmt);
+                    rendering_state.textures[i]->second.linear_filter = linear_filter;
+                    rendering_state.textures[i]->second.cms = cms;
+                    rendering_state.textures[i]->second.cmt = cmt;
+                }
+                publish_tile_transform(i,
+                                       tile,
+                                       rendering_state.textures[i]->second.pot_w,
+                                       rendering_state.textures[i]->second.pot_h,
+                                       rendering_state.textures[i]->second.mirror_s_expanded,
+                                       rendering_state.textures[i]->second.mirror_t_expanded);
+            } else if (i == 0 && s_fb_tex_id0 > 0) {
+                bool linear_filter = (rdp.other_mode_h & (3U << G_MDSFT_TEXTFILT)) != G_TF_POINT;
+                if (texture_edge || alpha_threshold) {
+                    linear_filter = false;
+                }
+
+                if (!s_fb_tex_sampler_valid0 || linear_filter != s_fb_tex_linear_filter0 ||
+                    cms != s_fb_tex_cms0 || cmt != s_fb_tex_cmt0) {
+                    gfx_flush_with_reason(GFX_FLUSH_FB_SAMPLER_STATE);
+                    gfx_rapi->set_sampler_parameters(i, linear_filter, cms, cmt);
+                    s_fb_tex_sampler_valid0 = true;
+                    s_fb_tex_linear_filter0 = linear_filter;
+                    s_fb_tex_cms0 = cms;
+                    s_fb_tex_cmt0 = cmt;
+                }
+
+                publish_tile_transform(i, tile, s_fb_tex_pot_w0, s_fb_tex_pot_h0, false, false);
+            }
+        }
+    }
+
+    if (use_alpha != rendering_state.alpha_blend || use_modulate != rendering_state.modulate) {
+        gfx_flush_with_reason(GFX_FLUSH_BLEND_MODE);
+        gfx_rapi->set_use_alpha(use_alpha, use_modulate);
+        rendering_state.alpha_blend = use_alpha;
+        rendering_state.modulate = use_modulate;
+    }
+
+#if defined(__PSP__)
+    const bool batch_uses_prim_color =
+        !bake_primary_constant_color && ((want_text_outline != 0) || (base_mode == 2));
+    const bool batch_uses_env_color =
+        !bake_primary_constant_color && ((want_text_outline != 0) || (base_mode == 3));
+#else
+    const bool batch_uses_prim_color = (want_text_outline != 0) || (base_mode == 2);
+    const bool batch_uses_env_color = (want_text_outline != 0) || (base_mode == 3);
+#endif
+
+    uint32_t pot_w = 1;
+    uint32_t pot_h = 1;
+    if (rendering_state.textures[0]) {
+        pot_w = rendering_state.textures[0]->second.pot_w;
+        pot_h = rendering_state.textures[0]->second.pot_h;
+    } else if (s_fb_tex_id0 > 0) {
+        pot_w = s_fb_tex_pot_w0;
+        pot_h = s_fb_tex_pot_h0;
+    }
+    if (pot_w == 0) pot_w = 1;
+    if (pot_h == 0) pot_h = 1;
+
+    s_prepared_tri_pipeline_state.batch_cc_mode = next_batch_cc_mode;
+    s_prepared_tri_pipeline_state.batch_cc_opts = next_batch_cc_opts;
+    s_prepared_tri_pipeline_state.base_mode = base_mode;
+    s_prepared_tri_pipeline_state.batch_uses_prim_color = batch_uses_prim_color;
+    s_prepared_tri_pipeline_state.batch_uses_env_color = batch_uses_env_color;
+    s_prepared_tri_pipeline_state.bake_primary_constant_color = bake_primary_constant_color;
+    s_prepared_tri_pipeline_state.bake_textured_constant = bake_textured_constant;
+    s_prepared_tri_pipeline_state.tex_width2[0] = tex_width2[0];
+    s_prepared_tri_pipeline_state.tex_width2[1] = tex_width2[1];
+    s_prepared_tri_pipeline_state.tex_height2[0] = tex_height2[0];
+    s_prepared_tri_pipeline_state.tex_height2[1] = tex_height2[1];
+    s_prepared_tri_pipeline_state.pot_w = pot_w;
+    s_prepared_tri_pipeline_state.pot_h = pot_h;
+
+    s_batch_has_cc = true;
+    s_batch_cc_mode = next_batch_cc_mode;
+    s_batch_cc_opts = next_batch_cc_opts;
+    s_batch_uses_prim_color = batch_uses_prim_color;
+    s_batch_uses_env_color = batch_uses_env_color;
+    s_tri_pipeline_dirty = false;
+}
+
 // ------------------------------------------------------------------
 // Perspective‑aware subdivision: split triangles whose 1/w range is large
 // so that affine UV mapping looks perspective‑correct on GPUs that only
@@ -2126,6 +2652,14 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
         ((v2->transform_id != tri_transform_id) || (v3->transform_id != tri_transform_id));
     const bool emit_pretransformed = mixed_transform;
     const uint16_t active_transform_id = emit_pretransformed ? kPretransformedTransformId : tri_transform_id;
+    const bool z_is_from_0_to_1 = gfx_cached_clip_parameters.z_is_from_0_to_1;
+    const uint8_t active_clip_reject_mask = gfx_get_active_clip_reject_mask();
+    const float (*bypass_MP)[4] = bypass_transform_snapshots ? gfx_get_rsp_mp_matrix() : nullptr;
+
+    if (!bypass_transform_snapshots &&
+            (((v1->clip_rej & v2->clip_rej & v3->clip_rej) & active_clip_reject_mask) != 0)) {
+        return;
+    }
 
     if (!bypass_transform_snapshots &&
             (s_active_transform_pretransformed != emit_pretransformed ||
@@ -2135,394 +2669,39 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
         }
         gfx_bind_transform_snapshot(active_transform_id, emit_pretransformed);
     }
-
-    const TransformSnapshot *tri_snapshots[3] = { nullptr, nullptr, nullptr };
-    if (!bypass_transform_snapshots) {
-        tri_snapshots[0] = &s_transform_snapshots[v1->transform_id];
-        tri_snapshots[1] = &s_transform_snapshots[v2->transform_id];
-        tri_snapshots[2] = &s_transform_snapshots[v3->transform_id];
-    }
 #else
     const bool emit_pretransformed = false;
+    const bool z_is_from_0_to_1 = gfx_cached_clip_parameters.z_is_from_0_to_1;
 #endif
 
-    // Map N64 G_CULL_* geometry bits to GL culling. We keep GL front-face=CCW;
-    // CPU will swap winding per limb if mirrored.
-    uint8_t new_cull = 1; // default: cull back
-    const bool want_cull_back  = (rsp.geometry_mode & G_CULL_BACK)  != 0;
-    const bool want_cull_front = (rsp.geometry_mode & G_CULL_FRONT) != 0;
-    if (want_cull_back && !want_cull_front) new_cull = 1;         // back only
-    else if (!want_cull_back && want_cull_front) new_cull = 2;    // front only
-    else if (!want_cull_back && !want_cull_front) new_cull = 0;   // no culling
-    else /* both set */ new_cull = 1; // prefer back; matches most microcode uses
-    // Honor extra-geometry invert culling flag if set by microcode
-#if defined(__PSP__)
-    // PSP: CPU culling handles orientation; disable GL culling.
-    new_cull = 0;
-#else
-    // Detect if the current ModelView flips handedness (negative determinant)
-    const float (*MV)[4] = rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1];
-    const bool mv_mirrored = (mat3_det_mv(MV) < 0.0f);
-    const bool invert_culling_ext = (rsp.extra_geometry_mode & G_INVERT_CULLING_EXT) != 0;
-    const bool invert_culling = mv_mirrored ^ invert_culling_ext;
-    if (invert_culling) {
-        if (new_cull == 1) new_cull = 2; else if (new_cull == 2) new_cull = 1;
-    }
-    if (g_es1_front_face_cw != (invert_culling ? 1 : 0)) {
-        gfx_flush_with_reason(GFX_FLUSH_FRONT_FACE);
-        g_es1_front_face_cw = invert_culling ? 1 : 0;
-    }
-#endif
-    if (new_cull != g_es1_cull_mode) {
-        gfx_flush_with_reason(GFX_FLUSH_CULL_MODE);
-        g_es1_cull_mode = new_cull;
-    }
+    gfx_prepare_tri_pipeline_state();
 
-    // Let GL handle face culling; CPU space here is object space now.
-
-    // Extract and decode depth-related state flags from other_mode
-    bool depth_test = ((rsp.geometry_mode & G_ZBUFFER) == G_ZBUFFER || (rdp.other_mode_l & G_ZS_PRIM) == G_ZS_PRIM) &&
-                      ((rdp.other_mode_h & G_CYC_1CYCLE) == G_CYC_1CYCLE || (rdp.other_mode_h & G_CYC_2CYCLE) == G_CYC_2CYCLE);
-    bool depth_update = (rdp.other_mode_l & Z_UPD) != 0;
-    bool depth_compare = (rdp.other_mode_l & Z_CMP) != 0;
-    bool depth_source_prim = (rdp.other_mode_l & G_ZS_PRIM) != 0;
-    uint16_t zmode = (rdp.other_mode_l & ZMODE_DEC) >> 6; // extract zmode bits properly
-    // Compose depth mode bitfield used to avoid redundant state changes
-    uint8_t depth_mode = (depth_test ? 1 : 0) | (depth_update ? 2 : 0) | (depth_compare ? 4 : 0) | (depth_source_prim ? 8 : 0) | (zmode << 4);
-
-    if (depth_mode != rendering_state.depth_mode) {
-        gfx_flush_with_reason(GFX_FLUSH_DEPTH_MODE);
-        gfx_rapi->set_depth_mode(depth_test, depth_update, depth_compare, depth_source_prim, zmode);
-        rendering_state.depth_mode = depth_mode;
-    }
-
-    if (rdp.viewport_or_scissor_changed) {
-        if (memcmp(&rdp.viewport, &rendering_state.viewport, sizeof(rdp.viewport)) != 0) {
-            gfx_flush_with_reason(GFX_FLUSH_VIEWPORT);
-            gfx_rapi->set_viewport(rdp.viewport.x, rdp.viewport.y, rdp.viewport.width, rdp.viewport.height);
-            rendering_state.viewport = rdp.viewport;
-        }
-        if (memcmp(&rdp.scissor, &rendering_state.scissor, sizeof(rdp.scissor)) != 0) {
-            gfx_flush_with_reason(GFX_FLUSH_SCISSOR);
-            gfx_rapi->set_scissor(rdp.scissor.x, rdp.scissor.y, rdp.scissor.width, rdp.scissor.height);
-            rendering_state.scissor = rdp.scissor;
-        }
-        rdp.viewport_or_scissor_changed = false;
-    }
-
-    uint64_t cc_options = 0;
-    bool use_alpha =
-        (rdp.other_mode_l & (3 << 20)) == (G_BL_CLR_MEM << 20) && (rdp.other_mode_l & (3 << 16)) == (G_BL_1MA << 16);
-    const bool force_blend = (rdp.other_mode_l & FORCE_BL) == FORCE_BL;
-    const bool alpha_cvg_sel = (rdp.other_mode_l & ALPHA_CVG_SEL) == ALPHA_CVG_SEL;
-    const bool use_fog = ((rdp.other_mode_l >> 30) == G_BL_CLR_FOG) || ((rdp.other_mode_l >> 26) == G_BL_A_FOG);
-    const bool texture_edge = (rdp.other_mode_l & CVG_X_ALPHA) == CVG_X_ALPHA;
-    const bool use_noise = (rdp.other_mode_l & (3U << G_MDSFT_ALPHACOMPARE)) == G_AC_DITHER;
-    const bool use_2cyc = (rdp.other_mode_h & (3U << G_MDSFT_CYCLETYPE)) == G_CYC_2CYCLE;
-    const bool alpha_threshold = (rdp.other_mode_l & (3U << G_MDSFT_ALPHACOMPARE)) == G_AC_THRESHOLD;
-    const bool invisible = (rdp.other_mode_l & (3 << 24)) == (G_BL_0 << 24) && (rdp.other_mode_l & (3 << 20)) == (G_BL_CLR_MEM << 20);
-    const bool use_grayscale = rdp.grayscale;
-    const bool use_blur = (rdp.other_mode_h & (3U << G_MDSFT_TEXTFILT)) == G_TF_BLUR_EXT;
-
-    if (texture_edge) {
-        use_alpha = true;
-    }
-
-    // Some opaque render modes (eg. *_OPA_TERR / *_SUB_TERR) set ALPHA_CVG_SEL but still use
-    // CLR_MEM, 1MA in the blender. On N64 the effective blender alpha comes from coverage
-    // (opaque interior, AA edges). If we treat these as true alpha blending, SHADE_ALPHA can
-    // leak in (often fog), making solid geometry appear glass-like.
-    if (alpha_cvg_sel && !force_blend && !texture_edge) {
-        use_alpha = false;
-    }
-
-    const bool use_modulate = use_alpha && (rsp.extra_geometry_mode & G_MODULATE_EXT) != 0;
-    const bool want_alpha_test = texture_edge || alpha_threshold;
-    const uint8_t want_highp_alpha = want_alpha_test ? 1 : 0;
-
-    if (use_alpha) {
-        cc_options |= (uint64_t)SHADER_OPT_ALPHA;
-    }
-    if (use_fog) {
-        cc_options |= (uint64_t)SHADER_OPT_FOG;
-    }
-    if (texture_edge) {
-        cc_options |= (uint64_t)SHADER_OPT_TEXTURE_EDGE;
-    }
-    if (use_noise) {
-        cc_options |= (uint64_t)SHADER_OPT_NOISE;
-    }
-    if (use_2cyc) {
-        cc_options |= (uint64_t)SHADER_OPT_2CYC;
-    }
-    if (alpha_threshold) {
-        cc_options |= (uint64_t)SHADER_OPT_ALPHA_THRESHOLD;
-    }
-    if (invisible) {
-        cc_options |= (uint64_t)SHADER_OPT_INVISIBLE;
-    }
-    if (use_grayscale) {
-        cc_options |= (uint64_t)SHADER_OPT_GRAYSCALE;
-    }
-    if (use_blur) {
-        cc_options |= (uint64_t)SHADER_OPT_BLUR;
-    }
-
-    // If we are not using alpha, clear the alpha components of the combiner as they have no effect
-    if (!use_alpha) {
-        cc_options &= ~((0xfff << 16) | ((uint64_t)0xfff << 44));
-    }
-
-    ColorCombinerKey key;
-    key.combine_mode = rdp.combine_mode;
-    key.options = cc_options;
-
-    ColorCombiner* comb = gfx_lookup_or_create_color_combiner(key);
-    // Publish hints to backend for base texenv selection
-    uint8_t base_mode = 0;
-    if (comb->shade_in_rgb) {
-        base_mode = 1;
-    } else if (comb->env_in_rgb && (!comb->prim_in_rgb || (comb->tex1a_in_rgb && !comb->tex1_in_rgb))) {
-        base_mode = 3;
-    } else if (comb->prim_in_rgb) {
-        base_mode = 2;
-    } else if (comb->env_in_rgb) {
-        base_mode = 3;
-    }
-    const bool want_use_tex0 = comb->used_textures[0];
-    const bool want_use_tex1 = comb->used_textures[1];
-    const bool want_tex0_in_rgb = comb->tex0_in_rgb;
-    const bool want_font_combine = want_alpha_test && want_use_tex0 && !want_tex0_in_rgb;
-    // Publish hint for outlined-font rendering (needs PRIM vs ENV split on CI4 fonts).
-    // Prefer heuristic detection (more robust than a single combine_mode constant).
-    const bool is_text_outline =
-        use_2cyc &&
-        want_use_tex0 && want_use_tex1 &&
-        comb->tex1a_in_rgb &&
-        comb->prim_in_rgb && comb->env_in_rgb &&
-        !comb->tex0_in_rgb && !comb->tex1_in_rgb &&
-        (rdp.palette_fmt == G_TT_IA16) &&
-        (rdp.texture_tile[rdp.first_tile_index].fmt == G_IM_FMT_CI);
-
-    const uint8_t want_text_outline = (key.combine_mode == kTextOutlineCombineMode || is_text_outline) ? 1 : 0;
-    bool want_backend_tex1 = want_use_tex1;
-#if defined(__PSP__)
-    want_backend_tex1 = (want_text_outline != 0) || (g_force_two_pass != 0 && want_use_tex1);
-#endif
-    uint8_t effective_base_mode = base_mode;
-    bool bake_primary_constant_color = false;
-    bool bake_textured_constant = false;
-#if defined(__PSP__)
-    if (want_text_outline == 0 && !want_backend_tex1 && (base_mode == 2 || base_mode == 3)) {
-        // On PSP GLES1, GL_PRIMARY_COLOR comes from the vertex color array, so
-        // we can bake PRIM/ENV color per triangle and stop hard-breaking batches
-        // on constant-color updates for non-outline draws.
-        bake_primary_constant_color = true;
-        bake_textured_constant = want_use_tex0;
-        const uint8_t baked_primary_alpha = (base_mode == 2) ? rdp.prim_color.a : rdp.env_color.a;
-        const bool opaque_textured_constant = bake_textured_constant && !use_alpha && !want_alpha_test;
-        const bool opaque_font_like_constant = bake_textured_constant && want_font_combine && baked_primary_alpha == 255;
-        effective_base_mode = (opaque_textured_constant || opaque_font_like_constant) ? 1 : (bake_textured_constant ? 2 : 1);
-    }
-#endif
-#if defined(__PSP__)
-    const uint64_t batch_sig = gfx_make_psp_batch_signature(
-        want_use_tex0, want_backend_tex1, want_font_combine, want_alpha_test, want_highp_alpha, effective_base_mode, want_text_outline != 0);
-    if (!s_batch_has_cc || s_batch_cc_mode != batch_sig) {
-        if (buf_vbo_len > 0) {
-            gfx_flush_with_reason(GFX_FLUSH_COMBINER_CHANGE);
-        }
-        s_batch_has_cc = true;
-        s_batch_cc_mode = batch_sig;
-        s_batch_cc_opts = 0;
-    }
-#else
-    if (!s_batch_has_cc || s_batch_cc_mode != key.combine_mode || s_batch_cc_opts != key.options) {
-        if (buf_vbo_len > 0) {
-            gfx_flush_with_reason(GFX_FLUSH_COMBINER_CHANGE);
-        }
-        s_batch_has_cc = true;
-        s_batch_cc_mode = key.combine_mode;
-        s_batch_cc_opts = key.options;
-    }
-
-    if (buf_vbo_len > 0 && g_es1_text_outline != want_text_outline) {
-        gfx_flush_with_reason(GFX_FLUSH_TEXT_OUTLINE);
-    }
-#endif
-
-    // Publish alpha-test intent for GLES 1.1 backend (text edges, threshold compare)
-    g_es1_alpha_test_enable = want_alpha_test ? 1 : 0;
-    g_es1_alpha_test_ref = want_alpha_test ? 0.5f : 0.0f;
-    g_es1_highp_alpha = want_highp_alpha;
-    g_es1_base_color_mode = effective_base_mode;
-    g_es1_base_modulate = (effective_base_mode != 0) ? 1 : 0;
-    g_es1_use_tex0 = want_use_tex0 ? 1 : 0;
-    g_es1_use_tex1 = want_backend_tex1 ? 1 : 0;
-    g_es1_tex0_in_rgb = want_tex0_in_rgb ? 1 : 0;
-    g_es1_text_outline = want_text_outline;
-
-    uint32_t tm = 0;
-    uint32_t tex_width[2], tex_height[2], tex_width2[2], tex_height2[2];
-    const bool want_backend_textures[2] = { want_use_tex0, want_backend_tex1 };
-
-    for (int i = 0; i < 2; i++) {
-        // TODO: fix this; for now just ignore smaller mips
-        const uint32_t tile = rdp.first_tile_index + gfx_lod_tile_offset(i);
-
-        if (want_backend_textures[i]) {
-            const bool uses_fb_texture = gfx_texture_uses_framebuffer_source(i);
-            const bool texture_matches = !uses_fb_texture && gfx_texture_matches_current(i, tile);
-            if (!uses_fb_texture && (rdp.textures_changed[i] || !texture_matches)) {
-                if (!texture_matches) {
-                    gfx_flush_with_reason(GFX_FLUSH_TEXTURE_IMPORT);
-                    import_texture(i, tile, false);
-                }
-                rdp.textures_changed[i] = false;
-            }
-
-            uint8_t cms = rdp.texture_tile[tile].cms;
-            uint8_t cmt = rdp.texture_tile[tile].cmt;
-
-            uint32_t tex_size_bytes = rdp.loaded_texture[rdp.texture_tile[tile].tmem].orig_size_bytes;
-            uint32_t line_size = rdp.texture_tile[tile].line_size_bytes;
-
-            if (line_size == 0) {
-                line_size = 1;
-            }
-
-            tex_height[i] = tex_size_bytes / line_size;
-            switch (rdp.texture_tile[tile].siz) {
-                case G_IM_SIZ_4b:
-                    line_size <<= 1;
-                    break;
-                case G_IM_SIZ_8b:
-                    break;
-                case G_IM_SIZ_16b:
-                    line_size /= G_IM_SIZ_16b_LINE_BYTES;
-                    break;
-                case G_IM_SIZ_32b:
-                    line_size /= G_IM_SIZ_32b_LINE_BYTES; // this is 2!
-                    tex_height[i] /= 2;
-                    break;
-            }
-            tex_width[i] = line_size;
-
-            tex_width2[i] = (rdp.texture_tile[tile].lrs - rdp.texture_tile[tile].uls + 4) / 4;
-            tex_height2[i] = (rdp.texture_tile[tile].lrt - rdp.texture_tile[tile].ult + 4) / 4;
-
-            uint32_t tex_width1 = tex_width[i] << (cms & G_TX_MIRROR);
-            uint32_t tex_height1 = tex_height[i] << (cmt & G_TX_MIRROR);
-
-            if ((cms & G_TX_CLAMP) && ((cms & G_TX_MIRROR) || tex_width1 != tex_width2[i])) {
-                tm |= 1 << 2 * i;
-                cms &= ~G_TX_CLAMP;
-            }
-            if ((cmt & G_TX_CLAMP) && ((cmt & G_TX_MIRROR) || tex_height1 != tex_height2[i])) {
-                tm |= 1 << (2 * i + 1);
-                cmt &= ~G_TX_CLAMP;
-            }
-
-            if (rendering_state.textures[i]) {
-                bool linear_filter = (rdp.other_mode_h & (3U << G_MDSFT_TEXTFILT)) != G_TF_POINT;
-                // Fonts and UI with texture edge / alpha threshold must use point sampling
-                if (texture_edge || alpha_threshold) {
-                    linear_filter = false;
-                }
-                if (linear_filter != rendering_state.textures[i]->second.linear_filter ||
-                    cms != rendering_state.textures[i]->second.cms || cmt != rendering_state.textures[i]->second.cmt) {
-                    gfx_flush_with_reason(GFX_FLUSH_SAMPLER_STATE);
-                    gfx_rapi->set_sampler_parameters(i, linear_filter, cms, cmt);
-                    rendering_state.textures[i]->second.linear_filter = linear_filter;
-                    rendering_state.textures[i]->second.cms = cms;
-                    rendering_state.textures[i]->second.cmt = cmt;
-                }
-                // Always publish the tile transform, even on cache hits, so cropping/offset is correct.
-                // Use POT sizes recorded in the cache entry.
-                publish_tile_transform(i, tile,
-                                       rendering_state.textures[i]->second.pot_w,
-                                       rendering_state.textures[i]->second.pot_h,
-                                       rendering_state.textures[i]->second.mirror_s_expanded,
-                                       rendering_state.textures[i]->second.mirror_t_expanded);
-            } else if (i == 0 && s_fb_tex_id0 > 0) {
-                bool linear_filter = (rdp.other_mode_h & (3U << G_MDSFT_TEXTFILT)) != G_TF_POINT;
-                if (texture_edge || alpha_threshold) {
-                    linear_filter = false;
-                }
-
-                if (!s_fb_tex_sampler_valid0 || linear_filter != s_fb_tex_linear_filter0 ||
-                    cms != s_fb_tex_cms0 || cmt != s_fb_tex_cmt0) {
-                    gfx_flush_with_reason(GFX_FLUSH_FB_SAMPLER_STATE);
-                    gfx_rapi->set_sampler_parameters(i, linear_filter, cms, cmt);
-                    s_fb_tex_sampler_valid0 = true;
-                    s_fb_tex_linear_filter0 = linear_filter;
-                    s_fb_tex_cms0 = cms;
-                    s_fb_tex_cmt0 = cmt;
-                }
-
-                publish_tile_transform(i, tile, s_fb_tex_pot_w0, s_fb_tex_pot_h0, false, false);
-            }
-        }
-    }
-
-    // No need to clear TEXEL1 here; two-pass path is gated by g_force_two_pass
-
-    if (use_alpha != rendering_state.alpha_blend || use_modulate != rendering_state.modulate) {
-        gfx_flush_with_reason(GFX_FLUSH_BLEND_MODE);
-        gfx_rapi->set_use_alpha(use_alpha, use_modulate);
-        rendering_state.alpha_blend = use_alpha;
-        rendering_state.modulate = use_modulate;
-    }
-#if defined(__PSP__)
-    s_batch_uses_prim_color = !bake_primary_constant_color && ((want_text_outline != 0) || (base_mode == 2));
-    s_batch_uses_env_color = !bake_primary_constant_color && ((want_text_outline != 0) || (base_mode == 3));
-#else
-    s_batch_uses_prim_color = (want_text_outline != 0) || (base_mode == 2);
-    s_batch_uses_env_color = (want_text_outline != 0) || (base_mode == 3);
-#endif
-    uint8_t num_inputs;
-    bool used_textures[2];
-
-    struct GfxClipParameters clip_parameters = gfx_rapi->get_clip_parameters();
-
-
-
-    uint32_t pot_w = 1, pot_h = 1;
-    if (rendering_state.textures[0]) {
-        pot_w = rendering_state.textures[0]->second.pot_w;
-        pot_h = rendering_state.textures[0]->second.pot_h;
-    } else if (s_fb_tex_id0 > 0) {
-        pot_w = s_fb_tex_pot_w0;
-        pot_h = s_fb_tex_pot_h0;
-    }
-    // Add safeguard for pot_w and pot_h
-    if (pot_w == 0) pot_w = 1;
-    if (pot_h == 0) pot_h = 1;
     // --- build TempV array --------------------------------------------------
     TempV TV[3];
 #if defined(__PSP__)
     const RGBA* baked_primary_color = nullptr;
-    if (bake_primary_constant_color) {
-        baked_primary_color = (base_mode == 2) ? &rdp.prim_color : &rdp.env_color;
+    if (s_prepared_tri_pipeline_state.bake_primary_constant_color) {
+        baked_primary_color = (s_prepared_tri_pipeline_state.base_mode == 2) ? &rdp.prim_color : &rdp.env_color;
     }
 #endif
     for (int i = 0; i < 3; i++) {
         const auto *vtx = v_arr[i];
         float w = fabsf(vtx->w) < 0.001f ? 0.001f : vtx->w;
-        float inv_w = 1.0f / w;
 
         short uls = rdp.texture_tile[rdp.first_tile_index].uls;
         short ult = rdp.texture_tile[rdp.first_tile_index].ult;
 
-        uint32_t orig_w = tex_width2[0] ? tex_width2[0] : pot_w;
-        uint32_t orig_h = tex_height2[0] ? tex_height2[0] : pot_h;
+        uint32_t orig_w = s_prepared_tri_pipeline_state.tex_width2[0] ? s_prepared_tri_pipeline_state.tex_width2[0]
+                                                                      : s_prepared_tri_pipeline_state.pot_w;
+        uint32_t orig_h = s_prepared_tri_pipeline_state.tex_height2[0] ? s_prepared_tri_pipeline_state.tex_height2[0]
+                                                                       : s_prepared_tri_pipeline_state.pot_h;
 
         // Perspective-correct UVs: multiply by 1/w after scaling
         float u = ((float)(vtx->u - uls) / 32.0f) / (float)orig_w;
-        u *= (float)orig_w / (float)pot_w;
+        u *= (float)orig_w / (float)s_prepared_tri_pipeline_state.pot_w;
 
         float v = ((float)(vtx->v - ult) / 32.0f) / (float)orig_h;
-        v *= (float)orig_h / (float)pot_h;
+        v *= (float)orig_h / (float)s_prepared_tri_pipeline_state.pot_h;
 
         const float alpha = vtx->color.a / 255.0f;
         TempV &tv = TV[i];
@@ -2531,22 +2710,31 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
         tv.z = vtx->z;
         tv.w = w;
 #if defined(__PSP__)
-        const float (*MP)[4] = (g_es1_force_2d || is_rect) ? rsp.MP_matrix : tri_snapshots[i]->MP;
+        if (bypass_transform_snapshots) {
+            tv.clip_x = tv.x * bypass_MP[0][0] + tv.y * bypass_MP[1][0] + tv.z * bypass_MP[2][0] + tv.w * bypass_MP[3][0];
+            tv.clip_y = tv.x * bypass_MP[0][1] + tv.y * bypass_MP[1][1] + tv.z * bypass_MP[2][1] + tv.w * bypass_MP[3][1];
+            tv.clip_z = tv.x * bypass_MP[0][2] + tv.y * bypass_MP[1][2] + tv.z * bypass_MP[2][2] + tv.w * bypass_MP[3][2];
+            tv.clip_w = tv.x * bypass_MP[0][3] + tv.y * bypass_MP[1][3] + tv.z * bypass_MP[2][3] + tv.w * bypass_MP[3][3];
+        } else {
+            tv.clip_x = vtx->clip_x;
+            tv.clip_y = vtx->clip_y;
+            tv.clip_z = vtx->clip_z;
+            tv.clip_w = vtx->clip_w;
+        }
 #else
         const float (*MP)[4] = rsp.MP_matrix;
-#endif
-        // Multiply by columns so the clip vector matches the GPU's column-major transform.
         tv.clip_x = tv.x * MP[0][0] + tv.y * MP[1][0] + tv.z * MP[2][0] + tv.w * MP[3][0];
         tv.clip_y = tv.x * MP[0][1] + tv.y * MP[1][1] + tv.z * MP[2][1] + tv.w * MP[3][1];
         tv.clip_z = tv.x * MP[0][2] + tv.y * MP[1][2] + tv.z * MP[2][2] + tv.w * MP[3][2];
         tv.clip_w = tv.x * MP[0][3] + tv.y * MP[1][3] + tv.z * MP[2][3] + tv.w * MP[3][3];
+#endif
         tv.u = u;
         tv.v = v;
 #if defined(__PSP__)
-        if (bake_primary_constant_color) {
+        if (s_prepared_tri_pipeline_state.bake_primary_constant_color) {
             const float const_alpha = baked_primary_color->a / 255.0f;
             tv.a = const_alpha;
-            if (bake_textured_constant) {
+            if (s_prepared_tri_pipeline_state.bake_textured_constant) {
                 tv.r = baked_primary_color->r / 255.0f;
                 tv.g = baked_primary_color->g / 255.0f;
                 tv.b = baked_primary_color->b / 255.0f;
@@ -2691,34 +2879,42 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
         return !any_inside;
     };
 
-    bool all_inside = true;
+    bool all_inside = false;
     bool culled = false;
+#if defined(__PSP__)
+    if (!bypass_transform_snapshots) {
+        all_inside = (((v1->clip_rej | v2->clip_rej | v3->clip_rej) & active_clip_reject_mask) == 0);
+    }
+#endif
 
-    auto test_plane = [&](auto plane_eval) {
-        if (culled) {
-            return;
-        }
-        if (is_fully_outside(plane_eval)) {
-            culled = true;
-            all_inside = false;
-            return;
-        }
-        if (!is_fully_inside(plane_eval)) {
-            all_inside = false;
-        }
-    };
+    if (!all_inside) {
+        auto test_plane = [&](auto plane_eval) {
+            if (culled) {
+                return;
+            }
+            if (is_fully_outside(plane_eval)) {
+                culled = true;
+                all_inside = false;
+                return;
+            }
+            if (!is_fully_inside(plane_eval)) {
+                all_inside = false;
+            }
+        };
 
-    test_plane([&](const TempV& V) { return V.clip_w + V.clip_x; });
-    test_plane([&](const TempV& V) { return V.clip_w - V.clip_x; });
-    test_plane([&](const TempV& V) { return V.clip_w + V.clip_y; });
-    test_plane([&](const TempV& V) { return V.clip_w - V.clip_y; });
-    if (!g_es1_depth_clamp_active) {
-        if (clip_parameters.z_is_from_0_to_1) {
-            test_plane([&](const TempV& V) { return V.clip_z; });
-        } else {
-            test_plane([&](const TempV& V) { return V.clip_w + V.clip_z; });
+        all_inside = true;
+        test_plane([&](const TempV& V) { return V.clip_w + V.clip_x; });
+        test_plane([&](const TempV& V) { return V.clip_w - V.clip_x; });
+        test_plane([&](const TempV& V) { return V.clip_w + V.clip_y; });
+        test_plane([&](const TempV& V) { return V.clip_w - V.clip_y; });
+        if (!g_es1_depth_clamp_active) {
+            if (z_is_from_0_to_1) {
+                test_plane([&](const TempV& V) { return V.clip_z; });
+            } else {
+                test_plane([&](const TempV& V) { return V.clip_w + V.clip_z; });
+            }
+            test_plane([&](const TempV& V) { return V.clip_w - V.clip_z; });
         }
-        test_plane([&](const TempV& V) { return V.clip_w - V.clip_z; });
     }
 
     if (culled) {
@@ -2790,7 +2986,7 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
     clip_against([&](const TempV& V) { return V.clip_w + V.clip_y; }); // bottom plane
     clip_against([&](const TempV& V) { return V.clip_w - V.clip_y; }); // top plane
     if (!g_es1_depth_clamp_active) {
-        if (clip_parameters.z_is_from_0_to_1) {
+        if (z_is_from_0_to_1) {
             clip_against([&](const TempV& V) { return V.clip_z; }); // near plane (z in [0, w])
         } else {
             clip_against([&](const TempV& V) { return V.clip_w + V.clip_z; }); // near plane (z in [-w, w])
@@ -2849,8 +3045,11 @@ static inline void gfx_sp_tri4(Gfx *cmd) {
 
 static void gfx_sp_geometry_mode(uint32_t clear, uint32_t set) {
     gfx_end_rect_batch();
-    rsp.geometry_mode &= ~clear;
-    rsp.geometry_mode |= set;
+    const uint32_t new_mode = (rsp.geometry_mode & ~clear) | set;
+    if (new_mode != rsp.geometry_mode) {
+        rsp.geometry_mode = new_mode;
+        gfx_mark_tri_pipeline_dirty();
+    }
 }
 
 static inline void gfx_update_aspect_mode(void) {
@@ -2876,10 +3075,13 @@ static inline void gfx_update_aspect_mode(void) {
 
 static void gfx_sp_extra_geometry_mode(uint32_t clear, uint32_t set) {
     gfx_end_rect_batch();
-    rsp.extra_geometry_mode &= ~clear;
-    rsp.extra_geometry_mode |= set;
-    rsp.aspect_mode = (rsp.extra_geometry_mode & G_ASPECT_MODE_EXT);
-    gfx_update_aspect_mode();
+    const uint32_t new_mode = (rsp.extra_geometry_mode & ~clear) | set;
+    if (new_mode != rsp.extra_geometry_mode) {
+        rsp.extra_geometry_mode = new_mode;
+        rsp.aspect_mode = (rsp.extra_geometry_mode & G_ASPECT_MODE_EXT);
+        gfx_update_aspect_mode();
+        gfx_mark_tri_pipeline_dirty();
+    }
 }
 
 static void gfx_adjust_viewport_or_scissor(XYWidthHeight* area, bool preserve_aspect) {
@@ -2975,6 +3177,7 @@ static void gfx_calc_and_set_viewport(const Vp_t* viewport) {
     gfx_adjust_viewport_or_scissor(&rdp.viewport);
 
     rdp.viewport_or_scissor_changed = true;
+    gfx_mark_tri_pipeline_dirty();
 }
 
 static void gfx_sp_movemem(uint8_t index, uint8_t offset, const void* data) {
@@ -3028,10 +3231,16 @@ static void gfx_sp_moveword(uint8_t index, uint16_t offset, uintptr_t data) {
 }
 
 static void gfx_sp_texture(uint16_t sc, uint16_t tc, uint8_t level, uint8_t tile, uint8_t on) {
-    rsp.texture_scaling_factor.s = sc;
-    rsp.texture_scaling_factor.t = tc;
-    rdp.tex_max_lod = level;
-    rdp.first_tile_index = tile;
+    if (rsp.texture_scaling_factor.s != sc ||
+        rsp.texture_scaling_factor.t != tc ||
+        rdp.tex_max_lod != level ||
+        rdp.first_tile_index != tile) {
+        rsp.texture_scaling_factor.s = sc;
+        rsp.texture_scaling_factor.t = tc;
+        rdp.tex_max_lod = level;
+        rdp.first_tile_index = tile;
+        gfx_mark_tri_pipeline_dirty();
+    }
 }
 
 static void gfx_dp_set_scissor(uint32_t mode, uint32_t ulx, uint32_t uly, uint32_t lrx, uint32_t lry) {
@@ -3048,13 +3257,21 @@ static void gfx_dp_set_scissor(uint32_t mode, uint32_t ulx, uint32_t uly, uint32
     gfx_adjust_viewport_or_scissor(&rdp.scissor, rsp.aspect_mode != 0);
 
     rdp.viewport_or_scissor_changed = true;
+    gfx_mark_tri_pipeline_dirty();
 }
 
 static void gfx_dp_set_texture_image(uint32_t format, uint32_t size, uint32_t width, uint32_t tex_flags, const void* addr) {
-    rdp.texture_to_load.addr = (const uint8_t*)addr;
-    rdp.texture_to_load.siz = size;
-    rdp.texture_to_load.width = width;
-    rdp.texture_to_load.tex_flags = tex_flags;
+    const uint8_t* new_addr = (const uint8_t*)addr;
+    if (rdp.texture_to_load.addr != new_addr ||
+        rdp.texture_to_load.siz != size ||
+        rdp.texture_to_load.width != width ||
+        rdp.texture_to_load.tex_flags != tex_flags) {
+        rdp.texture_to_load.addr = new_addr;
+        rdp.texture_to_load.siz = size;
+        rdp.texture_to_load.width = width;
+        rdp.texture_to_load.tex_flags = tex_flags;
+        gfx_mark_tri_pipeline_dirty();
+    }
 }
 
 static void gfx_dp_set_tile(uint8_t fmt, uint32_t siz, uint32_t line, uint32_t tmem, uint8_t tile, uint32_t palette,
@@ -3105,19 +3322,40 @@ static void gfx_dp_set_tile(uint8_t fmt, uint32_t siz, uint32_t line, uint32_t t
     tileinfo.line_size_bytes = line_size_bytes;
     tileinfo.tmem = tmem;
 
+    const bool state_changed =
+        tileinfo.palette != palette ||
+        tileinfo.fmt != fmt ||
+        tileinfo.siz != siz ||
+        tileinfo.cms != cms ||
+        tileinfo.cmt != cmt ||
+        tileinfo.shifts != shifts ||
+        tileinfo.shiftt != shiftt ||
+        tileinfo.line_size_bytes != line_size_bytes ||
+        tileinfo.tmem != tmem;
+
     if (content_changed) {
         rdp.textures_changed[0] = true;
         rdp.textures_changed[1] = true;
     }
+    if (state_changed) {
+        gfx_mark_tri_pipeline_dirty();
+    }
 }
 
 static void gfx_dp_set_tile_size(uint8_t tile, uint16_t uls, uint16_t ult, uint16_t lrs, uint16_t lrt) {
-    rdp.texture_tile[tile].uls = uls;
-    rdp.texture_tile[tile].ult = ult;
-    rdp.texture_tile[tile].lrs = lrs;
-    rdp.texture_tile[tile].lrt = lrt;
-    rdp.texture_tile[tile].width = (lrs - uls + 4) / 4;
-    rdp.texture_tile[tile].height = (lrt - ult + 4) / 4;
+    auto &ti = rdp.texture_tile[tile];
+    const uint16_t width = (lrs - uls + 4) / 4;
+    const uint16_t height = (lrt - ult + 4) / 4;
+    if (ti.uls != uls || ti.ult != ult || ti.lrs != lrs || ti.lrt != lrt ||
+        ti.width != width || ti.height != height) {
+        ti.uls = uls;
+        ti.ult = ult;
+        ti.lrs = lrs;
+        ti.lrt = lrt;
+        ti.width = width;
+        ti.height = height;
+        gfx_mark_tri_pipeline_dirty();
+    }
 }
 
 static void gfx_dp_load_tlut(uint8_t tile, uint32_t uls, uint32_t ult, uint32_t lrs, uint32_t lrt) {
@@ -3155,6 +3393,7 @@ static void gfx_dp_load_tlut(uint8_t tile, uint32_t uls, uint32_t ult, uint32_t 
     }
 
     rdp.textures_changed[0] = rdp.textures_changed[1] = true;
+    gfx_mark_tri_pipeline_dirty();
 }
 
 static void gfx_dp_load_block(uint8_t tile, uint32_t uls, uint32_t ult, uint32_t lrs, uint32_t dxt) {
@@ -3182,6 +3421,7 @@ static void gfx_dp_load_block(uint8_t tile, uint32_t uls, uint32_t ult, uint32_t
     loaded_texture.addr = rdp.texture_to_load.addr;
 
     rdp.textures_changed[0] = rdp.textures_changed[1] = true;
+    gfx_mark_tri_pipeline_dirty();
 }
 
 static void gfx_dp_load_tile(uint8_t tile, uint32_t uls, uint32_t ult, uint32_t lrs, uint32_t lrt) {
@@ -3229,10 +3469,15 @@ static void gfx_dp_load_tile(uint8_t tile, uint32_t uls, uint32_t ult, uint32_t 
     rdp.texture_tile[tile].height = ((lrt - ult) >> G_TEXTURE_IMAGE_FRAC) + 1;
 
     rdp.textures_changed[0] = rdp.textures_changed[1] = true;
+    gfx_mark_tri_pipeline_dirty();
 }
 
 static void gfx_dp_set_combine_mode(uint32_t rgb, uint32_t alpha, uint32_t rgb_cyc2, uint32_t alpha_cyc2) {
-    rdp.combine_mode = rgb | (alpha << 16) | ((uint64_t)rgb_cyc2 << 28) | ((uint64_t)alpha_cyc2 << 44);
+    const uint64_t new_combine_mode = rgb | (alpha << 16) | ((uint64_t)rgb_cyc2 << 28) | ((uint64_t)alpha_cyc2 << 44);
+    if (rdp.combine_mode != new_combine_mode) {
+        rdp.combine_mode = new_combine_mode;
+        gfx_mark_tri_pipeline_dirty();
+    }
 }
 
 static inline uint32_t color_comb(uint32_t a, uint32_t b, uint32_t c, uint32_t d) {
@@ -3251,6 +3496,7 @@ static void gfx_dp_set_grayscale_color(uint8_t r, uint8_t g, uint8_t b, uint8_t 
 }
 
 static void gfx_dp_set_env_color(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+    const bool alpha_changed = g_es1_env_rgba[3] != a;
     if (buf_vbo_len > 0 && s_batch_uses_env_color &&
         (g_es1_env_rgba[0] != r || g_es1_env_rgba[1] != g ||
          g_es1_env_rgba[2] != b || g_es1_env_rgba[3] != a)) {
@@ -3264,9 +3510,14 @@ static void gfx_dp_set_env_color(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
     g_es1_env_rgba[1] = g;
     g_es1_env_rgba[2] = b;
     g_es1_env_rgba[3] = a;
+    if (alpha_changed) {
+        gfx_mark_tri_pipeline_dirty();
+    }
 }
 
 static void gfx_dp_set_prim_color(uint8_t m, uint8_t l, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+    const bool alpha_changed = g_es1_prim_rgba[3] != a;
+    const bool lod_changed = rdp.prim_lod_fraction != l || rdp.tex_min_lod != m;
     if (buf_vbo_len > 0 && s_batch_uses_prim_color &&
         (g_es1_prim_rgba[0] != r || g_es1_prim_rgba[1] != g ||
          g_es1_prim_rgba[2] != b || g_es1_prim_rgba[3] != a)) {
@@ -3286,7 +3537,9 @@ static void gfx_dp_set_prim_color(uint8_t m, uint8_t l, uint8_t r, uint8_t g, ui
     rdp.fill_color.b = b;
     rdp.fill_color.a = a;
     rdp.tex_min_lod = m;
-
+    if (alpha_changed || lod_changed) {
+        gfx_mark_tri_pipeline_dirty();
+    }
 }
 
 static void gfx_dp_set_fog_color(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
@@ -3319,6 +3572,7 @@ static void gfx_draw_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lr
 
     if (cycle_type == G_CYC_COPY) {
         rdp.other_mode_h = (rdp.other_mode_h & ~(3U << G_MDSFT_TEXTFILT)) | G_TF_POINT;
+        gfx_mark_tri_pipeline_dirty();
     }
 
     ulx += rdp.subpixel_ofs_x;
@@ -3373,6 +3627,7 @@ static void gfx_draw_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lr
 
     if (cycle_type == G_CYC_COPY) {
         rdp.other_mode_h = saved_other_mode_h;
+        gfx_mark_tri_pipeline_dirty();
     }
 }
 
@@ -3424,10 +3679,12 @@ static void gfx_dp_texture_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int3
 
     uint8_t saved_tile = rdp.first_tile_index;
     rdp.first_tile_index = tile;
+    gfx_mark_tri_pipeline_dirty();
 
     gfx_draw_rectangle(ulx, uly, lrx, lry);
     rdp.first_tile_index = saved_tile;
     rdp.combine_mode = saved_combine_mode;
+    gfx_mark_tri_pipeline_dirty();
 }
 
 static void gfx_dp_image_rectangle(int32_t tile, int32_t w, int32_t h,
@@ -3459,14 +3716,17 @@ static void gfx_dp_image_rectangle(int32_t tile, int32_t w, int32_t h,
     auto& loadtex = rdp.loaded_texture[rdp.texture_tile[tile].tmem];
     loadtex.full_image_line_size_bytes = loadtex.line_size_bytes = rdp.texture_tile[tile].line_size_bytes;
     loadtex.size_bytes = loadtex.orig_size_bytes = loadtex.full_size_bytes = loadtex.line_size_bytes * h;
+    gfx_mark_tri_pipeline_dirty();
 
     uint8_t saved_tile = rdp.first_tile_index;
     rdp.first_tile_index = tile;
+    gfx_mark_tri_pipeline_dirty();
 
     gfx_draw_rectangle(ulx, uly, lrx, lry);
     rdp.first_tile_index = saved_tile;
 
     rdp.combine_mode = saved_combine_mode;
+    gfx_mark_tri_pipeline_dirty();
 }
 
 static void gfx_dp_fill_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lry) {
@@ -3503,6 +3763,7 @@ static void gfx_dp_fill_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t
 
     gfx_draw_rectangle(ulx, uly, lrx, lry);
     rdp.combine_mode = saved_combine_mode;
+    gfx_mark_tri_pipeline_dirty();
 }
 
 static void gfx_dp_set_z_image(void* z_buf_address) {
@@ -3516,12 +3777,15 @@ static void gfx_dp_set_color_image(uint32_t format, uint32_t size, uint32_t widt
 static void gfx_sp_set_other_mode(uint32_t shift, uint32_t num_bits, uint64_t mode) {
     uint64_t mask = (((uint64_t)1 << num_bits) - 1) << shift;
     uint64_t om = rdp.other_mode_l | ((uint64_t)rdp.other_mode_h << 32);
-    om = (om & ~mask) | mode;
-    rdp.other_mode_l = (uint32_t)om;
-    rdp.other_mode_h = (uint32_t)(om >> 32);
-    rdp.palette_fmt = rdp.other_mode_h & (3U << G_MDSFT_TEXTLUT);
-    rdp.tex_lod = (rdp.other_mode_h & G_TL_LOD) != 0;
-    rdp.tex_detail = (rdp.other_mode_h & (2U << G_MDSFT_TEXTDETAIL)) == G_TD_DETAIL;
+    const uint64_t new_om = (om & ~mask) | mode;
+    if (new_om != om) {
+        rdp.other_mode_l = (uint32_t)new_om;
+        rdp.other_mode_h = (uint32_t)(new_om >> 32);
+        rdp.palette_fmt = rdp.other_mode_h & (3U << G_MDSFT_TEXTLUT);
+        rdp.tex_lod = (rdp.other_mode_h & G_TL_LOD) != 0;
+        rdp.tex_detail = (rdp.other_mode_h & (2U << G_MDSFT_TEXTDETAIL)) == G_TD_DETAIL;
+        gfx_mark_tri_pipeline_dirty();
+    }
 }
 
 static void gfx_sp_set_vertex_colors(uint32_t count, const struct NormalColor *vcn) {
@@ -3535,8 +3799,14 @@ static void gfx_sp_set_vertex_colors(uint32_t count, const struct NormalColor *v
 }
 
 static void gfx_dp_set_other_mode(uint32_t h, uint32_t l) {
-    rdp.other_mode_h = h;
-    rdp.other_mode_l = l;
+    if (rdp.other_mode_h != h || rdp.other_mode_l != l) {
+        rdp.other_mode_h = h;
+        rdp.other_mode_l = l;
+        rdp.palette_fmt = rdp.other_mode_h & (3U << G_MDSFT_TEXTLUT);
+        rdp.tex_lod = (rdp.other_mode_h & G_TL_LOD) != 0;
+        rdp.tex_detail = (rdp.other_mode_h & (2U << G_MDSFT_TEXTDETAIL)) == G_TD_DETAIL;
+        gfx_mark_tri_pipeline_dirty();
+    }
 }
 
 static inline void *seg_addr(uintptr_t w1) {
@@ -3775,13 +4045,16 @@ op_settimg_fb_ext:
         }
 
         rendering_state.textures[0] = nullptr;
+        rendering_state.texture_tiles[0] = 0xff;
     }
     rdp.textures_changed[0] = false;
     rdp.textures_changed[1] = false;
+    gfx_mark_tri_pipeline_dirty();
     NEXT();
 
 op_setgrayscale_ext:
     rdp.grayscale = cmd->words.w1;
+    gfx_mark_tri_pipeline_dirty();
     NEXT();
 
 op_loadblock:
@@ -4000,9 +4273,14 @@ static void gfx_sp_reset() {
     rsp.modelview_matrix_stack_size = 1;
     s_rect_batch_active = false;
     g_es1_force_2d = 0;
+    s_prepared_tri_pipeline_state = {};
+    s_prepared_tri_pipeline_state.pot_w = 1;
+    s_prepared_tri_pipeline_state.pot_h = 1;
+    s_tri_pipeline_dirty = true;
 #if defined(__PSP__)
     s_psp_model_mtx_fix = 0;
     s_psp_model_mtx_fix_stack[0] = 0;
+    s_rsp_mp_matrix_dirty = true;
     s_transform_snapshot_count = 1;
     s_current_transform_snapshot = 0;
     s_transform_snapshot_dirty = true;
@@ -4021,8 +4299,13 @@ extern "C" void gfx_get_dimensions(uint32_t* width, uint32_t* height, int32_t* p
 extern "C" void gfx_init(const GfxInitSettings *settings) {
     gfx_wapi = settings->wapi;
     gfx_rapi = settings->rapi;
+    rendering_state.color_combiner = nullptr;
+    rendering_state.color_combiner_valid = false;
+    memset(rendering_state.texture_tiles, 0xff, sizeof(rendering_state.texture_tiles));
+    gfx_mark_tri_pipeline_dirty();
     gfx_wapi->init(&settings->window_settings);
     gfx_rapi->init();
+    gfx_cached_clip_parameters = gfx_rapi->get_clip_parameters();
     gfx_rapi->update_framebuffer_parameters(0, settings->window_settings.width, settings->window_settings.height, 1, false, true, true, true);
     gfx_current_dimensions.internal_mul = 1;
     gfx_current_game_window_viewport.width = gfx_current_dimensions.width = settings->window_settings.width;
@@ -4168,6 +4451,7 @@ extern "C" void gfx_run(Gfx* commands) {
     rdp.viewport_or_scissor_changed = true;
     rendering_state.viewport = {};
     rendering_state.scissor = {};
+    gfx_mark_tri_pipeline_dirty();
     gfx_run_dl(commands);
     gfx_end_rect_batch();
     gfx_flush_with_reason(GFX_FLUSH_FRAME_END);
@@ -4219,6 +4503,9 @@ extern "C" void gfx_set_texture_filter(enum FilteringMode mode) {
     gfx_rapi->clear_shaders();
     color_combiner_pool.clear();
     prev_combiner = color_combiner_pool.end();
+    rendering_state.color_combiner = nullptr;
+    rendering_state.color_combiner_valid = false;
+    gfx_mark_tri_pipeline_dirty();
     gfx_rapi->set_texture_filter(mode);
 }
 

@@ -19,6 +19,7 @@
 
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 #include <PR/ultratypes.h>
 #include <PR/ultrasched.h>
 #include <PR/os_message.h>
@@ -37,6 +38,10 @@
 #include "system.h"
 #include "utils.h"
 
+#ifdef PD_PSP_GPROF
+#include <pspprof.h>
+#endif
+
 #include <malloc.h>
 #include <stdio.h>
 
@@ -52,8 +57,54 @@ PSP_HEAP_SIZE_KB(-1024); // Example: Request memory leaving 1MB for kernel/drive
 PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU); // Enable VFPU for the main thread if needed
 PSP_MAIN_THREAD_STACK_SIZE_KB(256); // Increase stack size if needed (default is 64KB)
 
+#ifdef PD_PSP_GPROF
+static s32 g_GprofRunning = 0;
+static s32 g_GprofDumped = 0;
+static char g_GprofOutputPath[FS_MAXPATH + 1];
+
+__attribute__((__no_instrument_function__, __no_profile_instrument_function__))
+static void profilerInitOutputPath(void)
+{
+    const char *path = fsFullPath("$S/gmon.out");
+    strncpy(g_GprofOutputPath, path, sizeof(g_GprofOutputPath) - 1);
+    g_GprofOutputPath[sizeof(g_GprofOutputPath) - 1] = '\0';
+}
+
+__attribute__((__no_instrument_function__, __no_profile_instrument_function__))
+static void profilerStart(void)
+{
+    profilerInitOutputPath();
+    gprof_stop(NULL, 0);
+    gprof_start();
+    g_GprofRunning = 1;
+    g_GprofDumped = 0;
+}
+
+__attribute__((__no_instrument_function__, __no_profile_instrument_function__))
+static void profilerStop(s32 shouldDump)
+{
+    if (!g_GprofRunning || g_GprofDumped) {
+        return;
+    }
+
+    gprof_stop(shouldDump ? g_GprofOutputPath : NULL, shouldDump != 0);
+    g_GprofRunning = 0;
+    g_GprofDumped = 1;
+}
+#else
+static void profilerStart(void)
+{
+}
+
+static void profilerStop(s32 shouldDump)
+{
+    (void)shouldDump;
+}
+#endif
+
 
 int exit_callback(int arg1, int arg2, void *common) {
+    profilerStop(1);
     inputSaveBinds();
     configSave(CONFIG_PATH);
     sceKernelExitGame();
@@ -142,6 +193,7 @@ static void gameInit(void)
 
 static void cleanup(void)
 {
+	profilerStop(1);
 	sysLogPrintf(LOG_NOTE, "shutdown");
 	inputSaveBinds();
 	configSave(CONFIG_PATH);
@@ -244,7 +296,9 @@ int main(int argc, const char **argv)
 		sysLogPrintf(LOG_NOTE, "player profile set to %d", g_FileAutoSelect);
 	}
 
+	profilerStart();
 	mainProc();
+	profilerStop(1);
 
 	return 0;
 }

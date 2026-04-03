@@ -963,9 +963,100 @@ struct ShaderProgram {
 static bool current_textures_linear_filter[2] = {false, false};
 static bool current_depth_mask = true;
 static bool current_poly_offset = false;
+static bool s_cull_face_enabled = false;
+static GLenum s_cull_face_mode = static_cast<GLenum>(-1);
+static GLenum s_front_face_mode = static_cast<GLenum>(-1);
+static bool s_vertex_array_enabled = false;
+static bool s_texcoord_array_enabled = false;
+static bool s_color_array_enabled = false;
+static const void* s_vertex_pointer = nullptr;
+static GLsizei s_vertex_pointer_stride = -1;
+static const void* s_texcoord_pointer = nullptr;
+static GLsizei s_texcoord_pointer_stride = -1;
+static const void* s_color_pointer = nullptr;
+static GLsizei s_color_pointer_stride = -1;
 
 enum TexEnvModeES1 { TEXENV_UNKNOWN=-1, TEXENV_MODULATE=0, TEXENV_REPLACE=1, TEXENV_FONT_COMBINE=2, TEXENV_MODULATE_CONST=3 };
 static int s_texenv_mode = TEXENV_UNKNOWN;
+
+static inline void gl_set_client_state(GLenum array, bool enable, bool& shadow) {
+    if (shadow == enable) {
+        return;
+    }
+    if (enable) {
+        glEnableClientState(array);
+    } else {
+        glDisableClientState(array);
+    }
+    shadow = enable;
+}
+
+static inline void gl_set_vertex_array_enabled(bool enable) {
+    gl_set_client_state(GL_VERTEX_ARRAY, enable, s_vertex_array_enabled);
+}
+
+static inline void gl_set_texcoord_array_enabled(bool enable) {
+    gl_set_client_state(GL_TEXTURE_COORD_ARRAY, enable, s_texcoord_array_enabled);
+}
+
+static inline void gl_set_color_array_enabled(bool enable) {
+    gl_set_client_state(GL_COLOR_ARRAY, enable, s_color_array_enabled);
+}
+
+static inline void gl_set_cull_face_enabled(bool enable) {
+    if (s_cull_face_enabled == enable) {
+        return;
+    }
+    if (enable) {
+        glEnable(GL_CULL_FACE);
+    } else {
+        glDisable(GL_CULL_FACE);
+    }
+    s_cull_face_enabled = enable;
+}
+
+static inline void gl_set_cull_face_mode(GLenum mode) {
+    if (s_cull_face_mode == mode) {
+        return;
+    }
+    glCullFace(mode);
+    s_cull_face_mode = mode;
+}
+
+static inline void gl_set_front_face_mode(GLenum mode) {
+    if (s_front_face_mode == mode) {
+        return;
+    }
+    glFrontFace(mode);
+    s_front_face_mode = mode;
+}
+
+static inline void gl_set_vertex_pointer(const void* ptr, GLsizei stride) {
+    if (s_vertex_pointer == ptr && s_vertex_pointer_stride == stride) {
+        return;
+    }
+    glVertexPointer(3, GL_FLOAT, stride, ptr);
+    s_vertex_pointer = ptr;
+    s_vertex_pointer_stride = stride;
+}
+
+static inline void gl_set_texcoord_pointer(const void* ptr, GLsizei stride) {
+    if (s_texcoord_pointer == ptr && s_texcoord_pointer_stride == stride) {
+        return;
+    }
+    glTexCoordPointer(2, GL_FLOAT, stride, ptr);
+    s_texcoord_pointer = ptr;
+    s_texcoord_pointer_stride = stride;
+}
+
+static inline void gl_set_color_pointer(const void* ptr, GLsizei stride) {
+    if (s_color_pointer == ptr && s_color_pointer_stride == stride) {
+        return;
+    }
+    glColorPointer(4, GL_FLOAT, stride, ptr);
+    s_color_pointer = ptr;
+    s_color_pointer_stride = stride;
+}
 
 static inline void set_texenv_modulate() {
     if (s_texenv_mode == TEXENV_MODULATE) return;
@@ -1466,7 +1557,7 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
         pdLoadIdentity();
         if (prevDepthTestLocal) glDisable(GL_DEPTH_TEST);
         glDepthMask(GL_FALSE);
-        glDisable(GL_CULL_FACE);
+        gl_set_cull_face_enabled(false);
     } else {
         if (g_es1_matrix_dirty) {
             pdMatrixMode(GL_PROJECTION);
@@ -1485,19 +1576,23 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
         }
     }
 
-    glFrontFace(g_es1_front_face_cw ? GL_CW : GL_CCW);
-    if (!forced2D && g_es1_cull_mode == 0) { glDisable(GL_CULL_FACE); }
-    else if (!forced2D) { glEnable(GL_CULL_FACE); glCullFace(g_es1_cull_mode == 1 ? GL_BACK : GL_FRONT); }
+    gl_set_front_face_mode(g_es1_front_face_cw ? GL_CW : GL_CCW);
+    if (!forced2D && g_es1_cull_mode == 0) {
+        gl_set_cull_face_enabled(false);
+    } else if (!forced2D) {
+        gl_set_cull_face_enabled(true);
+        gl_set_cull_face_mode(g_es1_cull_mode == 1 ? GL_BACK : GL_FRONT);
+    }
 
     pdMatrixMode(GL_MODELVIEW);
 
-    glEnableClientState(GL_VERTEX_ARRAY);
-    glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+    gl_set_vertex_array_enabled(true);
+    gl_set_texcoord_array_enabled(true);
     bool colorArrayEnabled = true;
-    glEnableClientState(GL_COLOR_ARRAY);
-    glColorPointer(4, GL_FLOAT, stride_bytes, buf_vbo + 5);
-    glVertexPointer(3, GL_FLOAT, stride_bytes, buf_vbo);
-    glTexCoordPointer(2, GL_FLOAT, stride_bytes, buf_vbo + 3);
+    gl_set_color_array_enabled(true);
+    gl_set_color_pointer(buf_vbo + 5, stride_bytes);
+    gl_set_vertex_pointer(buf_vbo, stride_bytes);
+    gl_set_texcoord_pointer(buf_vbo + 3, stride_bytes);
 
     if (g_es1_use_tex0) glEnable(GL_TEXTURE_2D); else glDisable(GL_TEXTURE_2D);
 
@@ -1511,23 +1606,6 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
             glBindTexture(GL_TEXTURE_2D, s_tex_id[0]);
             s_last_bound_tex = s_tex_id[0];
         }
-        bool needs_invert_v = false;
-        float t_max = 1.0f;
-        for (const auto &fb : s_fbs) {
-            if (fb.allocated && fb.tex == s_tex_id[0] && fb.invert_y) {
-                needs_invert_v = false;
-                const float ph = (float)(fb.pot_h ? fb.pot_h : fb.h);
-                t_max = (ph > 0.0f) ? ((float)fb.h / ph) : 1.0f;
-                break;
-            }
-        }
-        if (needs_invert_v) {
-            pdMatrixMode(GL_TEXTURE);
-            pdLoadIdentity();
-            pdTranslatef(0.0f, t_max, 0.0f);
-            pdScalef(1.0f, -1.0f, 1.0f);
-            pdMatrixMode(GL_MODELVIEW);
-        }
     }
 
     if (g_es1_use_tex0 && g_es1_highp_alpha && g_es1_alpha_test_enable && !g_es1_tex0_in_rgb) {
@@ -1540,7 +1618,7 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
                     if (g_es1_base_color_mode == 1) {
                         // shade only
                     } else {
-                        glDisableClientState(GL_COLOR_ARRAY); colorArrayEnabled = false;
+                        gl_set_color_array_enabled(false); colorArrayEnabled = false;
                         uint8_t r8 = (g_es1_base_color_mode == 2) ? g_es1_prim_rgba[0] : g_es1_env_rgba[0];
                         uint8_t g8 = (g_es1_base_color_mode == 2) ? g_es1_prim_rgba[1] : g_es1_env_rgba[1];
                         uint8_t b8 = (g_es1_base_color_mode == 2) ? g_es1_prim_rgba[2] : g_es1_env_rgba[2];
@@ -1563,7 +1641,7 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
                     } else
 #endif
                     {
-                    glDisableClientState(GL_COLOR_ARRAY); colorArrayEnabled = false;
+                    gl_set_color_array_enabled(false); colorArrayEnabled = false;
                     uint8_t r8 = (g_es1_base_color_mode == 2) ? g_es1_prim_rgba[0] : g_es1_env_rgba[0];
                     uint8_t g8 = (g_es1_base_color_mode == 2) ? g_es1_prim_rgba[1] : g_es1_env_rgba[1];
                     uint8_t b8 = (g_es1_base_color_mode == 2) ? g_es1_prim_rgba[2] : g_es1_env_rgba[2];
@@ -1579,7 +1657,7 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
                     } else
 #endif
                     {
-                    glDisableClientState(GL_COLOR_ARRAY); colorArrayEnabled = false;
+                    gl_set_color_array_enabled(false); colorArrayEnabled = false;
                     uint8_t r8 = (g_es1_base_color_mode == 2) ? g_es1_prim_rgba[0] : g_es1_env_rgba[0];
                     uint8_t g8 = (g_es1_base_color_mode == 2) ? g_es1_prim_rgba[1] : g_es1_env_rgba[1];
                     uint8_t b8 = (g_es1_base_color_mode == 2) ? g_es1_prim_rgba[2] : g_es1_env_rgba[2];
@@ -1642,7 +1720,7 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
         (s_tex_id[0] != 0) && (s_tex_id[1] != 0);
 
     if (do_text_outline) {
-        if (colorArrayEnabled) { glDisableClientState(GL_COLOR_ARRAY); colorArrayEnabled = false; }
+        if (colorArrayEnabled) { gl_set_color_array_enabled(false); colorArrayEnabled = false; }
         set_texenv_modulate();
         const float af = (float)g_es1_env_rgba[3] / 255.0f;
         if (s_last_bound_tex != s_tex_id[0]) { glBindTexture(GL_TEXTURE_2D, s_tex_id[0]); s_last_bound_tex = s_tex_id[0]; }
@@ -1711,12 +1789,8 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
     pdMatrixMode(GL_TEXTURE);
     pdLoadIdentity();
     pdMatrixMode(GL_MODELVIEW);
-    glDisableClientState(GL_COLOR_ARRAY);
-    glDisableClientState(GL_TEXTURE_COORD_ARRAY);
-    glDisableClientState(GL_VERTEX_ARRAY);
     glDisable(GL_TEXTURE_2D);
     glDisable(GL_ALPHA_TEST);
-    if (!colorArrayEnabled) glEnableClientState(GL_COLOR_ARRAY);
     if (forced2D) {
         pdMatrixMode(GL_MODELVIEW);
         pdPopMatrix();
@@ -1764,9 +1838,9 @@ static void gfx_opengl_init(void) {
     glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
-    glEnable(GL_CULL_FACE);
-    glFrontFace(GL_CCW);
-    glCullFace(GL_BACK);
+    gl_set_cull_face_enabled(true);
+    gl_set_front_face_mode(GL_CCW);
+    gl_set_cull_face_mode(GL_BACK);
     glShadeModel(GL_SMOOTH);
     glEnable(GL_DITHER);
 #if defined(GL_PERSPECTIVE_CORRECTION_HINT) && !defined(__PSP__)
@@ -1978,7 +2052,7 @@ static void fb_copy_window_into_texture(GLESFramebuffer &dst, int src_x0, int sr
 static void fb_draw_textured_quad(GLuint tex, float x, float y, float w, float h, bool invert_v, bool opaque_replace) {
     begin_2d_batch();
     glEnable(GL_TEXTURE_2D);
-    glDisable(GL_CULL_FACE);
+    gl_set_cull_face_enabled(false);
     glDisable(GL_ALPHA_TEST);
     glDisable(GL_DEPTH_TEST);
     glDepthMask(GL_FALSE);
@@ -2004,13 +2078,11 @@ static void fb_draw_textured_quad(GLuint tex, float x, float y, float w, float h
     const GLfloat t0=invert_v?t_max:0.0f, t1=invert_v?0.0f:t_max;
     const GLfloat uvs[4*2] = { 0,t0, s_max,t0, 0,t1, s_max,t1 };
 
-    glEnableClientState(GL_VERTEX_ARRAY);
-    glEnableClientState(GL_TEXTURE_COORD_ARRAY);
-    glVertexPointer(3, GL_FLOAT, 0, verts);
-    glTexCoordPointer(2, GL_FLOAT, 0, uvs);
+    gl_set_vertex_array_enabled(true);
+    gl_set_texcoord_array_enabled(true);
+    gl_set_vertex_pointer(verts, 0);
+    gl_set_texcoord_pointer(uvs, 0);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    glDisableClientState(GL_TEXTURE_COORD_ARRAY);
-    glDisableClientState(GL_VERTEX_ARRAY);
     glDisable(GL_TEXTURE_2D);
     end_2d_batch();
 }

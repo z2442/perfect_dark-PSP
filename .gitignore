@@ -27,3 +27,5 @@ tools/mkrom/mkrom
 CppProperties.json
 .idea
 .DS_Store
+.codex
+profile.txt
