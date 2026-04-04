@@ -40,6 +40,7 @@ endif()
 # --- Options ---
 set(ROMID "ntsc-final" CACHE STRING "Which ROM to build an executable for: ntsc-final, pal-final or jpn-final")
 option(PSP_ENABLE_GPROF "Enable PSP gprof instrumentation and dump profiling data on exit" OFF)
+option(PSP_AUDIO_ME "Use the PSP media engine for audio ABI execution" OFF)
 
 
 # --- Version Info ---
@@ -184,6 +185,11 @@ set(LIBS)
 
 if(PSP)
   # --- PSP Dependencies ---
+
+  if(PSP_AUDIO_ME)
+    add_compile_definitions(PD_PSP_AUDIO_ME=1)
+    list(APPEND LIBS me-core)
+  endif()
 
   # SDL2 (PSP Port) - Requires SDL-PSP installed within PSPSDK or findable via pkg-config
   # Option 1: Use pkg-config (Recommended if SDL-PSP provides .pc file)

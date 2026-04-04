@@ -11,6 +11,11 @@
 #include "data.h"
 #include "types.h"
 
+#ifdef PD_PSP_AUDIO_ME
+#include "mixer_cmd.h"
+#include "mixer_me.h"
+#endif
+
 u32 var80091560;
 u32 var80091564;
 u64 var80091568;
@@ -106,6 +111,9 @@ void amgrCreate(ALSynConfig *config)
 
 	for (i = 0; i < ARRAYCOUNT(g_AudioManager.ACMDList); i++) {
 		g_AudioManager.ACMDList[i] = alHeapAlloc(&g_SndHeap, 1, var800918ec * sizeof(Acmd));
+#ifdef PD_PSP_AUDIO_ME
+		g_AudioManager.ACMDAuxList[i] = alHeapAlloc(&g_SndHeap, 1, var800918ec * sizeof(uintptr_t));
+#endif
 	}
 
 	for (i = 0; i < ARRAYCOUNT(g_AudioManager.audioInfo); i++) {
@@ -145,6 +153,9 @@ void amgrCreate(ALSynConfig *config)
 #endif
 
 	n_alInit(&g_AudioManager.g, config);
+#ifdef PD_PSP_AUDIO_ME
+	mixerMeInit();
+#endif
 	func00030bfc(0, 60);
 	osCreateThread(&g_AudioManager.thread, THREAD_AUDIO, &amgrMain, 0, g_AudioSp, THREADPRI_AUDIO);
 }
@@ -172,6 +183,10 @@ void amgrStopThread(void)
 	if (g_AudioIsThreadRunning) {
 		osStopThread(&g_AudioManager.thread);
 	}
+
+#ifdef PD_PSP_AUDIO_ME
+	mixerMeShutdown();
+#endif
 }
 
 extern u32 g_AdmaCurFrame;
@@ -334,9 +349,15 @@ void amgrFrame(void)
 
 	const s32 somevalue = osAiGetLength() / 4;
 	Acmd *datastart = g_AudioManager.ACMDList[var8005cf90];
+#ifdef PD_PSP_AUDIO_ME
+	uintptr_t *auxstart = g_AudioManager.ACMDAuxList[var8005cf90];
+#endif
 	s16 *outbuffer = (s16 *) osVirtualToPhysical(info->data);
 
 	if (previnfo) {
+#ifdef PD_PSP_AUDIO_ME
+		mixerMeWait();
+#endif
 		osAiSetNextBuffer(previnfo->data, previnfo->frameSamples * 4);
 	}
 
@@ -353,11 +374,27 @@ void amgrFrame(void)
 		}
 	}
 
+	#ifdef PD_PSP_AUDIO_ME
+	mixerCmdListBegin(datastart, auxstart);
+	#endif
 	Acmd *cmd = n_alAudioFrame(datastart, &var800918e8, outbuffer, info->frameSamples);
+	#ifdef PD_PSP_AUDIO_ME
+	mixerCmdListEnd();
+	#endif
 
-	var8005cf90 ^= 1;
+	const s32 cmdcount = cmd - datastart;
 
 	admaReceiveAll();
+
+#ifdef PD_PSP_AUDIO_ME
+	if (mixerMeIsReady()) {
+		mixerMeSubmit(datastart, auxstart, cmdcount);
+	} else {
+		mixerExecCommandList(datastart, auxstart, cmdcount);
+	}
+#endif
+
+	var8005cf90 ^= 1;
 
 	previnfo = info;
 

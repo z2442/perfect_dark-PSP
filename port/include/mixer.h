@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <ultra64.h>
 
+#ifndef PD_PSP_AUDIO_ME
 #undef aSegment
 #undef aClearBuffer
 #undef aSetBuffer
@@ -19,6 +20,7 @@
 #undef aSetLoop
 #undef aLoadADPCM
 #undef aADPCMdec
+#endif
 
 void aClearBufferImpl(uint16_t addr, int nbytes);
 void aLoadADPCMImpl(int num_entries_times_16, const int16_t *book_source_addr);
@@ -36,6 +38,7 @@ void aPoleFilterImpl(uint8_t flags, int16_t gain, uint32_t t, uint32_t addr);
 void aDisableImpl(uint16_t outp, uint32_t b, uint32_t c);
 void aPlayMP3Impl(const void *mp3file, u32 mp3size, void *out, int reset);
 
+#ifndef PD_PSP_AUDIO_ME
 #define aDisable(pkt, o, b, c) aDisableImpl(o, b, c)
 #define aClearBuffer(pkt, d, c) aClearBufferImpl(d, c)
 #define aLoadBuffer(pkt, c, d, s) aLoadBufferImpl((void *)(s), d, c)
@@ -51,5 +54,6 @@ void aPlayMP3Impl(const void *mp3file, u32 mp3size, void *out, int reset);
 #define aSetVolume(pkt, f, v, t, r) aSetVolumeImpl(f, v, t, r)
 #define aPoleFilter(pkt, f, g, t, s) aPoleFilterImpl(f, g, t, s)
 #define aPlayMP3(pkt, a, b, c, r) aPlayMP3Impl((void *)(a), b, (void *)(c), r)
+#endif
 
 #endif

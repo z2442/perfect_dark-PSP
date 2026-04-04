@@ -5599,6 +5599,9 @@ typedef struct AudioInfo_s {
 
 typedef struct {
 	Acmd          *ACMDList[2];
+#ifdef PD_PSP_AUDIO_ME
+	uintptr_t     *ACMDAuxList[2];
+#endif
 	AudioInfo     *audioInfo[3];
 	OSThread      thread;
 	OSMesgQueue   audioFrameMsgQ;

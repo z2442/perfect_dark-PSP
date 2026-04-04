@@ -28,6 +28,13 @@
 	_a->words.w1 = a;                    \
 }
 
+#elif defined(PD_PSP_AUDIO_ME)
+
+#include "mixer.h"
+
+#define	acmd07(pkt, a, b, c, r) aPlayMP3Impl((void *)(a), b, (void *)(c), r)
+#define	acmd08(pkt, a) do { } while(0)
+
 #else
 
 #include "mixer.h"

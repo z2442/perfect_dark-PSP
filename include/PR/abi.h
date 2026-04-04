@@ -265,7 +265,7 @@ typedef short RESAMPLE_STATE[16];
  */
 typedef short ENVMIX_STATE[40];
 
-#ifdef PLATFORM_N64
+#if defined(PLATFORM_N64) || defined(PD_PSP_AUDIO_ME)
 
 /*
  * Macros to assemble the audio command list
@@ -413,6 +413,5 @@ typedef short ENVMIX_STATE[40];
 #endif /* _LANGUAGE_C */
 
 #endif /* !_ABI_H_ */
-
 
 

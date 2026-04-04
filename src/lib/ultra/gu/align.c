@@ -1,5 +1,5 @@
 #include "guint.h"
-
+#include <math.h>
 void guAlignF(float mf[4][4], float a, float x, float y, float z)
 {
 	static float dtor = 3.1415926f / 180.0f;
@@ -10,7 +10,7 @@ void guAlignF(float mf[4][4], float a, float x, float y, float z)
 	a *= dtor;
 	s = sinf(a);
 	c = cosf(a);
-	h = pspFpuSqrt(x * x + z * z);
+	h = sqrt(x * x + z * z);
 
 	guMtxIdentF(mf);
 
