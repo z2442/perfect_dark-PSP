@@ -19,7 +19,7 @@ jobs:
       - name: Compile
         run: |
           mkdir data
-         ./psp.sh PSP_AUDIO_ME=1 
+         ./psp.sh
       - name: Compress
         run: |
           cd build-psp
