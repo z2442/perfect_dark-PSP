@@ -40,11 +40,11 @@ void meLibOnProcess(void)
 			continue;
 		}
 
-		meLibDcacheWritebackInvalidateAll();
+		meCoreDcacheWritebackInvalidateAll();
 		mixerExecCommandList((const Acmd *)(uintptr_t)MIXER_ME_SHARED->cmdList,
 				(const uintptr_t *)(uintptr_t)MIXER_ME_SHARED->auxData,
 				MIXER_ME_SHARED->cmdCount);
-		meLibDcacheWritebackInvalidateAll();
+		meCoreDcacheWritebackInvalidateAll();
 
 		meLibSync();
 		MIXER_ME_SHARED->doneSeq = MIXER_ME_SHARED->submitSeq;
