@@ -17,6 +17,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Compile
+        env:
+        PSP_AUDIO_ME: 1
         run: |
           mkdir data
          ./psp.sh
