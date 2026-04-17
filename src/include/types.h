@@ -5597,10 +5597,16 @@ typedef struct AudioInfo_s {
 	OSScTask      task;           /* scheduler structure */
 } AudioInfo;
 
-typedef struct {
-	Acmd          *ACMDList[2];
 #ifdef PD_PSP_AUDIO_ME
-	uintptr_t     *ACMDAuxList[2];
+#define AMGR_CMDLIST_COUNT 3
+#else
+#define AMGR_CMDLIST_COUNT 2
+#endif
+
+typedef struct {
+	Acmd          *ACMDList[AMGR_CMDLIST_COUNT];
+#ifdef PD_PSP_AUDIO_ME
+	uintptr_t     *ACMDAuxList[AMGR_CMDLIST_COUNT];
 #endif
 	AudioInfo     *audioInfo[3];
 	OSThread      thread;

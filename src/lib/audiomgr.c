@@ -48,6 +48,78 @@ void *g_AudioSp;
 u32 var8005cf90 = 0x00000000;
 u8 var8005cf94 = 1;
 
+#ifdef PD_PSP_AUDIO_ME
+#define AMGR_PSP_PIPE_DEPTH ARRAYCOUNT(g_AudioManager.audioInfo)
+
+static AudioInfo *g_AmgrPendingBuffers[AMGR_PSP_PIPE_DEPTH];
+static u8 g_AmgrPendingHead = 0;
+static u8 g_AmgrPendingTail = 0;
+static u8 g_AmgrPendingCount = 0;
+static u8 g_AmgrCompletedCount = 0;
+static u8 g_AmgrNextInfoIndex = 0;
+static u8 g_AmgrNextCmdIndex = 0;
+
+static void amgrResetPspAudioPipe(void)
+{
+	g_AmgrPendingHead = 0;
+	g_AmgrPendingTail = 0;
+	g_AmgrPendingCount = 0;
+	g_AmgrCompletedCount = 0;
+	g_AmgrNextInfoIndex = 0;
+	g_AmgrNextCmdIndex = 0;
+}
+
+static void amgrPollCompletedMeBuffers(void)
+{
+	u32 completed = mixerMeConsumeAvailable();
+
+	while (completed != 0 && g_AmgrCompletedCount < g_AmgrPendingCount) {
+		g_AmgrCompletedCount++;
+		completed--;
+	}
+}
+
+static void amgrDrainCompletedMeBuffers(bool waitForOne)
+{
+	amgrPollCompletedMeBuffers();
+
+	while (g_AmgrPendingCount != 0) {
+		if (g_AmgrCompletedCount == 0) {
+			if (!waitForOne) {
+				break;
+			}
+
+			u32 completed = mixerMeWait();
+
+			while (completed != 0 && g_AmgrCompletedCount < g_AmgrPendingCount) {
+				g_AmgrCompletedCount++;
+				completed--;
+			}
+
+			waitForOne = false;
+			continue;
+		}
+
+		AudioInfo *ready = g_AmgrPendingBuffers[g_AmgrPendingHead];
+
+		osAiSetNextBuffer(ready->data, ready->frameSamples * 4);
+
+		g_AmgrPendingHead = (g_AmgrPendingHead + 1) % AMGR_PSP_PIPE_DEPTH;
+		g_AmgrPendingCount--;
+		g_AmgrCompletedCount--;
+
+		amgrPollCompletedMeBuffers();
+	}
+}
+
+static void amgrPushPendingMeBuffer(AudioInfo *info)
+{
+	g_AmgrPendingBuffers[g_AmgrPendingTail] = info;
+	g_AmgrPendingTail = (g_AmgrPendingTail + 1) % AMGR_PSP_PIPE_DEPTH;
+	g_AmgrPendingCount++;
+}
+#endif
+
 void amgrHandleDoneMsg(AudioInfo *info);
 void amgrHandleFrameMsg(AudioInfo *info, AudioInfo *previnfo);
 void amgrMain(void *arg);
@@ -154,6 +226,7 @@ void amgrCreate(ALSynConfig *config)
 
 	n_alInit(&g_AudioManager.g, config);
 #ifdef PD_PSP_AUDIO_ME
+	amgrResetPspAudioPipe();
 	mixerMeInit();
 #endif
 	func00030bfc(0, 60);
@@ -338,28 +411,52 @@ void amgrHandleDoneMsg(AudioInfo *info)
 #ifndef PLATFORM_N64
 void amgrFrame(void)
 {
-	static AudioInfo *previnfo = NULL;
 	static s32 count = 0;
 
 	var80091588 = osGetTime();
 
-	AudioInfo *info = g_AudioManager.audioInfo[g_AdmaCurFrame % 3];
-
 	admaBeginFrame();
 
-	const s32 somevalue = osAiGetLength() / 4;
-	Acmd *datastart = g_AudioManager.ACMDList[var8005cf90];
 #ifdef PD_PSP_AUDIO_ME
-	uintptr_t *auxstart = g_AudioManager.ACMDAuxList[var8005cf90];
+	const s32 bufferedvalue = osAiGetLength() / 4;
+	amgrDrainCompletedMeBuffers(false);
+
+	if (g_AmgrPendingCount != 0 && bufferedvalue < g_AmgrFreqPerTick) {
+		amgrDrainCompletedMeBuffers(true);
+	}
+
+	while (g_AmgrPendingCount >= AMGR_PSP_PIPE_DEPTH) {
+		amgrDrainCompletedMeBuffers(true);
+	}
+
+	AudioInfo *info = g_AudioManager.audioInfo[g_AmgrNextInfoIndex];
+	Acmd *datastart = g_AudioManager.ACMDList[g_AmgrNextCmdIndex];
+	uintptr_t *auxstart = g_AudioManager.ACMDAuxList[g_AmgrNextCmdIndex];
+#else
+	static AudioInfo *previnfo = NULL;
+	AudioInfo *info = g_AudioManager.audioInfo[g_AdmaCurFrame % 3];
+	Acmd *datastart = g_AudioManager.ACMDList[var8005cf90];
+	const s32 bufferedvalue = osAiGetLength() / 4;
+#endif
+#ifdef PD_PSP_AUDIO_ME
+	/*
+	 * The PSP backend reports software-ring occupancy, not the N64 AI FIFO
+	 * depth that this heuristic was tuned for. Treating that value as a
+	 * "queue is too full" signal makes the mixer emit too many short frames,
+	 * which leads to audible underruns. Keep full-size frame generation here
+	 * and use bufferedvalue only for ME handoff decisions above.
+	 */
+	const s32 somevalue = 0;
+#else
+	const s32 somevalue = bufferedvalue;
 #endif
 	s16 *outbuffer = (s16 *) osVirtualToPhysical(info->data);
 
+#ifndef PD_PSP_AUDIO_ME
 	if (previnfo) {
-#ifdef PD_PSP_AUDIO_ME
-		mixerMeWait();
-#endif
 		osAiSetNextBuffer(previnfo->data, previnfo->frameSamples * 4);
 	}
+#endif
 
 	if (somevalue > 1100 && var8005cf94 == 0) {
 		// already a lot queued, render 1 naudio frame (184 samples) this frame
@@ -389,14 +486,16 @@ void amgrFrame(void)
 #ifdef PD_PSP_AUDIO_ME
 	if (mixerMeIsReady()) {
 		mixerMeSubmit(datastart, auxstart, cmdcount);
-	} else {
-		mixerExecCommandList(datastart, auxstart, cmdcount);
+		amgrPushPendingMeBuffer(info);
+
+
 	}
-#endif
-
+	g_AmgrNextInfoIndex = (g_AmgrNextInfoIndex + 1) % ARRAYCOUNT(g_AudioManager.audioInfo);
+	g_AmgrNextCmdIndex = (g_AmgrNextCmdIndex + 1) % ARRAYCOUNT(g_AudioManager.ACMDList);
+#else
 	var8005cf90 ^= 1;
-
 	previnfo = info;
+#endif
 
 	count++;
 

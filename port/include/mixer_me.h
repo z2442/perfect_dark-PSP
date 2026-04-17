@@ -8,7 +8,8 @@
 int mixerMeInit(void);
 int mixerMeIsReady(void);
 void mixerMeSubmit(const Acmd *cmdList, const uintptr_t *auxData, s32 cmdCount);
-void mixerMeWait(void);
+u32 mixerMeConsumeAvailable(void);
+u32 mixerMeWait(void);
 void mixerMeShutdown(void);
 
 #endif

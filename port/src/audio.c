@@ -34,6 +34,18 @@ static SceUID audioThreadId   = -1;
 static volatile int audioThreadRunning = 0;
 /* --------------------------------------------------------------------- */
 
+static inline u32 audioBufferedFrames(void)
+{
+    const u32 writePos = ringWrite;
+    const u32 readPos = ringRead;
+
+    if (writePos >= readPos) {
+        return writePos - readPos;
+    }
+
+    return AUDIO_RING_FRAMES - readPos + writePos;
+}
+
 /* Thread that continuously feeds PSP audio */
 static int audioThread(SceSize args, void *argp)
 {
@@ -96,14 +108,17 @@ s32 audioInit(void)
 // PSP audio does not expose direct buffer size queries
 s32 audioGetBytesBuffered(void)
 {
-    return 0;
+    /*
+     * The game queues 22 kHz stereo S16 frames (4 bytes each), while the PSP
+     * ring stores the 2x upsampled 44 kHz stream. Each queued PSP frame is
+     * therefore equivalent to 2 game-side bytes.
+     */
+    return (s32)(audioBufferedFrames() * sizeof(s16));
 }
 
 s32 audioGetSamplesBuffered(void)
 {
-    u32 frames = (ringWrite >= ringRead)
-                   ? (ringWrite - ringRead)
-                   : (AUDIO_RING_FRAMES - ringRead + ringWrite);
+    u32 frames = audioBufferedFrames();
     return frames * AUDIO_FRAME_SAMPLES;   /* convert frames -> samples (stereo) */
 }
 
