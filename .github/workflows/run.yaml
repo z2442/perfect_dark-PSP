@@ -18,10 +18,10 @@ jobs:
         uses: actions/checkout@v4
       - name: Compile
         env:
-        PSP_AUDIO_ME: 1
+          PSP_AUDIO_ME: 1
         run: |
           mkdir data
-         ./psp.sh
+          ./psp.sh
       - name: Compress
         run: |
           cd build-psp
@@ -47,8 +47,7 @@ jobs:
         with:
           name: perfect_dark-PSP
           path: .
-      - name:
-        uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
           name: perfect_dark-PSP
