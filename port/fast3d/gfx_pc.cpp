@@ -434,6 +434,33 @@ static struct GfxWindowManagerAPI* gfx_wapi;
 static struct GfxRenderingAPI* gfx_rapi;
 static struct GfxClipParameters gfx_cached_clip_parameters = { false, false };
 
+#if defined(__PSP__)
+static bool s_psp_defer_finish_render = true;
+static bool s_psp_render_in_flight = false;
+static uint32_t s_psp_acquire_waits = 0;
+
+static void psp_finish_render_if_in_flight(void) {
+    if (s_psp_render_in_flight) {
+        gfx_rapi->finish_render();
+        s_psp_render_in_flight = false;
+    }
+}
+
+static bool psp_start_frame_async_acquire(void) {
+    for (uint32_t attempts = 0; attempts < 8; ++attempts) {
+        if (gfx_wapi->start_frame()) {
+            return true;
+        }
+
+        ++s_psp_acquire_waits;
+        psp_finish_render_if_in_flight();
+    }
+
+    psp_finish_render_if_in_flight();
+    return gfx_wapi->start_frame();
+}
+#endif
+
 static inline void gfx_mark_tri_pipeline_dirty(void) {
     s_tri_pipeline_dirty = true;
 }
@@ -2272,6 +2299,7 @@ static void gfx_prepare_tri_pipeline_state(void) {
     else if (!want_cull_back && want_cull_front) new_cull = 2;
     else if (!want_cull_back && !want_cull_front) new_cull = 0;
     else new_cull = 1;
+
 #if defined(__PSP__)
     new_cull = 0;
 #else
@@ -2280,13 +2308,15 @@ static void gfx_prepare_tri_pipeline_state(void) {
     const bool invert_culling_ext = (rsp.extra_geometry_mode & G_INVERT_CULLING_EXT) != 0;
     const bool invert_culling = mv_mirrored ^ invert_culling_ext;
     if (invert_culling) {
-        if (new_cull == 1) new_cull = 2; else if (new_cull == 2) new_cull = 1;
+        if (new_cull == 1) new_cull = 2;
+        else if (new_cull == 2) new_cull = 1;
     }
     if (g_es1_front_face_cw != (invert_culling ? 1 : 0)) {
         gfx_flush_with_reason(GFX_FLUSH_FRONT_FACE);
         g_es1_front_face_cw = invert_culling ? 1 : 0;
     }
 #endif
+
     if (new_cull != g_es1_cull_mode) {
         gfx_flush_with_reason(GFX_FLUSH_CULL_MODE);
         g_es1_cull_mode = new_cull;
@@ -2326,7 +2356,6 @@ static void gfx_prepare_tri_pipeline_state(void) {
         rdp.viewport_or_scissor_changed = false;
     }
 
-    uint64_t cc_options = 0;
     bool use_alpha =
         (rdp.other_mode_l & (3 << 20)) == (G_BL_CLR_MEM << 20) &&
         (rdp.other_mode_l & (3 << 16)) == (G_BL_1MA << 16);
@@ -2354,31 +2383,104 @@ static void gfx_prepare_tri_pipeline_state(void) {
     const bool want_alpha_test = texture_edge || alpha_threshold;
     const uint8_t want_highp_alpha = want_alpha_test ? 1 : 0;
 
-    if (use_alpha) cc_options |= (uint64_t)SHADER_OPT_ALPHA;
-    if (use_fog) cc_options |= (uint64_t)SHADER_OPT_FOG;
-    if (texture_edge) cc_options |= (uint64_t)SHADER_OPT_TEXTURE_EDGE;
-    if (use_noise) cc_options |= (uint64_t)SHADER_OPT_NOISE;
-    if (use_2cyc) cc_options |= (uint64_t)SHADER_OPT_2CYC;
-    if (alpha_threshold) cc_options |= (uint64_t)SHADER_OPT_ALPHA_THRESHOLD;
-    if (invisible) cc_options |= (uint64_t)SHADER_OPT_INVISIBLE;
-    if (use_grayscale) cc_options |= (uint64_t)SHADER_OPT_GRAYSCALE;
-    if (use_blur) cc_options |= (uint64_t)SHADER_OPT_BLUR;
+    ColorCombiner* comb = rendering_state.color_combiner;
+
+#if defined(__PSP__)
+    /*
+        PSP fast CC path:
+        Use a compact 32-bit option key for repeated combiner checks.
+        Only rebuild the full uint64_t ColorCombinerKey on cache misses.
+    */
+    uint32_t psp_cc_opts = 0;
+
+    if (use_alpha)        psp_cc_opts |= 1u << 0;
+    if (use_fog)          psp_cc_opts |= 1u << 1;
+    if (texture_edge)     psp_cc_opts |= 1u << 2;
+    if (use_noise)        psp_cc_opts |= 1u << 3;
+    if (use_2cyc)         psp_cc_opts |= 1u << 4;
+    if (alpha_threshold)  psp_cc_opts |= 1u << 5;
+    if (invisible)        psp_cc_opts |= 1u << 6;
+    if (use_grayscale)    psp_cc_opts |= 1u << 7;
+    if (use_blur)         psp_cc_opts |= 1u << 8;
+
+    const uint32_t combine_lo = (uint32_t)rdp.combine_mode;
+    const uint32_t combine_hi = (uint32_t)(rdp.combine_mode >> 32);
+
+    static uint8_t s_psp_last_cc_valid = 0;
+    static uint32_t s_psp_last_combine_lo = 0;
+    static uint32_t s_psp_last_combine_hi = 0;
+    static uint32_t s_psp_last_cc_opts = 0;
+    static ColorCombiner* s_psp_last_comb = nullptr;
+
+    if (s_psp_last_cc_valid &&
+        s_psp_last_combine_lo == combine_lo &&
+        s_psp_last_combine_hi == combine_hi &&
+        s_psp_last_cc_opts == psp_cc_opts &&
+        s_psp_last_comb != nullptr) {
+        comb = s_psp_last_comb;
+    } else {
+        uint64_t cc_options = 0;
+
+        if (use_alpha)        cc_options |= (uint64_t)SHADER_OPT_ALPHA;
+        if (use_fog)          cc_options |= (uint64_t)SHADER_OPT_FOG;
+        if (texture_edge)     cc_options |= (uint64_t)SHADER_OPT_TEXTURE_EDGE;
+        if (use_noise)        cc_options |= (uint64_t)SHADER_OPT_NOISE;
+        if (use_2cyc)         cc_options |= (uint64_t)SHADER_OPT_2CYC;
+        if (alpha_threshold)  cc_options |= (uint64_t)SHADER_OPT_ALPHA_THRESHOLD;
+        if (invisible)        cc_options |= (uint64_t)SHADER_OPT_INVISIBLE;
+        if (use_grayscale)    cc_options |= (uint64_t)SHADER_OPT_GRAYSCALE;
+        if (use_blur)         cc_options |= (uint64_t)SHADER_OPT_BLUR;
+
+        if (!use_alpha) {
+            cc_options &= ~((0xfffULL << 16) | (0xfffULL << 44));
+        }
+
+        ColorCombinerKey key;
+        key.combine_mode = rdp.combine_mode;
+        key.options = cc_options;
+
+        comb = gfx_lookup_or_create_color_combiner(key);
+
+        rendering_state.color_combiner_key = key;
+
+        s_psp_last_cc_valid = 1;
+        s_psp_last_combine_lo = combine_lo;
+        s_psp_last_combine_hi = combine_hi;
+        s_psp_last_cc_opts = psp_cc_opts;
+        s_psp_last_comb = comb;
+    }
+
+    rendering_state.color_combiner = comb;
+    rendering_state.color_combiner_valid = true;
+
+#else
+    uint64_t cc_options = 0;
+
+    if (use_alpha)        cc_options |= (uint64_t)SHADER_OPT_ALPHA;
+    if (use_fog)          cc_options |= (uint64_t)SHADER_OPT_FOG;
+    if (texture_edge)     cc_options |= (uint64_t)SHADER_OPT_TEXTURE_EDGE;
+    if (use_noise)        cc_options |= (uint64_t)SHADER_OPT_NOISE;
+    if (use_2cyc)         cc_options |= (uint64_t)SHADER_OPT_2CYC;
+    if (alpha_threshold)  cc_options |= (uint64_t)SHADER_OPT_ALPHA_THRESHOLD;
+    if (invisible)        cc_options |= (uint64_t)SHADER_OPT_INVISIBLE;
+    if (use_grayscale)    cc_options |= (uint64_t)SHADER_OPT_GRAYSCALE;
+    if (use_blur)         cc_options |= (uint64_t)SHADER_OPT_BLUR;
 
     if (!use_alpha) {
-        cc_options &= ~((0xfff << 16) | ((uint64_t)0xfff << 44));
+        cc_options &= ~((0xfffULL << 16) | (0xfffULL << 44));
     }
 
     ColorCombinerKey key;
     key.combine_mode = rdp.combine_mode;
     key.options = cc_options;
 
-    ColorCombiner* comb = rendering_state.color_combiner;
     if (!rendering_state.color_combiner_valid || rendering_state.color_combiner_key != key) {
         comb = gfx_lookup_or_create_color_combiner(key);
         rendering_state.color_combiner = comb;
         rendering_state.color_combiner_key = key;
         rendering_state.color_combiner_valid = true;
     }
+#endif
 
     uint8_t base_mode = 0;
     if (comb->shade_in_rgb) {
@@ -2404,14 +2506,17 @@ static void gfx_prepare_tri_pipeline_state(void) {
         (rdp.palette_fmt == G_TT_IA16) &&
         (rdp.texture_tile[rdp.first_tile_index].fmt == G_IM_FMT_CI);
 
-    const uint8_t want_text_outline = (key.combine_mode == kTextOutlineCombineMode || is_text_outline) ? 1 : 0;
+    const uint8_t want_text_outline = (rdp.combine_mode == kTextOutlineCombineMode || is_text_outline) ? 1 : 0;
     bool want_backend_tex1 = want_use_tex1;
+
 #if defined(__PSP__)
     want_backend_tex1 = (want_text_outline != 0) || (g_force_two_pass != 0 && want_use_tex1);
 #endif
+
     uint8_t effective_base_mode = base_mode;
     bool bake_primary_constant_color = false;
     bool bake_textured_constant = false;
+
 #if defined(__PSP__)
     if (want_text_outline == 0 && !want_backend_tex1 && (base_mode == 2 || base_mode == 3)) {
         bake_primary_constant_color = true;
@@ -2426,6 +2531,7 @@ static void gfx_prepare_tri_pipeline_state(void) {
 
     uint64_t next_batch_cc_mode = 0;
     uint32_t next_batch_cc_opts = 0;
+
 #if defined(__PSP__)
     next_batch_cc_mode = gfx_make_psp_batch_signature(
         want_use_tex0,
@@ -2435,6 +2541,7 @@ static void gfx_prepare_tri_pipeline_state(void) {
         want_highp_alpha,
         effective_base_mode,
         want_text_outline != 0);
+
     if (!s_batch_has_cc || s_batch_cc_mode != next_batch_cc_mode) {
         if (buf_vbo_len > 0) {
             gfx_flush_with_reason(GFX_FLUSH_COMBINER_CHANGE);
@@ -2446,6 +2553,7 @@ static void gfx_prepare_tri_pipeline_state(void) {
 #else
     next_batch_cc_mode = key.combine_mode;
     next_batch_cc_opts = key.options;
+
     if (!s_batch_has_cc || s_batch_cc_mode != next_batch_cc_mode || s_batch_cc_opts != next_batch_cc_opts) {
         if (buf_vbo_len > 0) {
             gfx_flush_with_reason(GFX_FLUSH_COMBINER_CHANGE);
@@ -2623,11 +2731,7 @@ static void gfx_prepare_tri_pipeline_state(void) {
     s_tri_pipeline_dirty = false;
 }
 
-// ------------------------------------------------------------------
-// Perspective‑aware subdivision: split triangles whose 1/w range is large
-// so that affine UV mapping looks perspective‑correct on GPUs that only
-// accept 2‑component texcoords (PSP GU / GLES 1.1).
-// ------------------------------------------------------------------
+
 struct TempV {
     float x,y,z,w;
     float u,v;
@@ -4435,9 +4539,19 @@ extern "C" void gfx_run(Gfx* commands) {
 
     // puts("New frame");
 
-    if (!gfx_wapi->start_frame()) {
-        dropped_frame = true;
-        return;
+#if defined(__PSP__)
+    if (s_psp_defer_finish_render) {
+        if (!psp_start_frame_async_acquire()) {
+            dropped_frame = true;
+            return;
+        }
+    } else
+#endif
+    {
+        if (!gfx_wapi->start_frame()) {
+            dropped_frame = true;
+            return;
+        }
     }
     dropped_frame = false;
 
@@ -4485,6 +4599,13 @@ extern "C" void gfx_run(Gfx* commands) {
 
 extern "C" void gfx_end_frame(void) {
     if (!dropped_frame) {
+#if defined(__PSP__)
+        if (s_psp_defer_finish_render) {
+            gfx_wapi->swap_buffers_end();
+            s_psp_render_in_flight = true;
+            return;
+        }
+#endif
         gfx_rapi->finish_render();
         gfx_wapi->swap_buffers_end();
     }
