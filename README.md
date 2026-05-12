@@ -1,17 +1,24 @@
-# PSP port 
+# Perfect Dark PSP
 
-1)Building place the rom in the data folder as listed below.
-2)Run psp.sh 
-3)run the EBOOT placed in the build-psp directory 
+Perfect Dark port for PSP based on the PC port. Currently **playable** from start to finish at framerate similar to N64.
 
-- Current Status-
+## Building
+
+1. Place your matching ROM at the top of the repository.
+2. Run the build script **psp.sh**. 
+3. In the newly created PerfectDark/ folder, copy your ROM to the data/ folder.
+
+Copy to the GAME directory on PSP and enjoy!
+
+## Current Status
 - Running on PSP GL ES 1.1
-- Runs on PSP Phats(32MB), Slims(64MB) and Vita EPSP(64MB)
+- Runs on PSP Phats (32MB), Slims (64MB) and Vita EPSP (64MB)
 - Framerate could be improved but rendering is completed under GL and started with PSP GU native. 
 
-
-Video:
+Video (OUTDATED):
 https://youtu.be/tW5jyqPiTaI?si=Pu8vZp1W-zcNEr6i
+
+Original README continues below.
 
 # Perfect Dark port
 
