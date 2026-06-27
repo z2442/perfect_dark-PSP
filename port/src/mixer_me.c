@@ -8,6 +8,8 @@
 #define asm __asm__
 #endif
 
+#include <stdint.h>
+#include <psptypes.h>
 #include <pspkernel.h>
 #include <me-core-mapper/me-core.h>
 
@@ -30,12 +32,16 @@ typedef struct MixerMeShared_s {
 } MixerMeShared;
 
 enum {
-	MIXER_ME_SHARED_WORDS = (sizeof(MixerMeShared) + sizeof(u32Me) - 1) / sizeof(u32Me)
+	MIXER_ME_SHARED_WORDS = (sizeof(MixerMeShared) + sizeof(u32) - 1) / sizeof(u32)
 };
 
-meLibMakeUncachedMem(g_MixerMeSharedStorage, MIXER_ME_SHARED_WORDS, u32Me);
-#define MIXER_ME_SHARED ((volatile MixerMeShared *)(uintptr_t)(UNCACHED_USER_MASK | (u32Me)g_MixerMeSharedStorage))
 
+static volatile u32 g_MixerMeSharedStorage[MIXER_ME_SHARED_WORDS]
+	__attribute__((aligned(64)));
+
+#define MIXER_ME_SHARED \
+	((volatile MixerMeShared *)(uintptr_t)(UNCACHED_USER_MASK | (uintptr_t)g_MixerMeSharedStorage))
+	
 static int g_MixerMeInitialized = 0;
 static int g_MixerMeReady = 0;
 static u32 g_MixerMeConsumedSeq = 0;

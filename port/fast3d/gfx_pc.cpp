@@ -1904,6 +1904,62 @@ static inline const float (*gfx_get_rsp_mp_matrix(void))[4] {
     return rsp.MP_matrix;
 }
 
+
+// PSP VFPU helper for the per-vertex clip-space transform used by reject/cull/clip.
+// This intentionally does not change the emitted vertex path: LoadedVertex keeps
+// original x/y/z/w, while only clip_x/y/z/w is generated here. That preserves the
+// normal transform snapshot behavior and avoids W/perspective texture swimming.
+static inline void psp_vfpu_transform_clip_rowvec(float out_clip[4],
+                                                  const float mp[4][4],
+                                                  float x,
+                                                  float y,
+                                                  float z,
+                                                  float w) {
+    alignas(16) float in_vec[4] = { x, y, z, w };
+
+    __asm__ volatile (
+        ".set push\n"
+        ".set noreorder\n"
+
+        // C000 = input row vector: x, y, z, w
+        "lv.q   C000, 0(%[in])\n"
+
+        // Build four column vectors from the row-major MP matrix so this matches:
+        // out[j] = x*MP[0][j] + y*MP[1][j] + z*MP[2][j] + w*MP[3][j]
+        "lv.s   S010,  0(%[mp])\n"
+        "lv.s   S011, 16(%[mp])\n"
+        "lv.s   S012, 32(%[mp])\n"
+        "lv.s   S013, 48(%[mp])\n"
+
+        "lv.s   S020,  4(%[mp])\n"
+        "lv.s   S021, 20(%[mp])\n"
+        "lv.s   S022, 36(%[mp])\n"
+        "lv.s   S023, 52(%[mp])\n"
+
+        "lv.s   S030,  8(%[mp])\n"
+        "lv.s   S031, 24(%[mp])\n"
+        "lv.s   S032, 40(%[mp])\n"
+        "lv.s   S033, 56(%[mp])\n"
+
+        "lv.s   S100, 12(%[mp])\n"
+        "lv.s   S101, 28(%[mp])\n"
+        "lv.s   S102, 44(%[mp])\n"
+        "lv.s   S103, 60(%[mp])\n"
+
+        "vdot.q S200, C000, C010\n"
+        "vdot.q S201, C000, C020\n"
+        "vdot.q S202, C000, C030\n"
+        "vdot.q S203, C000, C100\n"
+
+        "sv.q   C200, 0(%[out])\n"
+
+        ".set pop\n"
+        :
+        : [out] "r"(out_clip), [mp] "r"(mp), [in] "r"(in_vec)
+        : "memory"
+    );
+}
+
 static void gfx_publish_es1_matrices(void);
 
 static inline void gfx_mark_transform_snapshot_dirty(void) {
@@ -2231,10 +2287,12 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* verti
         d->w = w;
 
 #if defined(__PSP__)
-        d->clip_x = x * MP[0][0] + y * MP[1][0] + z * MP[2][0] + w * MP[3][0];
-        d->clip_y = x * MP[0][1] + y * MP[1][1] + z * MP[2][1] + w * MP[3][1];
-        d->clip_z = x * MP[0][2] + y * MP[1][2] + z * MP[2][2] + w * MP[3][2];
-        d->clip_w = x * MP[0][3] + y * MP[1][3] + z * MP[2][3] + w * MP[3][3];
+        alignas(16) float clip[4];
+        psp_vfpu_transform_clip_rowvec(clip, MP, x, y, z, w);
+        d->clip_x = clip[0];
+        d->clip_y = clip[1];
+        d->clip_z = clip[2];
+        d->clip_w = clip[3];
         d->clip_rej = gfx_make_clip_reject_mask(d->clip_x, d->clip_y, d->clip_z, d->clip_w, z_is_from_0_to_1);
 #else
         d->clip_rej = 0;
@@ -2739,6 +2797,324 @@ struct TempV {
     float clip_x, clip_y, clip_z, clip_w;
 };
 
+#if defined(__PSP__)
+// VFPU clipped polygon vertex that carries the full TempV payload in one pass.
+// This avoids the 32-byte split-payload mismatch and keeps the VFPU output the
+// same shape as the scalar clipper: draw x/y/z/w, UV, color, and clip x/y/z/w
+// are all interpolated together with one shared t value.
+struct alignas(16) PspClipV64 {
+    // q0: normal draw-space position and draw w
+    float x, y, z, w;
+
+    // q1: clip-space position used by the plane dot
+    float clip_x, clip_y, clip_z, clip_w;
+
+    // q2: texture coordinates + first two color channels
+    float u, v, r, g;
+
+    // q3: remaining color channels + padding
+    float b, a, pad0, pad1;
+};
+static_assert(sizeof(PspClipV64) == 64, "PspClipV64 must stay 64 bytes");
+
+struct alignas(16) PspClipPlane64 {
+    float p[4];
+    float epsilon;
+    float pad[3];
+};
+static_assert(sizeof(PspClipPlane64) == 32, "PspClipPlane64 must stay 32 bytes");
+
+extern "C" int _ClipToHyperPlane64_GE(PspClipV64* dst,
+                                       const PspClipV64* src,
+                                       const PspClipPlane64* plane,
+                                       int in_count);
+
+// File-local VFPU assembly. Kept here instead of a separate .S file so the PSP
+// backend remains a single-source-file patch.
+__asm__(R"ASM(
+    .set noat
+    .set push
+    .set noreorder
+    .text
+    .align 4
+    .global _ClipToHyperPlane64_GE
+    .ent _ClipToHyperPlane64_GE
+
+# _ClipToHyperPlane64_GE
+#
+# a0 = dest PspClipV64*       aligned 16
+# a1 = source PspClipV64*     aligned 16
+# a2 = PspClipPlane64*        aligned 16
+# a3 = in_vertex_count
+#
+# v0 = out_vertex_count
+#
+# PspClipV64 layout, 64 bytes:
+#   +0x00 = x, y, z, w
+#   +0x10 = clip_x, clip_y, clip_z, clip_w
+#   +0x20 = u, v, r, g
+#   +0x30 = b, a, pad0, pad1
+#
+# Plane layout:
+#   +0x00 = plane vec4
+#   +0x10 = epsilon scalar
+#
+# Inside test matches the scalar clipper:
+#   dot(clip, plane) >= -epsilon
+# implemented as:
+#   dot(clip, plane) + epsilon >= 0
+# using the same compare style your assembler accepted:
+#   vcmp.s LT, Sxxx, Sxxx[0]
+#
+# Intersection uses the raw dot values, matching the scalar math:
+#   t = prev_dot / (prev_dot - curr_dot)
+#   out = prev + (curr - prev) * t
+
+_ClipToHyperPlane64_GE:
+    beq         $a3, $0, 9f
+    nop
+
+    lv.q        R000, 0($a2)              # plane vec4
+    lv.s        S020, 16($a2)             # epsilon
+
+    or          $t2, $a1, $0              # source_base
+    sll         $t1, $a3, 6               # source bytes = count * 64
+    addu        $t1, $a1, $t1             # source_end
+
+    # Load initial prev vertex = source[0].
+    lv.q        R300, 0($a1)              # prev draw x/y/z/w
+    lv.q        R301, 16($a1)             # prev clip x/y/z/w
+    lv.q        R302, 32($a1)             # prev u/v/r/g
+    lv.q        R303, 48($a1)             # prev b/a/pad/pad
+    addiu       $a1, $a1, 64
+
+    vdot.q      S013, R301, R000          # prev_dot raw
+    vadd.s      S012, S013, S020          # prev_dot + epsilon
+
+    or          $v0, $0, $0               # out_count = 0
+
+1:  # get_next_vertex
+    bne         $a1, $t1, 2f              # wrap source pointer on final edge
+    nop
+    or          $a1, $t2, $0
+
+2:  # load_curr
+    lv.q        R200, 0($a1)              # curr draw x/y/z/w
+    lv.q        R201, 16($a1)             # curr clip x/y/z/w
+    lv.q        R202, 32($a1)             # curr u/v/r/g
+    lv.q        R203, 48($a1)             # curr b/a/pad/pad
+
+    vdot.q      S003, R201, R000          # curr_dot raw
+    vadd.s      S002, S003, S020          # curr_dot + epsilon
+
+    # curr outside if curr_dot + epsilon < 0
+    vcmp.s      LT, S002, S002[0]
+    bvt         0, 5f                     # curr outside
+    nop
+
+3:  # curr_is_inside
+    # prev outside if prev_dot + epsilon < 0
+    vcmp.s      LT, S012, S012[0]
+    bvf         0, 7f                     # prev inside: copy curr only
+    nop
+
+4:  # emit_intersection_then_copy
+    vsub.s      S001, S013, S003          # denom = prev_dot - curr_dot
+    vrcp.s      S001, S001
+    vmul.s      S001, S013, S001          # t = prev_dot / denom
+
+    vsub.q      R100, R200, R300          # curr.draw - prev.draw
+    vscl.q      R100, R100, S001
+    vadd.q      R100, R300, R100
+
+    vsub.q      R101, R201, R301          # curr.clip - prev.clip
+    vscl.q      R101, R101, S001
+    vadd.q      R101, R301, R101
+
+    vsub.q      R102, R202, R302          # curr.uvrg - prev.uvrg
+    vscl.q      R102, R102, S001
+    vadd.q      R102, R302, R102
+
+    vsub.q      R103, R203, R303          # curr.ba - prev.ba
+    vscl.q      R103, R103, S001
+    vadd.q      R103, R303, R103
+
+    sv.q        R100, 0($a0)
+    sv.q        R101, 16($a0)
+    sv.q        R102, 32($a0)
+    sv.q        R103, 48($a0)
+    addiu       $v0, $v0, 1
+    addiu       $a0, $a0, 64
+    b           7f
+    nop
+
+5:  # curr_is_outside
+    # If prev was outside too, emit nothing.
+    vcmp.s      LT, S012, S012[0]
+    bvt         0, 8f                     # prev outside too
+    nop
+
+6:  # emit_intersection_only
+    vsub.s      S001, S013, S003          # denom = prev_dot - curr_dot
+    vrcp.s      S001, S001
+    vmul.s      S001, S013, S001          # t = prev_dot / denom
+
+    vsub.q      R100, R200, R300          # curr.draw - prev.draw
+    vscl.q      R100, R100, S001
+    vadd.q      R100, R300, R100
+
+    vsub.q      R101, R201, R301          # curr.clip - prev.clip
+    vscl.q      R101, R101, S001
+    vadd.q      R101, R301, R101
+
+    vsub.q      R102, R202, R302          # curr.uvrg - prev.uvrg
+    vscl.q      R102, R102, S001
+    vadd.q      R102, R302, R102
+
+    vsub.q      R103, R203, R303          # curr.ba - prev.ba
+    vscl.q      R103, R103, S001
+    vadd.q      R103, R303, R103
+
+    sv.q        R100, 0($a0)
+    sv.q        R101, 16($a0)
+    sv.q        R102, 32($a0)
+    sv.q        R103, 48($a0)
+    addiu       $v0, $v0, 1
+    addiu       $a0, $a0, 64
+    b           8f
+    nop
+
+7:  # copy_curr
+    sv.q        R200, 0($a0)
+    sv.q        R201, 16($a0)
+    sv.q        R202, 32($a0)
+    sv.q        R203, 48($a0)
+    addiu       $v0, $v0, 1
+    addiu       $a0, $a0, 64
+
+8:  # finished_vertex
+    vmov.q      R300, R200                # prev = curr
+    vmov.q      R301, R201
+    vmov.q      R302, R202
+    vmov.q      R303, R203
+    vmov.s      S013, S003                # prev_dot raw = curr_dot raw
+    vmov.s      S012, S002                # prev_dot biased = curr_dot biased
+
+    addiu       $a3, $a3, -1
+    bne         $a3, $0, 1b
+    addiu       $a1, $a1, 64
+
+9:  # finished_all_vertices
+    jr          $ra
+    nop
+
+    .end _ClipToHyperPlane64_GE
+    .set pop
+)ASM");
+
+static const PspClipPlane64 s_psp_clip_plane_left     = { {  1.0f,  0.0f,  0.0f, 1.0f }, 1e-5f, { 0.0f, 0.0f, 0.0f } };
+static const PspClipPlane64 s_psp_clip_plane_right    = { { -1.0f,  0.0f,  0.0f, 1.0f }, 1e-5f, { 0.0f, 0.0f, 0.0f } };
+static const PspClipPlane64 s_psp_clip_plane_bottom   = { {  0.0f,  1.0f,  0.0f, 1.0f }, 1e-5f, { 0.0f, 0.0f, 0.0f } };
+static const PspClipPlane64 s_psp_clip_plane_top      = { {  0.0f, -1.0f,  0.0f, 1.0f }, 1e-5f, { 0.0f, 0.0f, 0.0f } };
+static const PspClipPlane64 s_psp_clip_plane_near_z01 = { {  0.0f,  0.0f,  1.0f, 0.0f }, 1e-5f, { 0.0f, 0.0f, 0.0f } };
+static const PspClipPlane64 s_psp_clip_plane_near_zw  = { {  0.0f,  0.0f,  1.0f, 1.0f }, 1e-5f, { 0.0f, 0.0f, 0.0f } };
+static const PspClipPlane64 s_psp_clip_plane_far      = { {  0.0f,  0.0f, -1.0f, 1.0f }, 1e-5f, { 0.0f, 0.0f, 0.0f } };
+
+static inline PspClipV64 tempv_to_clip64(const TempV& v) {
+    PspClipV64 o;
+    o.x = v.x;
+    o.y = v.y;
+    o.z = v.z;
+    o.w = v.w;
+
+    o.clip_x = v.clip_x;
+    o.clip_y = v.clip_y;
+    o.clip_z = v.clip_z;
+    o.clip_w = v.clip_w;
+
+    o.u = v.u;
+    o.v = v.v;
+    o.r = v.r;
+    o.g = v.g;
+
+    o.b = v.b;
+    o.a = v.a;
+    o.pad0 = 0.0f;
+    o.pad1 = 0.0f;
+    return o;
+}
+
+static inline TempV clip64_to_tempv(const PspClipV64& v) {
+    TempV o;
+    o.x = v.x;
+    o.y = v.y;
+    o.z = v.z;
+    o.w = v.w;
+
+    o.u = v.u;
+    o.v = v.v;
+
+    o.r = v.r;
+    o.g = v.g;
+    o.b = v.b;
+    o.a = v.a;
+
+    o.clip_x = v.clip_x;
+    o.clip_y = v.clip_y;
+    o.clip_z = v.clip_z;
+    o.clip_w = v.clip_w;
+    return o;
+}
+
+static int psp_clip_triangle_vfpu64(const TempV in_tri[3], TempV out_poly[12], bool z_is_from_0_to_1) {
+    constexpr int kMaxClipVerts = 12;
+
+    alignas(16) PspClipV64 src[kMaxClipVerts];
+    alignas(16) PspClipV64 dst[kMaxClipVerts];
+
+    src[0] = tempv_to_clip64(in_tri[0]);
+    src[1] = tempv_to_clip64(in_tri[1]);
+    src[2] = tempv_to_clip64(in_tri[2]);
+
+    int count = 3;
+    PspClipV64* read = src;
+    PspClipV64* write = dst;
+
+    auto run_plane = [&](const PspClipPlane64* plane) {
+        if (count <= 0) {
+            return;
+        }
+
+        count = _ClipToHyperPlane64_GE(write, read, plane, count);
+
+        PspClipV64* tmp = read;
+        read = write;
+        write = tmp;
+    };
+
+    run_plane(&s_psp_clip_plane_left);
+    run_plane(&s_psp_clip_plane_right);
+    run_plane(&s_psp_clip_plane_bottom);
+    run_plane(&s_psp_clip_plane_top);
+
+    if (!g_es1_depth_clamp_active) {
+        run_plane(z_is_from_0_to_1 ? &s_psp_clip_plane_near_z01 : &s_psp_clip_plane_near_zw);
+        run_plane(&s_psp_clip_plane_far);
+    }
+
+    if (count > kMaxClipVerts) {
+        count = kMaxClipVerts;
+    }
+
+    for (int i = 0; i < count; ++i) {
+        out_poly[i] = clip64_to_tempv(read[i]);
+    }
+
+    return count;
+}
+
+#endif
+
 static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bool is_rect) {
     if (!is_rect) {
         gfx_end_rect_batch();
@@ -2779,6 +3155,10 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
 #endif
 
     gfx_prepare_tri_pipeline_state();
+
+#if defined(__PSP__)
+    bool emit_now_pretransformed = emit_pretransformed;
+#endif
 
     // --- build TempV array --------------------------------------------------
     TempV TV[3];
@@ -2907,7 +3287,7 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
         float y = V.y;
         float z = V.z;
 #if defined(__PSP__)
-        if (emit_pretransformed) {
+        if (emit_now_pretransformed) {
             const float clip_w = (fabsf(V.clip_w) < 1e-5f) ? 1e-5f : V.clip_w;
             x = V.clip_x / clip_w;
             y = V.clip_y / clip_w;
@@ -3034,6 +3414,17 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
         return;
     }
 
+#if defined(__PSP__)
+    TempV poly[kMaxClipVerts];
+    int poly_count = psp_clip_triangle_vfpu64(TV, poly, z_is_from_0_to_1);
+
+    if (poly_count < 3) {
+        return;
+    }
+
+    // Keep the existing transform snapshot path. The 64-byte VFPU clipper
+    // preserves x/y/z/w, UV, color, and clip_xyzw in one pass.
+#else
     TempV poly[kMaxClipVerts];
     for (int i = 0; i < 3; ++i) {
         poly[i] = TV[i];
@@ -3101,6 +3492,7 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
     if (poly_count < 3) {
         return;
     }
+#endif
 
     for (int i = 1; i < poly_count - 1; ++i) {
         if (swap_winding) {
