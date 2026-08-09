@@ -231,7 +231,6 @@ void amgrCreate(ALSynConfig *config)
 	amgrResetPspAudioPipe();
 	mixerMeInit();
 #endif
-	audioStartProducer(amgrFrame);
 	func00030bfc(0, 60);
 	osCreateThread(&g_AudioManager.thread, THREAD_AUDIO, &amgrMain, 0, g_AudioSp, THREADPRI_AUDIO);
 }
@@ -242,6 +241,9 @@ void amgrStartThread(void)
 {
 	osStartThread(&g_AudioManager.thread);
 	g_AudioIsThreadRunning = true;
+	/* Start autonomous production only after MP3, sequences and the sound
+	 * player have all finished initializing. */
+	audioStartProducer(amgrFrame);
 }
 
 OSMesgQueue *amgrGetFrameMesgQueue(void)
