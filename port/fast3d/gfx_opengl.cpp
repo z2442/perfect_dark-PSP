@@ -24,6 +24,7 @@ static bool s_blend_enabled = true;            // shadow of GL_BLEND enable stat
 #include <unordered_map>
 #include <unordered_set>
 #include <algorithm>
+#include <ctype.h>
 
 extern "C"{
 #include <GLES/egl.h>
@@ -39,10 +40,20 @@ extern "C"{
 #include <math.h>
 
 #if defined(__PSP__)
+#include <intraFont.h>
 #include <pspge.h>
 #include <pspgu.h>
+#include "psp_home_menu.h"
+#include "psp_home_menu_renderer.h"
+#include "psp_vfpu.h"
 
-// Minimal PSPGL structures so we can peek at the default surface buffers.
+/*
+ * Minimal copies of PSPGL's private buffer/surface headers.  Keep the field
+ * order exact: eglSwapBuffers exchanges color_front and color_back, while
+ * draw/read are pointers to those fields.  Treating the first two buffer
+ * pointers as draw/display reverses the buffers after every swap and causes
+ * CPU framebuffer restores to overwrite the image currently on screen.
+ */
 struct pspgl_buffer {
     uint16_t refcount;
     uint16_t refpad;
@@ -58,20 +69,28 @@ struct pspgl_buffer {
 };
 
 struct pspgl_surface {
-    uint32_t stamp;
-    uint32_t config;
-    uint32_t unk_addr;
-    uint16_t stride;    // line stride in pixels
+    uint32_t refcount;
+    uint32_t pixfmt;
+    uint16_t width;
+    uint16_t height;
+    uint16_t pixelperline;
     uint8_t  flags;
     uint8_t  pad;
-    pspgl_buffer *draw;     // buffer currently used for drawing
-    pspgl_buffer *display;  // buffer currently being displayed
-    pspgl_buffer *depth;
-    pspgl_buffer **drawp;
-    pspgl_buffer **readp;
-    uint32_t mask0;
-    uint32_t mask1;
+    pspgl_buffer *color_front;
+    pspgl_buffer *color_back;
+    pspgl_buffer *depth_buffer;
+    pspgl_buffer **read;
+    pspgl_buffer **draw;
+    uint32_t alpha_mask;
+    uint32_t stencil_mask;
 };
+
+static_assert(__builtin_offsetof(pspgl_surface, color_front) == 16,
+              "PSPGL surface front-buffer offset changed");
+static_assert(__builtin_offsetof(pspgl_surface, color_back) == 20,
+              "PSPGL surface back-buffer offset changed");
+static_assert(__builtin_offsetof(pspgl_surface, draw) == 32,
+              "PSPGL surface draw-pointer offset changed");
 
 // --- GU-based composite scratch buffer constants ---
 // VRAM layout (typical PSPGL with 480x272 @ 8888):
@@ -490,7 +509,8 @@ static bool upload_composite_item(const CompositeBatchItem &item) {
         packed_rows.resize((size_t)item.w * (size_t)item.h);
         uint16_t *dst = packed_rows.data();
         for (int y = 0; y < item.h; ++y) {
-            memcpy(dst, scratch + (size_t)y * item.fbw, (size_t)item.w * sizeof(uint16_t));
+            pdPspMemcpyVfpu(dst, scratch + (size_t)y * item.fbw,
+                            (size_t)item.w * sizeof(uint16_t));
             dst += item.w;
         }
         upload_src = packed_rows.data();
@@ -1436,7 +1456,8 @@ static void gfx_opengl_upload_texture(const uint8_t* rgba32_buf, uint32_t width,
         ct.last_frame_updated = s_composite_frame_counter;
         ct.rgba4444.resize((size_t)width * (size_t)height);
 #if defined(__PSP__)
-        memcpy(ct.rgba4444.data(), rgba4444.data(), (size_t)width * (size_t)height * sizeof(uint16_t));
+        pdPspMemcpyVfpu(ct.rgba4444.data(), rgba4444.data(),
+                        (size_t)width * (size_t)height * sizeof(uint16_t));
 #else
         const size_t np = (size_t)width * (size_t)height;
         const uint8_t* src = rgba32_buf;
@@ -1820,6 +1841,517 @@ EGLContext ctx;
 EGLSurface surface;
 GLfloat angle = 0.0f;
 
+#if defined(__PSP__)
+#define HOME_WIDTH 480
+#define HOME_HEIGHT 272
+#define HOME_STRIDE 512
+
+struct HomeVertex {
+    GLfloat x, y, z;
+    GLfloat r, g, b, a;
+};
+
+struct HomeFontVertex {
+    GLfloat x, y, z;
+    GLfloat u, v;
+    GLfloat r, g, b, a;
+};
+
+static bool s_home_menu_active;
+static bool s_home_menu_capture_requested;
+static bool s_home_menu_background_captured;
+static uint16_t s_home_menu_background[HOME_STRIDE * HOME_HEIGHT] __attribute__((aligned(64)));
+static uint16_t s_home_menu_blur[HOME_STRIDE * HOME_HEIGHT] __attribute__((aligned(64)));
+static std::vector<HomeVertex> s_home_vertices;
+static std::vector<HomeFontVertex> s_home_font_vertices;
+static intraFont *s_home_font;
+static GLuint s_home_font_texture;
+
+static void home_push_vertex(float x, float y, float r, float g, float b, float a) {
+    s_home_vertices.push_back({ x, y, 0.0f, r, g, b, a });
+}
+
+static void home_push_rect(float x, float y, float width, float height,
+                           float r, float g, float b, float a) {
+    const float x1 = x + width;
+    const float y1 = y + height;
+    home_push_vertex(x,  y,  r, g, b, a);
+    home_push_vertex(x1, y,  r, g, b, a);
+    home_push_vertex(x,  y1, r, g, b, a);
+    home_push_vertex(x,  y1, r, g, b, a);
+    home_push_vertex(x1, y,  r, g, b, a);
+    home_push_vertex(x1, y1, r, g, b, a);
+}
+
+static const uint8_t *home_glyph(char character) {
+    static const uint8_t letters[26][7] = {
+        {14,17,17,31,17,17,17}, {30,17,17,30,17,17,30}, {14,17,16,16,16,17,14},
+        {30,17,17,17,17,17,30}, {31,16,16,30,16,16,31}, {31,16,16,30,16,16,16},
+        {14,17,16,23,17,17,15}, {17,17,17,31,17,17,17}, {14,4,4,4,4,4,14},
+        {7,2,2,2,18,18,12}, {17,18,20,24,20,18,17}, {16,16,16,16,16,16,31},
+        {17,27,21,21,17,17,17}, {17,25,21,19,17,17,17}, {14,17,17,17,17,17,14},
+        {30,17,17,30,16,16,16}, {14,17,17,17,21,18,13}, {30,17,17,30,20,18,17},
+        {15,16,16,14,1,1,30}, {31,4,4,4,4,4,4}, {17,17,17,17,17,17,14},
+        {17,17,17,17,17,10,4}, {17,17,17,21,21,21,10}, {17,17,10,4,10,17,17},
+        {17,17,10,4,4,4,4}, {31,1,2,4,8,16,31}
+    };
+    static const uint8_t digits[10][7] = {
+        {14,17,19,21,25,17,14}, {4,12,4,4,4,4,14}, {14,17,1,2,4,8,31},
+        {30,1,1,14,1,1,30}, {2,6,10,18,31,2,2}, {31,16,16,30,1,1,30},
+        {14,16,16,30,17,17,14}, {31,1,2,4,8,8,8}, {14,17,17,14,17,17,14},
+        {14,17,17,15,1,1,14}
+    };
+    static const uint8_t blank[7] = {0,0,0,0,0,0,0};
+    static const uint8_t colon[7] = {0,4,4,0,4,4,0};
+    static const uint8_t dash[7] = {0,0,0,31,0,0,0};
+    static const uint8_t dot[7] = {0,0,0,0,0,4,4};
+    static const uint8_t slash[7] = {1,2,2,4,8,8,16};
+    static const uint8_t percent[7] = {17,2,4,8,16,0,17};
+
+    character = (char)toupper((unsigned char)character);
+    if (character >= 'A' && character <= 'Z') return letters[character - 'A'];
+    if (character >= '0' && character <= '9') return digits[character - '0'];
+    if (character == ':') return colon;
+    if (character == '-') return dash;
+    if (character == '.') return dot;
+    if (character == '/') return slash;
+    if (character == '%') return percent;
+    return blank;
+}
+
+static float home_text_width(const char *text, int scale) {
+    const size_t length = text ? strlen(text) : 0;
+    return length ? (float)(length * 6 * scale - scale) : 0.0f;
+}
+
+static uint16_t home_intrafont_get_id(unsigned char character) {
+    uint16_t id = 0;
+
+    if (s_home_font == NULL) return 0xffff;
+    for (uint16_t i = 0; i < s_home_font->charmap_compr_len; i++) {
+        const uint16_t first = s_home_font->charmap_compr[i * 2];
+        const uint16_t count = s_home_font->charmap_compr[i * 2 + 1];
+
+        if (character >= first && character < first + count) {
+            id = (uint16_t)(id + character - first);
+            if (s_home_font->fileType == FILETYPE_PGF) id = s_home_font->charmap[id];
+            return id < s_home_font->n_chars ? id : 0xffff;
+        }
+        id = (uint16_t)(id + count);
+    }
+    return 0xffff;
+}
+
+static float home_intrafont_scale(int fallback_scale) {
+    if (fallback_scale >= 3) return 0.86f;
+    if (fallback_scale == 2) return 0.72f;
+    return 0.54f;
+}
+
+static float home_intrafont_width(const char *text, float scale) {
+    float width = 0.0f;
+
+    if (text == NULL || s_home_font == NULL) return 0.0f;
+    for (; *text != '\0'; text++) {
+        const uint16_t id = home_intrafont_get_id((unsigned char)*text);
+        if (id != 0xffff) width += s_home_font->glyph[id].advance * scale * 0.25f;
+    }
+    return width;
+}
+
+static void home_push_font_vertex(float x, float y, float u, float v,
+                                  float r, float g, float b, float a) {
+    s_home_font_vertices.push_back({ x, y, 0.0f, u, v, r, g, b, a });
+}
+
+static void home_push_font_quad(const Glyph *glyph, float x, float baseline, float scale,
+                                float r, float g, float b, float a) {
+    const float texture_size = (float)s_home_font->texWidth;
+    const float x0 = x + glyph->left * scale;
+    const float y0 = baseline - glyph->top * scale;
+    const float x1 = x0 + glyph->width * scale;
+    const float y1 = y0 + glyph->height * scale;
+    const float u0 = (glyph->x - 0.25f) / texture_size;
+    const float v0 = (glyph->y - 0.25f) / texture_size;
+    const float u1 = (glyph->x + glyph->width + 0.25f) / texture_size;
+    const float v1 = (glyph->y + glyph->height + 0.25f) / texture_size;
+
+    home_push_font_vertex(x0, y0, u0, v0, r, g, b, a);
+    home_push_font_vertex(x1, y0, u1, v0, r, g, b, a);
+    home_push_font_vertex(x0, y1, u0, v1, r, g, b, a);
+    home_push_font_vertex(x0, y1, u0, v1, r, g, b, a);
+    home_push_font_vertex(x1, y0, u1, v0, r, g, b, a);
+    home_push_font_vertex(x1, y1, u1, v1, r, g, b, a);
+}
+
+static bool home_push_intrafont_text(float x, float y, const char *text, int fallback_scale,
+                                     bool centered, float r, float g, float b, float a) {
+    float scale;
+    float baseline;
+
+    if (s_home_font == NULL || s_home_font_texture == 0 || text == NULL) return false;
+    scale = home_intrafont_scale(fallback_scale);
+    baseline = y + s_home_font->advancey * scale * 0.25f;
+    if (centered) x -= home_intrafont_width(text, scale) * 0.5f;
+
+    for (; *text != '\0'; text++) {
+        const uint16_t id = home_intrafont_get_id((unsigned char)*text);
+        if (id == 0xffff) continue;
+
+        const Glyph *glyph = &s_home_font->glyph[id];
+        if (glyph->width != 0 && glyph->height != 0) {
+            const uint16_t shadow_id = glyph->shadowID;
+            if (shadow_id < s_home_font->n_shadows && s_home_font->shadowscale != 0) {
+                const Glyph *shadow = &s_home_font->shadowGlyph[shadow_id];
+                const float shadow_scale = scale * 64.0f / s_home_font->shadowscale;
+                home_push_font_quad(shadow, x, baseline, shadow_scale, 0.0f, 0.0f, 0.0f, a * 0.70f);
+            }
+            home_push_font_quad(glyph, x, baseline, scale, r, g, b, a);
+        }
+        x += glyph->advance * scale * 0.25f;
+    }
+    return true;
+}
+
+static void home_push_text(float x, float y, const char *text, int scale, bool centered,
+                           float r, float g, float b, float a) {
+    if (text == NULL) return;
+    if (home_push_intrafont_text(x, y, text, scale, centered, r, g, b, a)) return;
+    if (centered) x -= home_text_width(text, scale) * 0.5f;
+
+    for (; *text; text++, x += 6.0f * scale) {
+        const uint8_t *glyph = home_glyph(*text);
+        for (int row = 0; row < 7; row++) {
+            for (int column = 0; column < 5; column++) {
+                if (glyph[row] & (1U << (4 - column))) {
+                    home_push_rect(x + column * scale, y + row * scale,
+                                   (float)scale, (float)scale, r, g, b, a);
+                }
+            }
+        }
+    }
+}
+
+static void home_init_intrafont(void) {
+    std::vector<uint16_t> rgba4444;
+    const uint8_t *source;
+    uint32_t width;
+    uint32_t cached_height;
+    uint32_t byte_width;
+    uint32_t row_blocks;
+
+    if (s_home_font != NULL || s_home_font_texture != 0) return;
+    if (!intraFontInit()) {
+        sysLogPrintf(LOG_WARNING, "PSP HOME: intraFont initialization failed; using fallback font");
+        return;
+    }
+
+    s_home_font = intraFontLoad("flash0:/font/ltn0.pgf", INTRAFONT_CACHE_ASCII);
+    if (s_home_font == NULL || s_home_font->texture == NULL ||
+        !(s_home_font->options & INTRAFONT_CACHE_ASCII)) {
+        if (s_home_font != NULL) intraFontUnload(s_home_font);
+        s_home_font = NULL;
+        sysLogPrintf(LOG_WARNING, "PSP HOME: firmware intraFont load failed; using fallback font");
+        return;
+    }
+
+    width = s_home_font->texWidth;
+    cached_height = s_home_font->texHeight;
+    byte_width = width >> 1;
+    row_blocks = byte_width >> 4;
+    source = s_home_font->texture;
+    if (width == 0 || width > 512 || cached_height == 0 || cached_height > width || row_blocks == 0) {
+        intraFontUnload(s_home_font);
+        s_home_font = NULL;
+        sysLogPrintf(LOG_WARNING, "PSP HOME: invalid intraFont cache; using fallback font");
+        return;
+    }
+
+    /* intraFont's PSP cache is swizzled T4. Expand it into a PSPGL-friendly
+     * square RGBA4444 atlas while retaining intraFont's glyph metrics. */
+    rgba4444.assign((size_t)width * width, 0);
+    for (uint32_t y = 0; y < cached_height; y++) {
+        for (uint32_t xb = 0; xb < byte_width; xb++) {
+            const uint32_t block = ((y >> 3) * row_blocks + (xb >> 4)) * 128;
+            const uint32_t offset = block + (y & 7) * 16 + (xb & 15);
+            const uint8_t packed = source[offset];
+            const uint8_t alpha0 = packed & 0x0f;
+            const uint8_t alpha1 = packed >> 4;
+            const size_t pixel = (size_t)y * width + xb * 2;
+            rgba4444[pixel] = (uint16_t)(0xfff0 | alpha0);
+            rgba4444[pixel + 1] = (uint16_t)(0xfff0 | alpha1);
+        }
+    }
+
+    psp_clear_gl_errors();
+    glGenTextures(1, &s_home_font_texture);
+    glBindTexture(GL_TEXTURE_2D, s_home_font_texture);
+    s_last_bound_tex = s_home_font_texture;
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, (GLsizei)width, (GLsizei)width, 0,
+                 GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4, rgba4444.data());
+
+    if (psp_check_gl_error("HOME intraFont atlas upload", (int)width, (int)width,
+                           GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4) != GL_NO_ERROR) {
+        glDeleteTextures(1, &s_home_font_texture);
+        s_home_font_texture = 0;
+        s_last_bound_tex = 0;
+        intraFontUnload(s_home_font);
+        s_home_font = NULL;
+        sysLogPrintf(LOG_WARNING, "PSP HOME: intraFont atlas upload failed; using fallback font");
+        return;
+    }
+
+    sysLogPrintf(LOG_NOTE, "PSP HOME: loaded firmware intraFont");
+}
+
+static void home_blur_background(void) {
+    for (int y = 0; y < HOME_HEIGHT; y++) {
+        for (int x = 0; x < HOME_WIDTH; x++) {
+            const int left = x > 2 ? x - 3 : 0;
+            const int right = x + 3 < HOME_WIDTH ? x + 3 : HOME_WIDTH - 1;
+            const int up = y > 2 ? y - 3 : 0;
+            const int down = y + 3 < HOME_HEIGHT ? y + 3 : HOME_HEIGHT - 1;
+            const uint16_t samples[5] = {
+                s_home_menu_background[y * HOME_STRIDE + x],
+                s_home_menu_background[y * HOME_STRIDE + left],
+                s_home_menu_background[y * HOME_STRIDE + right],
+                s_home_menu_background[up * HOME_STRIDE + x],
+                s_home_menu_background[down * HOME_STRIDE + x],
+            };
+            uint32_t red = 0, green = 0, blue = 0;
+            for (int i = 0; i < 5; i++) {
+                red += samples[i] & 0x1f;
+                green += (samples[i] >> 5) & 0x3f;
+                blue += (samples[i] >> 11) & 0x1f;
+            }
+            s_home_menu_blur[y * HOME_STRIDE + x] =
+                (uint16_t)((red / 5) | ((green / 5) << 5) | ((blue / 5) << 11));
+        }
+        for (int x = HOME_WIDTH; x < HOME_STRIDE; x++) {
+            s_home_menu_blur[y * HOME_STRIDE + x] = 0;
+        }
+    }
+    pdPspMemcpyVfpu(s_home_menu_background, s_home_menu_blur, sizeof(s_home_menu_background));
+}
+
+static void home_capture_and_restore_background(void) {
+    pspgl_surface *surf = reinterpret_cast<pspgl_surface *>(surface);
+    pspgl_buffer *front;
+    pspgl_buffer *back;
+
+    if (surf == NULL) {
+        return;
+    }
+
+    front = surf->color_front;
+    back = surf->draw != NULL ? *surf->draw : surf->color_back;
+    if (front == NULL || back == NULL || front->base == NULL || back->base == NULL) {
+        return;
+    }
+
+    glFinish();
+    if (s_home_menu_capture_requested) {
+        pdPspMemcpyVfpu(s_home_menu_background, front->base,
+                        sizeof(s_home_menu_background));
+        home_blur_background();
+        s_home_menu_capture_requested = false;
+        s_home_menu_background_captured = true;
+    }
+    if (s_home_menu_active && s_home_menu_background_captured) {
+        pdPspMemcpyVfpu(back->base, s_home_menu_background,
+                        sizeof(s_home_menu_background));
+        sceKernelDcacheWritebackRange(back->base, sizeof(s_home_menu_background));
+    }
+}
+
+static void home_build_main(int selected, float red, float green, float blue) {
+    static const char *items[] = { "Resume Game", "Controller Mapping", "Exit Game" };
+    home_push_rect(0, 0, HOME_WIDTH, HOME_HEIGHT, 0, 0, 0, 0.38f);
+    home_push_rect(102, 42, 276, 188, 0, 0, 0, 0.66f);
+    home_push_text(HOME_WIDTH / 2.0f, 62, "Perfect Dark", 3, true, 1, 1, 0.96f, 1);
+
+    for (int i = 0; i < 3; i++) {
+        const float y = 112.0f + i * 40.0f;
+        if (selected == i) {
+            home_push_rect(124, y - 10, 232, 28, red, green, blue, 0.80f);
+        }
+        home_push_text(HOME_WIDTH / 2.0f, y, items[i], 2, true,
+                       selected == i ? 1.0f : 0.86f,
+                       selected == i ? 1.0f : 0.89f,
+                       selected == i ? 0.96f : 0.86f, 1.0f);
+    }
+}
+
+static void home_build_mapping(int selected, const char *status,
+                               float red, float green, float blue) {
+    char line[96];
+    char value[48];
+    const int binding_count = pdPspHomeMenuGetBindingCount();
+    const int deadzone_row = binding_count;
+    const int save_row = binding_count + 1;
+    const int reset_row = binding_count + 2;
+    const int back_row = binding_count + 3;
+    const int total_rows = back_row + 1;
+    const int visible_rows = 8;
+    int first_row = selected - visible_rows / 2;
+
+    if (first_row < 0) first_row = 0;
+    if (first_row + visible_rows > total_rows) first_row = total_rows - visible_rows;
+    if (first_row < 0) first_row = 0;
+
+    home_push_rect(0, 0, HOME_WIDTH, HOME_HEIGHT, 0, 0, 0, 0.44f);
+    home_push_rect(28, 16, 424, 240, 0, 0, 0, 0.70f);
+    home_push_text(HOME_WIDTH / 2.0f, 32, "Controller Mapping", 2, true, 1, 1, 0.96f, 1);
+
+    for (int row = first_row; row < first_row + visible_rows; row++) {
+        const float y = 62.0f + (row - first_row) * 21.0f;
+        if (row == selected) {
+            home_push_rect(48, y - 5, 384, 17, red, green, blue, 0.80f);
+        }
+
+        if (row < binding_count) {
+            pdPspHomeMenuGetBindingValue(row, value, sizeof(value));
+            snprintf(line, sizeof(line), "%s: %s", pdPspHomeMenuGetBindingName(row), value);
+        } else if (row == deadzone_row) {
+            snprintf(line, sizeof(line), "Deadzone: %d%%", pdPspHomeMenuGetDeadzone());
+        } else if (row == save_row) {
+            snprintf(line, sizeof(line), "Save pspcontrols.ini");
+        } else if (row == reset_row) {
+            snprintf(line, sizeof(line), "Reset defaults");
+        } else {
+            snprintf(line, sizeof(line), "Back");
+        }
+        home_push_text(62, y, line, 1, false, 1, 1, 0.96f, 1);
+    }
+
+    home_push_text(HOME_WIDTH / 2.0f, 238,
+                   status && status[0] ? status : "Left/Right change  Cross select  Circle back",
+                   1, true, 0.75f, 0.80f, 0.76f, 1);
+}
+
+static void home_draw_vertices(void) {
+    glViewport(0, 0, HOME_WIDTH, HOME_HEIGHT);
+    glDisable(GL_SCISSOR_TEST);
+    es_scissor_test = false;
+    glDisable(GL_TEXTURE_2D);
+    glDisable(GL_DEPTH_TEST);
+    es_depth_test = false;
+    glDepthMask(GL_FALSE);
+    current_depth_mask = false;
+    glDisable(GL_ALPHA_TEST);
+    gl_set_cull_face_enabled(false);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    s_blend_enabled = true;
+    s_last_use_alpha = true;
+    s_last_modulate = false;
+    s_texenv_mode = TEXENV_UNKNOWN;
+
+    pdMatrixMode(GL_PROJECTION);
+    pdLoadIdentity();
+    pdOrthof(0, HOME_WIDTH, HOME_HEIGHT, 0, -1, 1);
+    pdMatrixMode(GL_MODELVIEW);
+    pdLoadIdentity();
+
+    if (!s_home_vertices.empty()) {
+        const HomeVertex *vertices = s_home_vertices.data();
+        gl_set_vertex_array_enabled(true);
+        gl_set_texcoord_array_enabled(false);
+        gl_set_color_array_enabled(true);
+        gl_set_vertex_pointer(&vertices[0].x, sizeof(HomeVertex));
+        gl_set_color_pointer(&vertices[0].r, sizeof(HomeVertex));
+        glDrawArrays(GL_TRIANGLES, 0, (GLsizei)s_home_vertices.size());
+    }
+
+    if (!s_home_font_vertices.empty() && s_home_font_texture != 0) {
+        const HomeFontVertex *vertices = s_home_font_vertices.data();
+        glEnable(GL_TEXTURE_2D);
+        glBindTexture(GL_TEXTURE_2D, s_home_font_texture);
+        s_last_bound_tex = s_home_font_texture;
+        set_texenv_modulate();
+        gl_set_vertex_array_enabled(true);
+        gl_set_texcoord_array_enabled(true);
+        gl_set_color_array_enabled(true);
+        gl_set_vertex_pointer(&vertices[0].x, sizeof(HomeFontVertex));
+        gl_set_texcoord_pointer(&vertices[0].u, sizeof(HomeFontVertex));
+        gl_set_color_pointer(&vertices[0].r, sizeof(HomeFontVertex));
+        glDrawArrays(GL_TRIANGLES, 0, (GLsizei)s_home_font_vertices.size());
+        gl_set_texcoord_array_enabled(false);
+        glDisable(GL_TEXTURE_2D);
+        s_texenv_mode = TEXENV_UNKNOWN;
+    }
+
+    /* The game backend uses premultiplied blending and must reload its 3D matrices. */
+    glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    g_es1_matrix_dirty = 1;
+    glFinish();
+    eglSwapBuffers(dpy, surface);
+}
+
+extern "C" void pdPspHomeMenuRendererSetActive(int active) {
+    s_home_menu_active = active != 0;
+    if (!s_home_menu_active) {
+        s_home_menu_capture_requested = false;
+        s_home_menu_background_captured = false;
+    }
+}
+
+extern "C" void pdPspHomeMenuRendererRequestBackground(void) {
+    s_home_menu_capture_requested = true;
+}
+
+extern "C" void pdPspHomeMenuRendererRender(int selected, int screen, int control_selected,
+                                              const char *status, uint8_t red,
+                                              uint8_t green, uint8_t blue) {
+    const float highlight_red = red / 255.0f;
+    const float highlight_green = green / 255.0f;
+    const float highlight_blue = blue / 255.0f;
+
+    home_capture_and_restore_background();
+    s_home_vertices.clear();
+    s_home_font_vertices.clear();
+    if (s_home_vertices.capacity() < 32768) s_home_vertices.reserve(32768);
+    if (s_home_font_vertices.capacity() < 8192) s_home_font_vertices.reserve(8192);
+
+    if (screen == 1) {
+        home_build_mapping(control_selected, status, highlight_red, highlight_green, highlight_blue);
+    } else {
+        home_build_main(selected, highlight_red, highlight_green, highlight_blue);
+    }
+
+    home_draw_vertices();
+}
+
+extern "C" void pdPspAssetProgressRender(uint32_t permille, const char *status) {
+    char percentage[16];
+    const uint32_t clamped = permille > (uint32_t)1000 ? (uint32_t)1000 : permille;
+    const float progress = clamped / 1000.0f;
+
+    snprintf(percentage, sizeof(percentage), "%u%%", (unsigned int)(clamped / 10u));
+    s_home_vertices.clear();
+    s_home_font_vertices.clear();
+    if (s_home_vertices.capacity() < 32768) s_home_vertices.reserve(32768);
+    if (s_home_font_vertices.capacity() < 8192) s_home_font_vertices.reserve(8192);
+
+    home_push_rect(0, 0, HOME_WIDTH, HOME_HEIGHT, 0.015f, 0.02f, 0.025f, 1.0f);
+    home_push_text(HOME_WIDTH / 2.0f, 78, "Perfect Dark", 3, true, 1, 1, 0.96f, 1);
+    home_push_text(HOME_WIDTH / 2.0f, 125, "Preparing game data", 2, true,
+                   0.86f, 0.90f, 0.94f, 1);
+    home_push_rect(70, 164, 340, 18, 0.09f, 0.12f, 0.15f, 1.0f);
+    home_push_rect(73, 167, 334.0f * progress, 12, 0.10f, 0.36f, 0.62f, 1.0f);
+    home_push_text(HOME_WIDTH / 2.0f, 194, percentage, 2, true, 1, 1, 1, 1);
+    home_push_text(HOME_WIDTH / 2.0f, 226,
+                   status && status[0] ? status : "Building asset cache",
+                   1, true, 0.72f, 0.78f, 0.82f, 1);
+    home_draw_vertices();
+}
+#endif
+
 static void gfx_opengl_init(void) {
     dpy = eglGetDisplay(0);
     eglInitialize(dpy, NULL, NULL);
@@ -1879,6 +2411,10 @@ static void gfx_opengl_init(void) {
     s_last_modulate  = false;
     s_current_depth_func = GL_LEQUAL;
     s_texenv_mode = TEXENV_UNKNOWN;
+#if defined(__PSP__)
+    /* Load the firmware font before game assets consume the remaining heap. */
+    home_init_intrafont();
+#endif
 }
 
 static void gfx_opengl_end_frame(void) {
@@ -1981,7 +2517,7 @@ static void fb_copy_window_into_texture(GLESFramebuffer &dst, int src_x0, int sr
 #else
     pspgl_surface *surf = reinterpret_cast<pspgl_surface*>(surface);
     if (!surf) { dst.valid = false; return; }
-    pspgl_buffer *buf = use_back ? surf->draw : surf->display;
+    pspgl_buffer *buf = use_back ? surf->color_back : surf->color_front;
     if (!buf || !buf->base) { dst.valid = false; return; }
     if (use_back && s_last_backbuf_sync_frame != s_composite_frame_counter) {
         glFinish();
@@ -1991,7 +2527,7 @@ static void fb_copy_window_into_texture(GLESFramebuffer &dst, int src_x0, int sr
     const uint16_t *src565 = static_cast<const uint16_t*>(buf->base);
     const int win_w = (int)(gfx_current_dimensions.width ? gfx_current_dimensions.width : (uint32_t)SCREEN_WIDTH);
     const int win_h = (int)(gfx_current_dimensions.height ? gfx_current_dimensions.height : (uint32_t)SCREEN_HEIGHT);
-    const uint32_t stride = surf->stride ? (uint32_t)surf->stride : (uint32_t)win_w;
+    const uint32_t stride = surf->pixelperline ? (uint32_t)surf->pixelperline : (uint32_t)win_w;
 
     int sx0=src_x0, sy0=src_y0, sx1=src_x0+src_w, sy1=src_y0+src_h;
     if (sx0<0) sx0=0; if (sy0<0) sy0=0;

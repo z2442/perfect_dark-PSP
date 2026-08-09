@@ -936,9 +936,17 @@ static MenuItemHandlerResult menuhandlerUncapTickrate(s32 operation, struct menu
 {
 	switch (operation) {
 	case MENUOP_GET:
+#ifdef __PSP__
+		return false;
+#else
 		return (g_TickRateDiv == 0);
+#endif
 	case MENUOP_SET:
+#ifdef __PSP__
+		g_TickRateDiv = 1;
+#else
 		g_TickRateDiv = !data->checkbox.value;
+#endif
 		break;
 	}
 

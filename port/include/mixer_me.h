@@ -5,6 +5,7 @@
 #include <PR/abi.h>
 #include <PR/ultratypes.h>
 
+int mixerMeBoot(void);
 int mixerMeInit(void);
 int mixerMeIsReady(void);
 void mixerMeSubmit(const Acmd *cmdList, const uintptr_t *auxData, s32 cmdCount);

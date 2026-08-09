@@ -12,9 +12,15 @@
 #include "platform.h"
 #include "types.h"
 #include "preprocess/common.h"
+#include "pd_asset_cache.h"
 
 #ifndef PLATFORM_N64
 #include <zlib.h>
+#endif
+
+#ifdef __PSP__
+#include <pspkernel.h>
+#include "psp_home_menu_renderer.h"
 #endif
 
 #define ROM_FSEEK_IF_NEEDED(pos) \
@@ -54,6 +60,8 @@
 #endif
 
 #define ROMDATA_MAX_FILES 2048
+#define ROMDATA_PACKED_OFFSET_TAG 0x40000000u
+#define ROMDATA_ASSET_CACHE_NAME "segments/pd_assets." VERSION_ROMID ".bin"
 
 #define GBC_ROM_NAME "pd.gbc"
 #define GBC_ROM_SIZE 4194304
@@ -62,6 +70,19 @@ static FILE *g_RomFp = NULL;
 static u32 g_RomFpPos = 0;
 u32 g_RomFileSize;
 static char g_RomPath[FS_MAXPATH + 1];
+static char g_RomBackendPath[FS_MAXPATH + 1];
+static u32 g_RomBackendSize;
+static s32 g_AssetCacheActive;
+static volatile s32 g_RomReopenRequested;
+
+#ifdef __PSP__
+/*
+ * Audio sample DMA runs on the PSP audio producer thread while models and
+ * other assets are loaded by user_main.  Both paths use the same FILE and ROM
+ * cache, so serialize the complete cache lookup/fill/copy transaction.
+ */
+static SceUID g_RomIoSema = -1;
+#endif
 
 static u8 *romDataSeg;
 static u32 romDataSegSize;
@@ -88,7 +109,7 @@ static u32 g_StreamedSegmentLRU = 0;
 
 // Increased cache size for better hit rate (1MB total vs 1MB before)
 #define ROM_CACHE_SLOTS 64
-#define ROM_CACHE_CHUNK_SIZE (32 * 1024)  // 32KB chunks for better locality
+#define ROM_CACHE_CHUNK_SIZE (64 * 1024)  // Match OOT's asset streaming granularity
 #define ROM_CACHE_HASH_SIZE 256  // Must be power of 2
 
 // Prefetch configuration
@@ -203,15 +224,15 @@ static inline void romCacheHashInsert(RomCacheSlot *slot) {
 
 // Fill cache slot with data from ROM
 static inline int romCacheFill(RomCacheSlot *slot, u32 base, int is_prefetch) {
-    if (!g_RomFp || base >= g_RomFileSize) return 0;
+    if (!g_RomFp || base >= g_RomBackendSize) return 0;
     
     slot->base = base;
     slot->size = 0;
     
     ROM_FSEEK_IF_NEEDED(base);
     u32 to_read = ROM_CACHE_CHUNK_SIZE;
-    if (base + to_read > g_RomFileSize) {
-        to_read = g_RomFileSize - base;
+    if (base + to_read > g_RomBackendSize) {
+        to_read = g_RomBackendSize - base;
     }
     
     size_t n = fread(slot->buf, 1, to_read, g_RomFp);
@@ -234,7 +255,7 @@ static inline void romCachePrefetch(u32 current_base, int aggressive) {
     
     for (int i = 1; i <= chunks_to_prefetch; ++i) {
         u32 prefetch_base = current_base + (ROM_CACHE_CHUNK_SIZE * i);
-        if (prefetch_base >= g_RomFileSize) break;
+        if (prefetch_base >= g_RomBackendSize) break;
         
         // Check if already cached
         if (romCacheLookup(prefetch_base)) continue;
@@ -295,6 +316,21 @@ static inline void romCacheShutdown(void) {
                      g_RomCacheStats.evictions, g_RomCacheStats.prefetches);
     }
 #endif
+}
+
+static inline void romCacheInvalidate(void) {
+    memset(g_RomCacheHash, 0, sizeof(g_RomCacheHash));
+    for (u32 i = 0; i < ROM_CACHE_SLOTS; ++i) {
+        g_RomCache[i].base = 0xffffffffu;
+        g_RomCache[i].size = 0;
+        g_RomCache[i].hash_next = NULL;
+        g_RomCache[i].lru_prev = (i > 0) ? &g_RomCache[i - 1] : NULL;
+        g_RomCache[i].lru_next = (i < ROM_CACHE_SLOTS - 1) ? &g_RomCache[i + 1] : NULL;
+    }
+    g_RomCacheLRUHead = &g_RomCache[0];
+    g_RomCacheLRUTail = &g_RomCache[ROM_CACHE_SLOTS - 1];
+    g_RomLastReadEnd = 0;
+    g_RomSeqCount = 0;
 }
 
 #endif // !PLATFORM_N64
@@ -475,36 +511,83 @@ static inline s32 romdataInflatePartialFromFile(u32 srcOffset, u8 *dst, u32 dstL
 #endif
 }
 
+static inline u32 romdataRawBackendOffset(u32 rom_offset)
+{
+    return g_AssetCacheActive ? pdAssetCacheGetRawOffset() + rom_offset : rom_offset;
+}
+
+#ifdef __PSP__
+static s32 romdataOpenExistingAssetCache(void)
+{
+    char cache_path[FS_MAXPATH + 1];
+    FILE *cache;
+
+    strncpy(cache_path, fsFullPath(ROMDATA_ASSET_CACHE_NAME), sizeof(cache_path) - 1);
+    cache_path[sizeof(cache_path) - 1] = '\0';
+    if (!pdAssetCacheOpenExisting(cache_path, VERSION, ROMDATA_ROM_SIZE,
+            ROMDATA_MAX_FILES)) {
+        return 0;
+    }
+
+    cache = fopen(pdAssetCacheGetPath(), "rb");
+    if (!cache) {
+        pdAssetCacheShutdown();
+        return 0;
+    }
+    setvbuf(cache, NULL, _IOFBF, 256 * 1024);
+    g_RomFp = cache;
+    g_RomFpPos = 0;
+    g_RomFileSize = ROMDATA_ROM_SIZE;
+    g_RomBackendSize = pdAssetCacheGetPackedSize();
+    strncpy(g_RomBackendPath, pdAssetCacheGetPath(), sizeof(g_RomBackendPath) - 1);
+    g_RomBackendPath[sizeof(g_RomBackendPath) - 1] = '\0';
+    g_AssetCacheActive = 1;
+    sysLogPrintf(LOG_NOTE, "Asset cache: booting without source ROM (%s)",
+            g_RomBackendPath);
+    return 1;
+}
+#endif
+
 static inline void romdataLoadRom(void)
 {
     #ifdef PDDEBUG
 	sysLogPrintf(LOG_NOTE, "ROM file: %s", romName);
     #endif
     
-    s32 rom_size_check = fsFileSize(romName);
-    if (rom_size_check < 0) {
-        sysFatalError("Could not get size of ROM file %s.\nEnsure that it is in the %s directory.", romName, fsFullPath(""));
-    }
-    g_RomFileSize = (u32)rom_size_check;
-
     strncpy(g_RomPath, fsFullPath(romName), sizeof(g_RomPath) - 1);
     g_RomPath[sizeof(g_RomPath) - 1] = '\0';
-    g_RomFp = fopen(g_RomPath, "rb");
-    if (g_RomFp) {
-        // Larger buffer size for better throughput
-        setvbuf(g_RomFp, NULL, _IOFBF, 256 * 1024);
+    g_AssetCacheActive = 0;
+    g_RomReopenRequested = 0;
+#ifdef __PSP__
+    (void)romdataOpenExistingAssetCache();
+#endif
+    if (!g_AssetCacheActive) {
+        s32 rom_size_check = fsFileSize(romName);
+        if (rom_size_check < 0) {
+            sysFatalError("Could not find either the asset cache or ROM file %s.\nEnsure that the ROM is in the %s directory for first-boot extraction.", romName, fsFullPath(""));
+        }
+        g_RomFileSize = (u32)rom_size_check;
+        strncpy(g_RomBackendPath, g_RomPath, sizeof(g_RomBackendPath) - 1);
+        g_RomBackendPath[sizeof(g_RomBackendPath) - 1] = '\0';
+        g_RomBackendSize = g_RomFileSize;
+        g_RomFp = fopen(g_RomPath, "rb");
+        if (g_RomFp) setvbuf(g_RomFp, NULL, _IOFBF, 256 * 1024);
+		if (!g_RomFp) {
+			sysFatalError("Could not open ROM file %s.\nEnsure that it is in the %s directory.", romName, fsFullPath(""));
+		}
     }
-	if (!g_RomFp) {
-		sysFatalError("Could not open ROM file %s.\nEnsure that it is in the %s directory.", romName, fsFullPath(""));
-	}
 
     unsigned char header_check[4];
+    const u32 raw_base = romdataRawBackendOffset(0);
+    if (fseek(g_RomFp, (long)raw_base, SEEK_SET) != 0) {
+        fclose(g_RomFp); g_RomFp = NULL;
+        romdataWrongRomError("Could not seek to ROM header.");
+    }
     if (fread(header_check, 1, sizeof(header_check), g_RomFp) != sizeof(header_check)) {
         fclose(g_RomFp); g_RomFp = NULL;
         romdataWrongRomError("Could not read initial bytes from ROM.");
     }
-    rewind(g_RomFp);
-    g_RomFpPos = 0;
+    g_RomFpPos = raw_base + sizeof(header_check);
 
 	if (!memcmp(header_check, "PK", 2) || !memcmp(header_check, "Rar", 3) || !memcmp(header_check, "7z", 2)) {
         fclose(g_RomFp); g_RomFp = NULL;
@@ -519,12 +602,12 @@ static inline void romdataLoadRom(void)
     char rom_id_buf[4];
     char rom_title_buf[sizeof(ROMDATA_ROM_TITLE) -1];
 
-    fseek(g_RomFp, 0x3b, SEEK_SET);
-    g_RomFpPos = 0x3b;
+    fseek(g_RomFp, (long)(raw_base + 0x3b), SEEK_SET);
+    g_RomFpPos = raw_base + 0x3b;
     if (fread(rom_id_buf, 1, 4, g_RomFp) != 4) { /* error */ }
     g_RomFpPos += 4;
-    fseek(g_RomFp, 0x20, SEEK_SET);
-    g_RomFpPos = 0x20;
+    fseek(g_RomFp, (long)(raw_base + 0x20), SEEK_SET);
+    g_RomFpPos = raw_base + 0x20;
     if (fread(rom_title_buf, 1, sizeof(rom_title_buf), g_RomFp) != sizeof(rom_title_buf)) { /* error */ }
     g_RomFpPos += (u32)sizeof(rom_title_buf);
 
@@ -535,13 +618,8 @@ static inline void romdataLoadRom(void)
 
     u8 zipped_header[5];
     
-    // Initialize improved ROM cache
-#ifndef PLATFORM_N64
-    romCacheInit();
-#endif
-
-    fseek(g_RomFp, ROMDATA_DATA_OFS, SEEK_SET);
-    g_RomFpPos = ROMDATA_DATA_OFS;
+    fseek(g_RomFp, (long)(raw_base + ROMDATA_DATA_OFS), SEEK_SET);
+    g_RomFpPos = raw_base + ROMDATA_DATA_OFS;
     if (fread(zipped_header, 1, 5, g_RomFp) != 5) {
         fclose(g_RomFp); g_RomFp = NULL;
         sysFatalError("Could not read data segment header from ROM.");
@@ -568,7 +646,8 @@ static inline void romdataLoadRom(void)
         sysFatalError("Could not allocate %u bytes for partial data segment.", need_unzipped);
     }
 
-    s32 outbytes = romdataInflatePartialFromFile(ROMDATA_DATA_OFS + 5, romDataSeg, need_unzipped);
+    s32 outbytes = romdataInflatePartialFromFile(raw_base + ROMDATA_DATA_OFS + 5,
+            romDataSeg, need_unzipped);
     if (outbytes < (s32)need_unzipped) {
         sysMemFree(romDataSeg); romDataSeg = NULL;
         fclose(g_RomFp); g_RomFp = NULL;
@@ -578,17 +657,99 @@ static inline void romdataLoadRom(void)
     romDataSegSize = need_unzipped;
 }
 
+#ifdef __PSP__
+static void romdataAssetProgress(u32 permille, const char *status)
+{
+    pdPspAssetProgressRender(permille, status);
+}
+
+static void romdataActivateAssetCache(void)
+{
+    PdAssetCacheSource *sources;
+    char cache_path[FS_MAXPATH + 1];
+    FILE *cache;
+
+    if (g_AssetCacheActive) return;
+    sources = calloc(ROMDATA_MAX_FILES, sizeof(*sources));
+    if (!sources) {
+        sysLogPrintf(LOG_WARNING, "Asset cache: not enough memory for build index; using ROM");
+        return;
+    }
+    for (u32 i = 1; i < ROMDATA_MAX_FILES; i++) {
+        if (fileSlots[i].source == SRC_ROM_IN_FILE) {
+            sources[i].rom_offset = fileSlots[i].rom_offset;
+            sources[i].rom_size = fileSlots[i].size;
+        }
+    }
+
+    strncpy(cache_path, fsFullPath(ROMDATA_ASSET_CACHE_NAME), sizeof(cache_path) - 1);
+    cache_path[sizeof(cache_path) - 1] = '\0';
+    if (!pdAssetCachePrepare(g_RomPath, cache_path, VERSION, g_RomFileSize,
+            sources, ROMDATA_MAX_FILES, romdataAssetProgress)) {
+        sysLogPrintf(LOG_WARNING, "Asset cache: unavailable; retaining direct ROM streaming");
+        free(sources);
+        return;
+    }
+    free(sources);
+
+    cache = fopen(pdAssetCacheGetPath(), "rb");
+    if (!cache) {
+        sysLogPrintf(LOG_WARNING, "Asset cache: could not open completed pack; retaining ROM");
+        pdAssetCacheShutdown();
+        return;
+    }
+    setvbuf(cache, NULL, _IOFBF, 256 * 1024);
+    fclose(g_RomFp);
+    g_RomFp = cache;
+    g_RomFpPos = 0;
+    g_RomBackendSize = pdAssetCacheGetPackedSize();
+    strncpy(g_RomBackendPath, pdAssetCacheGetPath(), sizeof(g_RomBackendPath) - 1);
+    g_RomBackendPath[sizeof(g_RomBackendPath) - 1] = '\0';
+    g_AssetCacheActive = 1;
+}
+#endif
+
 #ifndef PLATFORM_N64
-// OPTIMIZED: Read from ROM file using improved cache
-s32 romdataReadFromRom(u32 offset, void *dst, u32 len) {
-    if ((u64)offset + (u64)len > (u64)g_RomFileSize) return -1;
+static s32 romdataReopenBackendUnlocked(void)
+{
+    FILE *file;
+
+    if (!g_RomReopenRequested) return 1;
+    file = fopen(g_RomBackendPath, "rb");
+    if (!file) return 0;
+    setvbuf(file, NULL, _IOFBF, 256 * 1024);
+    if (g_RomFp) fclose(g_RomFp);
+    g_RomFp = file;
+    g_RomFpPos = 0;
+    romCacheInvalidate();
+    g_RomReopenRequested = 0;
+    return 1;
+}
+
+// Read from the active packed-asset backend using the OOT-style block cache.
+static s32 romdataReadFromRomUnlocked(u32 offset, void *dst, u32 len) {
+    u32 backend_offset = offset;
+
     if (!dst || len == 0) return 0;
+    if (!romdataReopenBackendUnlocked()) return -1;
+
+    if (g_AssetCacheActive) {
+        if (offset & ROMDATA_PACKED_OFFSET_TAG) {
+            backend_offset = offset & ~ROMDATA_PACKED_OFFSET_TAG;
+            if ((u64)backend_offset + len > g_RomBackendSize) return -1;
+        } else {
+            if ((u64)offset + len > g_RomFileSize) return -1;
+            backend_offset = pdAssetCacheGetRawOffset() + offset;
+        }
+    } else if ((u64)offset + len > g_RomFileSize) {
+        return -1;
+    }
 
     // Detect sequential access pattern
-    const int is_sequential = (offset == g_RomLastReadEnd);
+    const int is_sequential = (backend_offset == g_RomLastReadEnd);
     if (is_sequential) {
         g_RomSeqCount++;
-    } else if (offset < g_RomLastReadEnd || offset > g_RomLastReadEnd + ROM_CACHE_CHUNK_SIZE) {
+    } else if (backend_offset < g_RomLastReadEnd || backend_offset > g_RomLastReadEnd + ROM_CACHE_CHUNK_SIZE) {
         g_RomSeqCount = 0;  // Reset on jump
     }
     
@@ -597,16 +758,16 @@ s32 romdataReadFromRom(u32 offset, void *dst, u32 len) {
     // For very large reads, bypass cache and read directly
     if (len > ROM_CACHE_CHUNK_SIZE * 2) {
         if (!g_RomFp) return -1;
-        ROM_FSEEK_IF_NEEDED(offset);
+        ROM_FSEEK_IF_NEEDED(backend_offset);
         size_t n = fread(dst, 1, len, g_RomFp);
         g_RomFpPos += (u32)n;
-        g_RomLastReadEnd = offset + (u32)n;
+        g_RomLastReadEnd = backend_offset + (u32)n;
         return (s32)n;
     }
 
     u8 *out = (u8 *)dst;
     u32 remaining = len;
-    u32 current_offset = offset;
+    u32 current_offset = backend_offset;
     s32 total_read = 0;
 
     while (remaining > 0) {
@@ -651,8 +812,33 @@ s32 romdataReadFromRom(u32 offset, void *dst, u32 len) {
         }
     }
 
-    g_RomLastReadEnd = offset + total_read;
+    g_RomLastReadEnd = backend_offset + total_read;
     return total_read;
+}
+
+s32 romdataReadFromRom(u32 offset, void *dst, u32 len) {
+#ifdef __PSP__
+    s32 result;
+
+    if (g_RomIoSema >= 0 && sceKernelWaitSema(g_RomIoSema, 1, NULL) < 0) {
+        return -1;
+    }
+
+    result = romdataReadFromRomUnlocked(offset, dst, len);
+
+    if (g_RomIoSema >= 0) {
+        sceKernelSignalSema(g_RomIoSema, 1);
+    }
+
+    return result;
+#else
+    return romdataReadFromRomUnlocked(offset, dst, len);
+#endif
+}
+
+void romdataNotifyResume(void)
+{
+    g_RomReopenRequested = 1;
 }
 #endif
 
@@ -894,7 +1080,7 @@ static inline void romdataInitFiles(void)
             sysFatalError("Failed to alloc for temp name offsets");
         }
 
-        fseek(g_RomFp, name_table_main_rom_offset, SEEK_SET);
+	        fseek(g_RomFp, (long)romdataRawBackendOffset(name_table_main_rom_offset), SEEK_SET);
         if (fread(temp_name_relative_offsets_from_rom, sizeof(u32), num_name_offsets_to_read, g_RomFp) != num_name_offsets_to_read) {
              sysMemFree(temp_name_relative_offsets_from_rom);
              sysFatalError("Failed to read name offsets array from ROM 0x%X", name_table_main_rom_offset);
@@ -911,7 +1097,8 @@ static inline void romdataInitFiles(void)
         u32 end_of_name_block_relative_offset = max_string_data_relative_offset;
         if (max_string_data_relative_offset > 0) {
             char temp_name_char_buffer[256];
-            fseek(g_RomFp, name_table_main_rom_offset + max_string_data_relative_offset, SEEK_SET);
+	            fseek(g_RomFp, (long)romdataRawBackendOffset(
+	                    name_table_main_rom_offset + max_string_data_relative_offset), SEEK_SET);
             size_t name_bytes_read = fread(temp_name_char_buffer, 1, sizeof(temp_name_char_buffer) -1, g_RomFp);
             temp_name_char_buffer[name_bytes_read] = '\0';
             end_of_name_block_relative_offset = max_string_data_relative_offset + strlen(temp_name_char_buffer) + 1;
@@ -926,7 +1113,7 @@ static inline void romdataInitFiles(void)
             if (!g_RomFileNameBlockBuffer) {
                 sysFatalError("Failed to allocate %u for name block", g_RomFileNameBlockSize);
             }
-            fseek(g_RomFp, name_table_main_rom_offset, SEEK_SET);
+	            fseek(g_RomFp, (long)romdataRawBackendOffset(name_table_main_rom_offset), SEEK_SET);
             if (fread(g_RomFileNameBlockBuffer, 1, g_RomFileNameBlockSize, g_RomFp) != g_RomFileNameBlockSize) {
                 sysMemFree(g_RomFileNameBlockBuffer); g_RomFileNameBlockBuffer = NULL; g_RomFileNameBlockSize = 0;
                 sysFatalError("Failed to read name block from ROM 0x%X", name_table_main_rom_offset);
@@ -984,6 +1171,16 @@ s32 romdataInit(void)
 		romName = altRomName;
 	}
 
+#ifdef __PSP__
+    if (g_RomIoSema < 0) {
+        g_RomIoSema = sceKernelCreateSema("PD ROM I/O", 0, 1, 1, NULL);
+
+        if (g_RomIoSema < 0) {
+            sysFatalError("Could not create ROM I/O semaphore.");
+        }
+    }
+#endif
+
     for (int i = 0; i < ROMDATA_MAX_FILES; ++i) {
         const struct romfilepatch *patches = fileSlots[i].patches;
         u32 numpatches = fileSlots[i].numpatches;
@@ -994,12 +1191,20 @@ s32 romdataInit(void)
     }
 
 	romdataLoadRom();
+	romdataInitFiles();
+	g_RomFpPos = 0xffffffffu;
+
+#ifdef __PSP__
+    romdataActivateAssetCache();
+#endif
+
+#ifndef PLATFORM_N64
+    romCacheInit();
+#endif
 
 	for (struct romfile *seg = romSegs; seg->name; ++seg) {
 		romdataInitSegment(seg);
 	}
-
-	romdataInitFiles();
     #ifdef PDDEBUG
 	sysLogPrintf(LOG_NOTE, "romdataInit: ROM processing complete. ROM Size: %u", g_RomFileSize);
     #endif
@@ -1055,6 +1260,18 @@ void romdataShutdown(void) {
         fclose(g_RomFp);
         g_RomFp = NULL;
     }
+    pdAssetCacheShutdown();
+    g_RomBackendPath[0] = '\0';
+    g_RomBackendSize = 0;
+    g_AssetCacheActive = 0;
+    g_RomReopenRequested = 0;
+
+#ifdef __PSP__
+    if (g_RomIoSema >= 0) {
+        sceKernelDeleteSema(g_RomIoSema);
+        g_RomIoSema = -1;
+    }
+#endif
 
 #ifdef PDDEBUG
     sysLogPrintf(LOG_NOTE, "romdataShutdown: Cleanup complete.");
@@ -1116,6 +1333,37 @@ u8 *romdataFileGetData(s32 fileNum)
 	return romdataFileLoad(fileNum, NULL);
 }
 
+u8 *romdataFileGetRawData(s32 fileNum, u32 *outSize)
+{
+    if (fileNum < 1 || fileNum >= ROMDATA_MAX_FILES) return NULL;
+    struct romfile *file = &fileSlots[fileNum];
+
+    if (file->source == SRC_ROM_IN_FILE && file->rom_offset > 0 && file->size > 0) {
+        if (outSize) *outSize = file->size;
+        if (g_AssetCacheActive) {
+            const PdAssetCacheEntry *entry = pdAssetCacheGetEntry((u32)fileNum);
+            if (entry && entry->rom_size != 0) {
+                const u32 offset = pdAssetCacheGetRawOffset() + entry->rom_offset;
+                return (u8 *)(uintptr_t)ROMPTR_FROM_OFFSET(ROMDATA_PACKED_OFFSET_TAG | offset);
+            }
+        }
+#ifndef PLATFORM_N64
+        return (u8 *)(uintptr_t)ROMPTR_FROM_OFFSET(file->rom_offset);
+#endif
+    }
+    if (outSize) *outSize = 0;
+    return NULL;
+}
+
+s32 romdataFileIsInflated(s32 fileNum)
+{
+    const PdAssetCacheEntry *entry;
+
+    if (!g_AssetCacheActive || fileNum < 1 || fileNum >= ROMDATA_MAX_FILES) return 0;
+    entry = pdAssetCacheGetEntry((u32)fileNum);
+    return entry && (entry->flags & PD_ASSET_CACHE_FLAG_INFLATED) != 0;
+}
+
 u8 *romdataFileLoad(s32 fileNum, u32 *outSize)
 {
 	if (fileNum < 1 || fileNum >= ROMDATA_MAX_FILES) {
@@ -1133,6 +1381,14 @@ u8 *romdataFileLoad(s32 fileNum, u32 *outSize)
     }
 
     if (file->source == SRC_ROM_IN_FILE) {
+        if (g_AssetCacheActive) {
+            const PdAssetCacheEntry *entry = pdAssetCacheGetEntry((u32)fileNum);
+            if (entry && entry->data_size != 0) {
+                if (outSize) *outSize = entry->data_size;
+                return (u8 *)(uintptr_t)ROMPTR_FROM_OFFSET(
+                        ROMDATA_PACKED_OFFSET_TAG | entry->data_offset);
+            }
+        }
         if (g_RomFp && file->rom_offset > 0 && file->size > 0 && file->rom_offset + file->size <= g_RomFileSize) {
             if (outSize) *outSize = file->size;
 #ifndef PLATFORM_N64

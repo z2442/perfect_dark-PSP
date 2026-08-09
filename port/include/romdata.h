@@ -7,6 +7,7 @@ extern u32 g_RomFileSize;
 
 s32 romdataInit(void);
 void romdataShutdown(void);
+void romdataNotifyResume(void);
 
 // Streaming helpers: represent ROM file offsets as special romptr values
 // On non-N64 builds we encode a ROM offset into the high address space so
@@ -40,6 +41,8 @@ void romdataFileFree(s32 fileNum);
 const char *romdataFileGetName(s32 fileNum);
 
 u8 *romdataFileGetData(s32 fileNum);
+u8 *romdataFileGetRawData(s32 fileNum, u32 *outSize);
+s32 romdataFileIsInflated(s32 fileNum);
 s32 romdataFileGetSize(s32 fileNum);
 
 s32 romdataFileGetNumForName(const char *name);

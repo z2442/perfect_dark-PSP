@@ -10,6 +10,7 @@
 #include "lib/libc/ll.h"
 #include "data.h"
 #include "types.h"
+#include "audio.h"
 
 #ifdef PD_PSP_AUDIO_ME
 #include "mixer_cmd.h"
@@ -123,6 +124,7 @@ static void amgrPushPendingMeBuffer(AudioInfo *info)
 void amgrHandleDoneMsg(AudioInfo *info);
 void amgrHandleFrameMsg(AudioInfo *info, AudioInfo *previnfo);
 void amgrMain(void *arg);
+void amgrFrame(void);
 
 void amgrInit(void)
 {
@@ -229,6 +231,7 @@ void amgrCreate(ALSynConfig *config)
 	amgrResetPspAudioPipe();
 	mixerMeInit();
 #endif
+	audioStartProducer(amgrFrame);
 	func00030bfc(0, 60);
 	osCreateThread(&g_AudioManager.thread, THREAD_AUDIO, &amgrMain, 0, g_AudioSp, THREADPRI_AUDIO);
 }
@@ -419,6 +422,9 @@ void amgrFrame(void)
 
 #ifdef PD_PSP_AUDIO_ME
 	const s32 bufferedvalue = osAiGetLength() / 4;
+	if (!mixerMeIsReady() && g_AmgrPendingCount != 0) {
+		amgrResetPspAudioPipe();
+	}
 	amgrDrainCompletedMeBuffers(false);
 
 	if (g_AmgrPendingCount != 0 && bufferedvalue < g_AmgrFreqPerTick) {
@@ -427,6 +433,11 @@ void amgrFrame(void)
 
 	while (g_AmgrPendingCount >= AMGR_PSP_PIPE_DEPTH) {
 		amgrDrainCompletedMeBuffers(true);
+		if (!mixerMeIsReady()) {
+			/* A fault halts ME writes; discard its small in-flight queue and continue on CPU. */
+			amgrResetPspAudioPipe();
+			break;
+		}
 	}
 
 	AudioInfo *info = g_AudioManager.audioInfo[g_AmgrNextInfoIndex];
@@ -438,18 +449,7 @@ void amgrFrame(void)
 	Acmd *datastart = g_AudioManager.ACMDList[var8005cf90];
 	const s32 bufferedvalue = osAiGetLength() / 4;
 #endif
-#ifdef PD_PSP_AUDIO_ME
-	/*
-	 * The PSP backend reports software-ring occupancy, not the N64 AI FIFO
-	 * depth that this heuristic was tuned for. Treating that value as a
-	 * "queue is too full" signal makes the mixer emit too many short frames,
-	 * which leads to audible underruns. Keep full-size frame generation here
-	 * and use bufferedvalue only for ME handoff decisions above.
-	 */
-	const s32 somevalue = 0;
-#else
 	const s32 somevalue = bufferedvalue;
-#endif
 	s16 *outbuffer = (s16 *) osVirtualToPhysical(info->data);
 
 #ifndef PD_PSP_AUDIO_ME
@@ -487,8 +487,10 @@ void amgrFrame(void)
 	if (mixerMeIsReady()) {
 		mixerMeSubmit(datastart, auxstart, cmdcount);
 		amgrPushPendingMeBuffer(info);
-
-
+	} else {
+		/* Keep sound working if ME startup fails; MP3 already runs on Allegrex. */
+		mixerExecCommandList(datastart, auxstart, cmdcount);
+		osAiSetNextBuffer(info->data, info->frameSamples * 4);
 	}
 	g_AmgrNextInfoIndex = (g_AmgrNextInfoIndex + 1) % ARRAYCOUNT(g_AudioManager.audioInfo);
 	g_AmgrNextCmdIndex = (g_AmgrNextCmdIndex + 1) % ARRAYCOUNT(g_AudioManager.ACMDList);

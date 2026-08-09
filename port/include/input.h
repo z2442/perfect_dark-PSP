@@ -181,6 +181,7 @@ s32 inputButtonPressed(s32 idx, u32 contbtn);
 // bind virtkey vk to n64 pad #idx's button/axis ck as represented by its contkey value
 // if bind is -1, picks a bind slot automatically
 void inputKeyBind(s32 idx, u32 ck, s32 bind, u32 vk);
+void inputKeyClearBinds(s32 idx, u32 ck);
 
 const u32 *inputKeyGetBinds(s32 idx, u32 ck);
 

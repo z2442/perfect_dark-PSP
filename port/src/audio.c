@@ -1,179 +1,321 @@
-#include <PR/ultratypes.h>
-#include <stdio.h>
-#include <pspaudio.h>
-#include <pspaudiolib.h>
-#include <pspkernel.h>
-#include "platform.h"
-#include "config.h"
 #include "audio.h"
+
 #include "system.h"
+
+#include <PR/ultratypes.h>
+#include <pspaudio.h>
+#include <pspkernel.h>
+#include <stdbool.h>
 #include <string.h>
 
+#define AUDIO_CHANNELS 2U
+#define AUDIO_SOURCE_FREQUENCY 22050U
+#define AUDIO_CHUNK_FRAMES 768U
+#define AUDIO_RING_FRAMES 16384U
+#define AUDIO_RING_MASK (AUDIO_RING_FRAMES - 1U)
+#define AUDIO_STARTUP_CHUNKS 2U
 
-/* Game‑side audio settings */
-static int  audioChan   = -1;      /* PSP channel handle */
-static s32  bufferSize  = 512;     /* game frames at 22 kHz */
-static s32  queueLimit  = 8192;
-static s32  pspFrames   = 0;       /* 44 kHz frames sent to HW each call */
+#define AUDIO_GAME_THREAD_PRIORITY 0x20
+#define AUDIO_OUTPUT_THREAD_PRIORITY (AUDIO_GAME_THREAD_PRIORITY - 2)
+#define AUDIO_PRODUCER_THREAD_PRIORITY AUDIO_GAME_THREAD_PRIORITY
 
-/* --- Non‑blocking audio ring buffer ----------------------------------- */
-#define AUDIO_RING_FRAMES   32768   /* 0.74 s of audio at 44 kHz */
-#define AUDIO_FRAME_SAMPLES 2                /* L + R */
-static s16 audioRingBuf[AUDIO_RING_FRAMES * AUDIO_FRAME_SAMPLES];
-/* read/write indices expressed in *frames* (not samples) */
-static volatile u32 ringRead  = 0;
-static volatile u32 ringWrite = 0;
-/* State for simple 2× linear interpolation */
-static s16 prevLeft  = 0;
-static s16 prevRight = 0;
-static int  havePrev = 0;
-/* ---------------------------------------------------------------------- */
+#if (AUDIO_RING_FRAMES & (AUDIO_RING_FRAMES - 1)) != 0
+#error AUDIO_RING_FRAMES must be a power of two
+#endif
 
-/* --- Audio thread ---------------------------------------------------- */
-static SceUID audioThreadId   = -1;
-static volatile int audioThreadRunning = 0;
-/* --------------------------------------------------------------------- */
+static s16 g_AudioRing[AUDIO_RING_FRAMES * AUDIO_CHANNELS] __attribute__((aligned(64)));
+static s16 g_AudioSrcMix[2][AUDIO_CHUNK_FRAMES * AUDIO_CHANNELS] __attribute__((aligned(64)));
+static s16 g_AudioFallbackMix[2][AUDIO_CHUNK_FRAMES * 2U * AUDIO_CHANNELS] __attribute__((aligned(64)));
+
+static volatile u32 g_AudioReadPos;
+static volatile u32 g_AudioWritePos;
+static volatile s32 g_AudioOutputRunning;
+static volatile s32 g_AudioProducerRunning;
+static volatile s32 g_AudioInitialized;
+
+static SceUID g_AudioOutputThread = -1;
+static SceUID g_AudioProducerThread = -1;
+static SceUID g_AudioProducerSema = -1;
+static s32 g_AudioChannel = -1;
+static s32 g_AudioHardwareSrc;
+static void (*g_AudioProduceFrame)(void);
 
 static inline u32 audioBufferedFrames(void)
 {
-    const u32 writePos = ringWrite;
-    const u32 readPos = ringRead;
-
-    if (writePos >= readPos) {
-        return writePos - readPos;
-    }
-
-    return AUDIO_RING_FRAMES - readPos + writePos;
+	return g_AudioWritePos - g_AudioReadPos;
 }
 
-/* Thread that continuously feeds PSP audio */
-static int audioThread(SceSize args, void *argp)
+static void audioCopyFromRing(s16 *dst, u32 readpos, u32 frames)
 {
-    static s16 mixBuf[4096];                 /* pspFrames (≤2048) * stereo */
-    while (audioThreadRunning)
-    {
-        u32 needFrames = pspFrames;          /* 44 kHz frame count */
-        u32 readPos = ringRead;
-        s16* mixPtr = mixBuf;
-        
-        for (u32 f = 0; f < needFrames; ++f)
-        {
-            if (readPos != ringWrite)
-            {
-                u32 offRing = readPos * AUDIO_FRAME_SAMPLES;
-                *mixPtr++ = audioRingBuf[offRing];
-                *mixPtr++ = audioRingBuf[offRing + 1];
-                readPos = (readPos + 1) % AUDIO_RING_FRAMES;
-            }
-            else
-            {
-                /* Silence when underrun */
-                *mixPtr++ = 0;
-                *mixPtr++ = 0;
-            }
-        }
-        ringRead = readPos;
-        
-        sceAudioOutputBlocking(audioChan,
-                               PSP_AUDIO_VOLUME_MAX,
-                               mixBuf);
-    }
-    sceKernelExitDeleteThread(0);
-    return 0;
+	u32 first = frames;
+	u32 index = readpos & AUDIO_RING_MASK;
+
+	if (first > AUDIO_RING_FRAMES - index) {
+		first = AUDIO_RING_FRAMES - index;
+	}
+
+	memcpy(dst, &g_AudioRing[index * AUDIO_CHANNELS], first * AUDIO_CHANNELS * sizeof(s16));
+
+	if (first != frames) {
+		memcpy(dst + first * AUDIO_CHANNELS, g_AudioRing,
+				(frames - first) * AUDIO_CHANNELS * sizeof(s16));
+	}
+}
+
+static void audioUpsampleFallback(s16 *dst, const s16 *src)
+{
+	for (u32 i = 0; i < AUDIO_CHUNK_FRAMES; i++) {
+		const s16 left = src[i * 2];
+		const s16 right = src[i * 2 + 1];
+		dst[i * 4] = left;
+		dst[i * 4 + 1] = right;
+		dst[i * 4 + 2] = left;
+		dst[i * 4 + 3] = right;
+	}
+}
+
+static int audioOutputMain(SceSize args, void *argp)
+{
+	u32 mixindex = 0;
+	(void)args;
+	(void)argp;
+
+	while (g_AudioOutputRunning) {
+		u32 buffered = audioBufferedFrames();
+
+		if (buffered < AUDIO_STARTUP_CHUNKS * AUDIO_CHUNK_FRAMES) {
+			sceKernelDelayThread(1000);
+			continue;
+		}
+
+		while (g_AudioOutputRunning) {
+			s16 *srcmix = g_AudioSrcMix[mixindex];
+			u32 readpos = g_AudioReadPos;
+			u32 available = audioBufferedFrames();
+			u32 copied = available < AUDIO_CHUNK_FRAMES ? available : AUDIO_CHUNK_FRAMES;
+			s32 result;
+
+			if (copied != 0) {
+				audioCopyFromRing(srcmix, readpos, copied);
+			}
+			if (copied < AUDIO_CHUNK_FRAMES) {
+				memset(srcmix + copied * AUDIO_CHANNELS, 0,
+						(AUDIO_CHUNK_FRAMES - copied) * AUDIO_CHANNELS * sizeof(s16));
+			}
+
+			__sync_synchronize();
+			g_AudioReadPos = readpos + copied;
+
+			if (g_AudioHardwareSrc) {
+				sceKernelDcacheWritebackRange(srcmix, sizeof(g_AudioSrcMix[0]));
+				result = sceAudioSRCOutputBlocking(PSP_AUDIO_VOLUME_MAX, srcmix);
+			} else {
+				s16 *outmix = g_AudioFallbackMix[mixindex];
+				audioUpsampleFallback(outmix, srcmix);
+				sceKernelDcacheWritebackRange(outmix, sizeof(g_AudioFallbackMix[0]));
+				result = sceAudioOutputBlocking(g_AudioChannel, PSP_AUDIO_VOLUME_MAX, outmix);
+			}
+
+			if (result < 0) {
+				sceKernelDelayThread(1000);
+			}
+			mixindex ^= 1;
+		}
+	}
+
+	sceKernelExitThread(0);
+	return 0;
+}
+
+static int audioProducerMain(SceSize args, void *argp)
+{
+	(void)args;
+	(void)argp;
+
+	while (g_AudioProducerRunning) {
+		if (sceKernelWaitSema(g_AudioProducerSema, 1, NULL) < 0) {
+			break;
+		}
+
+		if (g_AudioProducerRunning && g_AudioProduceFrame != NULL) {
+			g_AudioProduceFrame();
+		}
+	}
+
+	sceKernelExitThread(0);
+	return 0;
 }
 
 s32 audioInit(void)
 {
-    pspFrames = bufferSize * 2;                /* we upsample 2× */
-    int chan = sceAudioChReserve(-1, pspFrames, PSP_AUDIO_FORMAT_STEREO); /* auto-allocate channel */
-    if (chan < 0) {
-        sysLogPrintf(LOG_ERROR, "Failed to reserve audio channel");
-        return -1;
-    }
-    audioChan = chan;
-    /* bufferSize remains the *game* frame count (22 kHz), pspFrames is 44 kHz */
-    ringRead  = ringWrite = 0;
-    memset(audioRingBuf, 0, sizeof(audioRingBuf));
+	s32 result;
 
-    /* Launch async audio thread */
-    audioThreadRunning = 1;
-    audioThreadId = sceKernelCreateThread("AsyncAudio", audioThread,
-                                          17, 0x10000, 0, NULL);
-    if (audioThreadId >= 0)
-        sceKernelStartThread(audioThreadId, 0, NULL);
+	if (g_AudioInitialized) {
+		return 0;
+	}
 
-    return 0;
+	g_AudioReadPos = 0;
+	g_AudioWritePos = 0;
+	memset(g_AudioRing, 0, sizeof(g_AudioRing));
+
+	result = sceAudioSRCChReserve(AUDIO_CHUNK_FRAMES, AUDIO_SOURCE_FREQUENCY, AUDIO_CHANNELS);
+	if (result >= 0) {
+		g_AudioHardwareSrc = true;
+	} else {
+		g_AudioChannel = sceAudioChReserve(-1, AUDIO_CHUNK_FRAMES * 2U, PSP_AUDIO_FORMAT_STEREO);
+		if (g_AudioChannel < 0) {
+			sysLogPrintf(LOG_ERROR, "Unable to reserve PSP audio output");
+			return -1;
+		}
+		g_AudioHardwareSrc = false;
+	}
+
+	g_AudioOutputRunning = true;
+	g_AudioOutputThread = sceKernelCreateThread("PD Audio Output", audioOutputMain,
+			AUDIO_OUTPUT_THREAD_PRIORITY, 0x10000, PSP_THREAD_ATTR_VFPU, NULL);
+	if (g_AudioOutputThread < 0 || sceKernelStartThread(g_AudioOutputThread, 0, NULL) < 0) {
+		g_AudioOutputRunning = false;
+		if (g_AudioHardwareSrc) {
+			sceAudioSRCChRelease();
+		} else if (g_AudioChannel >= 0) {
+			sceAudioChRelease(g_AudioChannel);
+			g_AudioChannel = -1;
+		}
+		sysLogPrintf(LOG_ERROR, "Unable to start PSP audio output thread");
+		return -1;
+	}
+
+	g_AudioInitialized = true;
+	return 0;
 }
 
-// PSP audio does not expose direct buffer size queries
+s32 audioSetFrequency(u32 frequency)
+{
+	(void)frequency;
+	return AUDIO_SOURCE_FREQUENCY;
+}
+
+s32 audioStartProducer(void (*produceFrame)(void))
+{
+	if (!g_AudioInitialized || produceFrame == NULL) {
+		return -1;
+	}
+	if (g_AudioProducerThread >= 0) {
+		return 0;
+	}
+
+	g_AudioProduceFrame = produceFrame;
+	g_AudioProducerSema = sceKernelCreateSema("PD Audio Updates", 0, 0, 16, NULL);
+	if (g_AudioProducerSema < 0) {
+		return -1;
+	}
+
+	g_AudioProducerRunning = true;
+	g_AudioProducerThread = sceKernelCreateThread("PD Audio Producer", audioProducerMain,
+			AUDIO_PRODUCER_THREAD_PRIORITY, 0x18000, PSP_THREAD_ATTR_VFPU, NULL);
+	if (g_AudioProducerThread < 0 || sceKernelStartThread(g_AudioProducerThread, 0, NULL) < 0) {
+		g_AudioProducerRunning = false;
+		sceKernelDeleteSema(g_AudioProducerSema);
+		g_AudioProducerSema = -1;
+		g_AudioProducerThread = -1;
+		return -1;
+	}
+
+	return 0;
+}
+
+s32 audioRequestFrames(u32 count)
+{
+	if (!g_AudioProducerRunning || g_AudioProducerSema < 0) {
+		return -1;
+	}
+
+	if (count > 8) {
+		count = 8;
+	}
+
+	while (count-- != 0) {
+		if (sceKernelSignalSema(g_AudioProducerSema, 1) < 0) {
+			break;
+		}
+	}
+	return 0;
+}
+
 s32 audioGetBytesBuffered(void)
 {
-    /*
-     * The game queues 22 kHz stereo S16 frames (4 bytes each), while the PSP
-     * ring stores the 2x upsampled 44 kHz stream. Each queued PSP frame is
-     * therefore equivalent to 2 game-side bytes.
-     */
-    return (s32)(audioBufferedFrames() * sizeof(s16));
+	return (s32)(audioBufferedFrames() * AUDIO_CHANNELS * sizeof(s16));
 }
 
 s32 audioGetSamplesBuffered(void)
 {
-    u32 frames = audioBufferedFrames();
-    return frames * AUDIO_FRAME_SAMPLES;   /* convert frames -> samples (stereo) */
+	return (s32)(audioBufferedFrames() * AUDIO_CHANNELS);
 }
 
 void audioSetNextBuffer(const s16 *buf, u32 len)
 {
-    /* lenBytes is BYTES of interleaved stereo S16 samples at 22 050 Hz (4 bytes per frame) */
-    u32 inFrames = len / (sizeof(s16) * AUDIO_FRAME_SAMPLES);  /* len / 4 */
+	u32 frames = len / (AUDIO_CHANNELS * sizeof(s16));
+	u32 writepos = g_AudioWritePos;
+	u32 freeframes = AUDIO_RING_FRAMES - audioBufferedFrames();
+	u32 first;
+	u32 index;
 
-    for (u32 i = 0; i < inFrames; ++i)
-    {
-        s16 currLeft  = buf[i * 2];
-        s16 currRight = buf[i * 2 + 1];
+	if (frames > freeframes) {
+		frames = freeframes;
+	}
+	if (frames == 0) {
+		return;
+	}
 
-        /* If we have a previous frame, output an interpolated frame first */
-        if (havePrev)
-        {
-            u32 nextWrite = (ringWrite + 1) % AUDIO_RING_FRAMES;
-            if (nextWrite == ringRead)
-                return;                       /* ring full – drop remainder */
+	index = writepos & AUDIO_RING_MASK;
+	first = frames;
+	if (first > AUDIO_RING_FRAMES - index) {
+		first = AUDIO_RING_FRAMES - index;
+	}
 
-            u32 off = ringWrite * AUDIO_FRAME_SAMPLES;
-            audioRingBuf[off]     = (prevLeft  + currLeft)  >> 1;   /* simple average */
-            audioRingBuf[off + 1] = (prevRight + currRight) >> 1;
-            ringWrite = nextWrite;
-        }
-        else
-        {
-            havePrev = 1; /* first frame ever seen */
-        }
+	memcpy(&g_AudioRing[index * AUDIO_CHANNELS], buf, first * AUDIO_CHANNELS * sizeof(s16));
+	if (first != frames) {
+		memcpy(g_AudioRing, buf + first * AUDIO_CHANNELS,
+				(frames - first) * AUDIO_CHANNELS * sizeof(s16));
+	}
 
-        /* Now output the current frame */
-        {
-            u32 nextWrite = (ringWrite + 1) % AUDIO_RING_FRAMES;
-            if (nextWrite == ringRead)
-                return;
-
-            u32 off = ringWrite * AUDIO_FRAME_SAMPLES;
-            audioRingBuf[off]     = currLeft;
-            audioRingBuf[off + 1] = currRight;
-            ringWrite = nextWrite;
-        }
-
-        /* Save for next interpolation */
-        prevLeft  = currLeft;
-        prevRight = currRight;
-    }
+	__sync_synchronize();
+	g_AudioWritePos = writepos + frames;
 }
 
 void audioEndFrame(void)
 {
-    /* Async thread handles output */
 }
 
-PD_CONSTRUCTOR static void audioConfigInit(void)
+void audioShutdown(void)
 {
-	configRegisterInt("Audio.BufferSize", &bufferSize, 0, 512 * 1024);
-	configRegisterInt("Audio.QueueLimit", &queueLimit, 0, 512 * 1024);
+	if (g_AudioProducerThread >= 0) {
+		g_AudioProducerRunning = false;
+		sceKernelSignalSema(g_AudioProducerSema, 1);
+		sceKernelWaitThreadEnd(g_AudioProducerThread, NULL);
+		sceKernelDeleteThread(g_AudioProducerThread);
+		g_AudioProducerThread = -1;
+	}
+	if (g_AudioProducerSema >= 0) {
+		sceKernelDeleteSema(g_AudioProducerSema);
+		g_AudioProducerSema = -1;
+	}
+
+	if (g_AudioOutputThread >= 0) {
+		g_AudioOutputRunning = false;
+		sceKernelWaitThreadEnd(g_AudioOutputThread, NULL);
+		sceKernelDeleteThread(g_AudioOutputThread);
+		g_AudioOutputThread = -1;
+	}
+
+	if (g_AudioHardwareSrc) {
+		sceAudioSRCChRelease();
+		g_AudioHardwareSrc = false;
+	} else if (g_AudioChannel >= 0) {
+		sceAudioChRelease(g_AudioChannel);
+		g_AudioChannel = -1;
+	}
+
+	g_AudioProduceFrame = NULL;
+	g_AudioInitialized = false;
 }

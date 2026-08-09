@@ -677,6 +677,15 @@ void inputKeyBind(s32 idx, u32 ck, s32 bind, u32 vk)
 	inputMarkDirty();
 }
 
+void inputKeyClearBinds(s32 idx, u32 ck)
+{
+	if (idx < 0 || idx >= INPUT_MAX_CONTROLLERS || ck >= CK_TOTAL_COUNT) {
+		return;
+	}
+	memset(binds[idx][ck], 0, sizeof(binds[idx][ck]));
+	inputMarkDirty();
+}
+
 const u32 *inputKeyGetBinds(s32 idx, u32 ck)
 {
 	if (idx < 0 || idx >= INPUT_MAX_CONTROLLERS || ck >= CK_TOTAL_COUNT) {

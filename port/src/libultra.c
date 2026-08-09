@@ -157,8 +157,7 @@ void osViSetYScale(f32 value)
 
 s32 osAiSetFrequency(u32 frequency)
 {
-	// we can allow for any freq
-	return (s32)frequency;
+	return audioSetFrequency(frequency);
 }
 
 u32 osAiGetLength(void)

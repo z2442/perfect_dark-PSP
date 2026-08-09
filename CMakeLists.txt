@@ -10,6 +10,7 @@ message(CPU: ${CMAKE_SYSTEM_PROCESSOR})
 
 
 if(PSP)
+  enable_language(ASM)
   set(TARGET_OS "psp")
   add_compile_definitions(GBI_FLOATS)
 endif()
@@ -40,7 +41,7 @@ endif()
 # --- Options ---
 set(ROMID "ntsc-final" CACHE STRING "Which ROM to build an executable for: ntsc-final, pal-final or jpn-final")
 option(PSP_ENABLE_GPROF "Enable PSP gprof instrumentation and dump profiling data on exit" OFF)
-option(PSP_AUDIO_ME "Use the PSP media engine for audio ABI execution" OFF)
+option(PSP_AUDIO_ME "Use the PSP media engine for audio ABI execution" ON)
 
 
 # --- Version Info ---
@@ -315,6 +316,10 @@ set(SRC
   ${SRC_LIB_ABSOLUTE} # Use the list with absolute paths
 )
 
+if(PSP)
+  list(APPEND SRC "${CMAKE_SOURCE_DIR}/port/fast3d/gfx_transform_vfpu.S")
+endif()
+
 # --- Asset Header Generation (Host Tool) ---
 # This should still run on the host machine, so it's mostly unchanged.
 # Ensure the tools path is correct. Using CMAKE_CURRENT_SOURCE_DIR might be safer.
@@ -331,7 +336,7 @@ add_custom_target(pd_headers ALL DEPENDS ${JSON_HEADERS})
 set(BIN_NAME_ELF "pd${BIN_REGION}.${TARGET_ARCH}elf") # Intermediate ELF name
 set(PD_TARGET_NAME "pd_elf") # Internal CMake target name for the ELF
 
-list(APPEND LIBS glut GLU GL pspge pspgu pspgum m pspmath pspfpu pspvfpu psppower pspdebug pspctrl pspdisplay pspaudiolib pspaudio )
+list(APPEND LIBS intrafont glut GLU GL pspge pspgu pspgum m pspmath pspfpu pspvfpu psppower pspdebug pspctrl pspdisplay pspaudiolib pspaudio )
 
 # Use the combined SRC list directly
 add_executable(pd ${SRC})

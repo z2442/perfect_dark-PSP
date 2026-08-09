@@ -63,6 +63,10 @@
 #include "lib/profile.h"
 #include "lib/videbug.h"
 #include "lib/debughud.h"
+#include "audio.h"
+#include "psp_exit.h"
+#include "psp_home_menu.h"
+#include "psp_timing.h"
 #include "lib/anim.h"
 #include "lib/rdp.h"
 #include "lib/lib_34d0.h"
@@ -496,6 +500,28 @@ void mainLoop(void)
 		profileReset();
 
 		while (g_MainChangeToStageNum < 0) {
+#ifdef __PSP__
+			pdPspHomeMenuPoll();
+			if (pdPspHomeMenuIsOpen()) {
+				if (pdPspHomeMenuRunFrame() == PD_PSP_HOME_MENU_EXIT_GAME) {
+					pdPspExitGame();
+				}
+				if (!pdPspHomeMenuIsOpen()) {
+					/* Discard the paused wall-clock interval instead of catching it up. */
+					frametimeInit();
+				}
+				/* Keep the OOT-style producer supplied while game state is frozen. */
+				if (audioRequestFrames(1) < 0 && !g_SndDisabled) {
+					amgrFrame();
+				}
+				pdPspPaceFrame60();
+				continue;
+			}
+			/* PSP presentation pacing blocks at an exact 60 Hz average. */
+			schedStartFrame(&g_Sched);
+			mainTick();
+			schedEndFrame(&g_Sched);
+#else
 			const s32 cycles = osGetCount() - g_Vars.thisframestartt;
 			if (!g_Vars.mininc60 || (cycles >= g_Vars.mininc60 * CYCLES_PER_FRAME - CYCLES_PER_FRAME / 2)) {
 				schedStartFrame(&g_Sched);
@@ -505,6 +531,7 @@ void mainLoop(void)
 			if (g_TickExtraSleep) {
 				sysSleep(EXTRA_SLEEP_TIME);
 			}
+#endif
 		}
 
 		lvStop();

@@ -256,7 +256,10 @@ struct model *body0f02ce8c(s32 bodynum, s32 headnum, struct modeldef *bodymodeld
 		modelSetScale(model, scale);
 		modelSetAnimScale(model, animscale);
 
-		if (headmodeldef && !g_HeadsAndBodies[bodynum].unk00_01) {
+		/* A supplied head model is not enough to attach it: some body model
+		 * definitions have no CHR headspot node.  Passing that NULL node into
+		 * modelGetNodeRwData dereferences it immediately. */
+		if (headmodeldef && node && !g_HeadsAndBodies[bodynum].unk00_01) {
 			bodymodeldef->rwdatalen -= headmodeldef->rwdatalen;
 
 			modelmgrAttachHead(model, node, headmodeldef);

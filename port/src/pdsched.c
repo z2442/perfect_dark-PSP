@@ -25,6 +25,7 @@
 #include "audio.h"
 #include "input.h"
 #include "mixer.h"
+#include "psp_timing.h"
 
 /*
  * private typedefs and defines
@@ -244,12 +245,11 @@ void schedStartFrame(OSSched *sc)
 
 void schedAudioFrame(OSSched *sc)
 {
-	s32 i;
-
 	if (!g_SndDisabled) {
-		for (i = 0; i < g_Vars.diffframe60; i++) {
-			amgrFrame();
-			audioEndFrame();
+		if (audioRequestFrames(g_Vars.diffframe60) < 0) {
+			for (s32 i = 0; i < g_Vars.diffframe60; i++) {
+				amgrFrame();
+			}
 		}
 	}
 }
@@ -298,6 +298,11 @@ void schedEndFrame(OSSched *sc)
 	schedAudioFrame(sc);
 	schedRenderCrashPeriodically(sc->frameCount);
 	videoEndFrame();
+
+#ifdef __PSP__
+	/* Exact 60 Hz average: 16666, 16667, 16667 microseconds, no catch-up. */
+	pdPspPaceFrame60();
+#endif
 
 	if (g_MainIsBooting == 0) {
 		schedConsiderScreenshot();

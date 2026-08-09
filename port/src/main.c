@@ -37,6 +37,10 @@
 #include "mod.h"
 #include "system.h"
 #include "utils.h"
+#include "mixer_me.h"
+#include "psp_exit.h"
+#include "psp_home_menu.h"
+#include "psp_timing.h"
 
 #ifdef PD_PSP_GPROF
 #include <pspprof.h>
@@ -103,23 +107,46 @@ static void profilerStop(s32 shouldDump)
 #endif
 
 
-int exit_callback(int arg1, int arg2, void *common) {
-    profilerStop(1);
-    inputSaveBinds();
-    configSave(CONFIG_PATH);
-    sceKernelExitGame();
+static int pdPspSystemExitCallback(int arg1, int arg2, void *common) {
+	/* Required by the firmware, but deliberately non-exiting. HOME is custom. */
+	(void)arg1;
+	(void)arg2;
+	(void)common;
     return 0;
 }
 
-int callback_thread(SceSize args, void *argp) {
-    int cbid = sceKernelCreateCallback("Exit Callback", exit_callback, NULL);
-    sceKernelRegisterExitCallback(cbid);
+static int pdPspPowerCallback(int arg1, int powerInfo, void *common) {
+	(void)arg1;
+	(void)common;
+
+	if (powerInfo & PSP_POWER_CB_RESUMING) {
+		/* Firmware may restore its default clocks after suspend. */
+		(void)scePowerSetClockFrequency(333, 333, 166);
+		romdataNotifyResume();
+	}
+
+	return 0;
+}
+
+static int pdPspCallbackThread(SceSize args, void *argp) {
+	int exitcbid;
+	int powercbid;
+	(void)args;
+	(void)argp;
+	exitcbid = sceKernelCreateCallback("PD System Exit", pdPspSystemExitCallback, NULL);
+	if (exitcbid >= 0) {
+		sceKernelRegisterExitCallback(exitcbid);
+	}
+	powercbid = sceKernelCreateCallback("PD Power", pdPspPowerCallback, NULL);
+	if (powercbid >= 0) {
+		scePowerRegisterCallback(0, powercbid);
+	}
     sceKernelSleepThreadCB();
     return 0;
 }
 
-int setup_callbacks(void) {
-    int thid = sceKernelCreateThread("update_thread", callback_thread, 0x11, 0xFA0, 0, 0);
+static int pdPspSetupCallbacks(void) {
+	int thid = sceKernelCreateThread("PD Callbacks", pdPspCallbackThread, 0x11, 0x1000, 0, 0);
     if(thid >= 0)
         sceKernelStartThread(thid, 0, 0);
     return thid;
@@ -144,7 +171,7 @@ u32 g_VmNumPageReplaces = 0;
 u8 g_VmShowStats = 0;
 
 s32 g_TickRateDiv = 1;
-s32 g_TickExtraSleep = true;
+s32 g_TickExtraSleep = false;
 
 s32 g_SkipIntro = false;
 
@@ -193,8 +220,15 @@ static void gameInit(void)
 
 static void cleanup(void)
 {
+	static s32 cleaned;
+	if (cleaned) {
+		return;
+	}
+	cleaned = true;
 	profilerStop(1);
 	sysLogPrintf(LOG_NOTE, "shutdown");
+	audioShutdown();
+	mixerMeShutdown();
 	inputSaveBinds();
 	configSave(CONFIG_PATH);
 	videoShutdown();
@@ -203,11 +237,19 @@ static void cleanup(void)
 	// TODO: actually shut down all subsystems
 }
 
+void pdPspExitGame(void)
+{
+	cleanup();
+	sceKernelExitGame();
+}
+
 
 int main(int argc, const char **argv)
 {
-	
-	setup_callbacks();
+	/* Match OOT's PSP performance setup before any worker or renderer starts. */
+	(void)scePowerSetClockFrequency(333, 333, 166);
+
+	pdPspSetupCallbacks();
 
 	#ifdef PDDEBUG
 	pspDebugScreenInit();
@@ -216,6 +258,8 @@ int main(int argc, const char **argv)
 	#endif 
 
 	pspFpuSetEnable(0);
+	/* me-core must boot before the renderer; audio publishes work later. */
+	(void)mixerMeBoot();
 	//VolatileMemInit();
 	sysInitArgs(argc, argv);
 
@@ -234,10 +278,11 @@ int main(int argc, const char **argv)
 	videoInit();
 	pspDebugScreenPrintf("Input Init \n");
 	inputInit();
-	pspDebugScreenPrintf("Audio Init \n");
-	audioInit();
+	pdPspHomeMenuInit();
 	pspDebugScreenPrintf("Rom Data Init Please Wait... \n");
 	romdataInit();
+	pspDebugScreenPrintf("Audio Init \n");
+	audioInit();
 
 	#else
 	sysInit();
@@ -245,9 +290,15 @@ int main(int argc, const char **argv)
 	configInit();
 	videoInit();
 	inputInit();
-	audioInit();
+	pdPspHomeMenuInit();
 	romdataInit();
+	audioInit();
 	#endif
+
+	/* PD's PSP simulation is fixed at one 60 Hz tick per presented frame. */
+	g_TickRateDiv = 1;
+	g_TickExtraSleep = false;
+	pdPspTimingReset();
 
 	g_ValidGbcRomFound = romdataCheckGbcRom();
 

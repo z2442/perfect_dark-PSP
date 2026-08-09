@@ -2926,6 +2926,24 @@ bool mp3decSetSideInfo(struct asistream *stream)
 
 bool mp3decDecodeFrame(struct asistream *stream)
 {
+#ifndef PLATFORM_N64
+	/*
+	 * Non-N64 mixers decode the original MP3 stream with minimp3 and replace
+	 * this block in aPlayMP3Impl.  The legacy synthesis helpers are empty C
+	 * stubs in this port, so running the N64 path would convert uninitialized
+	 * stack floats to integers.  Keep its stream-position bookkeeping, provide
+	 * a deterministic destination block, and let the mixer fill it with PCM.
+	 */
+	s32 frameoffset = mp3main00043dd0(stream);
+
+	if (frameoffset == -1) {
+		return false;
+	}
+
+	stream->unk2020 = (frameoffset - stream->main_data_begin) * 8;
+	bzero(&stream->unk2070[stream->unk3ba0], sizeof(struct mp3thing));
+	return true;
+#else
 	s32 sp954;
 	s32 gr = 0;
 	s32 ch;
@@ -3042,4 +3060,5 @@ bool mp3decDecodeFrame(struct asistream *stream)
 	}
 
 	return true;
+#endif
 }

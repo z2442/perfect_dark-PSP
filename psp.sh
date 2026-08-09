@@ -11,7 +11,7 @@ ROMID="${ROMID:-ntsc-final}"
 BUILD_TYPE="${BUILD_TYPE:-Release}"
 BUILD_PRX="${BUILD_PRX:-1}"
 PSP_ENABLE_GPROF="${PSP_ENABLE_GPROF:-0}"
-PSP_AUDIO_ME="${PSP_AUDIO_ME:-0}"
+PSP_AUDIO_ME="${PSP_AUDIO_ME:-1}"
 
 case "${PSP_AUDIO_ME}" in
     1|ON|on|TRUE|true|YES|yes)

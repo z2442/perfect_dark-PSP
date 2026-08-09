@@ -11,6 +11,7 @@
 #include "data.h"
 #include "types.h"
 #ifndef PLATFORM_N64
+#include <string.h>
 #include "system.h"
 #endif
 
@@ -4122,7 +4123,7 @@ romptr_t fileGetRomAddress(s32 filenum)
 #ifdef PLATFORM_N64
 	return (romptr_t) g_FileTable[filenum];
 #else
-	return (romptr_t) romdataFileGetData(filenum);
+	return (romptr_t) romdataFileGetRawData(filenum, NULL);
 #endif
 }
 
@@ -4174,7 +4175,21 @@ void fileLoad(u8 *dst, u32 allocationlen, romptr_t *romaddrptr, struct fileinfo 
 	if (allocationlen == 0) {
 		// DMA with no inflate
 		dmaExec(dst, *romaddrptr, romsize);
-	} else {
+	}
+#ifndef PLATFORM_N64
+	else if (romdataFileIsInflated(filenum)) {
+		if (romsize > allocationlen) {
+			info->loadedsize = 0;
+		} else {
+			dmaExec(dst, *romaddrptr, romsize);
+			info->loadedsize = ALIGN16(romsize);
+			if (info->loadedsize > romsize) {
+				memset(dst + romsize, 0, info->loadedsize - romsize);
+			}
+		}
+	}
+#endif
+	else {
 		// DMA the compressed data to scratch space then inflate
 		u8 *scratch = (dst + allocationlen) - ((romsize + 7) & (uintptr_t)~7);
 
@@ -4245,7 +4260,7 @@ void fileLoadPartToAddr(u16 filenum, void *memaddr, s32 offset, u32 len)
 #ifdef PLATFORM_N64
 		dmaExec(memaddr, (romptr_t) g_FileTable[filenum] + offset, len);
 #else
-		const u8 *src = romdataFileGetData(filenum);
+		const u8 *src = romdataFileGetRawData(filenum, NULL);
 		if (src) {
 			dmaExec(memaddr, (uintptr_t) src + offset, len);
 		}
@@ -4259,19 +4274,22 @@ u32 fileGetInflatedSize(s32 filenum, u32 loadtype)
 {
 	u8 *ptr;
 	u8 buffer[0x50];
-	uintptr_t *romaddrptr;
 #if VERSION < VERSION_NTSC_1_0
 	char message[128];
 #endif
 	uintptr_t romaddr;
 
-	romaddrptr = &g_FileTable[filenum];
-
 	if (1);
 
 #ifdef PLATFORM_N64
+	uintptr_t *romaddrptr = &g_FileTable[filenum];
 	romaddr = *romaddrptr;
 #else
+	if (romdataFileIsInflated(filenum)) {
+		u32 cachedsize = 0;
+		(void)romdataFileLoad(filenum, &cachedsize);
+		return romdataFileGetEstimatedSize(cachedsize, loadtype);
+	}
 	romaddr = (uintptr_t)romdataFileGetData(filenum);
 #endif
 	ptr = (u8 *) ((uintptr_t) &buffer[0x10] & ~0xf);

@@ -57,6 +57,7 @@ extern "C" volatile uint8_t g_es1_text_outline;
 #include "gfx_window_manager_api.h"
 #include "gfx_rendering_api.h"
 #include "gfx_screen_config.h"
+#include "psp_vfpu.h"
 
 #include <pspfpu.h>
 #include <pspmath.h>
@@ -95,7 +96,7 @@ static inline void aligned_free(void* ptr) {
 
 static inline void gfx_copy_fixed(void *dst, const void *src, size_t len) {
 #if defined(__PSP__)
-    pd_copy_bytes_unaligned(dst, src, len);
+    pdPspMemcpyVfpu(dst, src, len);
 #else
     memcpy(dst, src, len);
 #endif
@@ -172,6 +173,16 @@ struct LoadedVertex {
     float clip_x, clip_y, clip_z, clip_w;
 #endif
 };
+
+#if defined(__PSP__)
+static_assert(sizeof(Vtx) == 12, "VFPU vertex transform expects a 12-byte PD Vtx");
+static_assert(sizeof(LoadedVertex) == 48, "VFPU vertex transform expects a 48-byte LoadedVertex");
+static_assert(__builtin_offsetof(LoadedVertex, clip_x) == 32,
+              "VFPU vertex transform expects clip coordinates at offset 32");
+
+extern "C" void gfx_transform_vertices_vfpu_pd(LoadedVertex *dest, const Vtx *source,
+                                                uint32_t count, const float mp[4][4]);
+#endif
 
 struct TransformSnapshot {
     alignas(16) float P[4][4];
@@ -1092,7 +1103,7 @@ static const uint8_t* prepare_texture_rgba32_for_upload(const uint8_t* src,
     for (uint32_t y = 0; y < src_h; ++y) {
         const uint8_t* src_row = src + (size_t)y * src_row_bytes;
         uint8_t* dst_row = dst + (size_t)y * dst_row_bytes;
-        memcpy(dst_row, src_row, src_row_bytes);
+        gfx_copy_fixed(dst_row, src_row, src_row_bytes);
 
         if (applied_mirror_s) {
             for (uint32_t x = 0; x < pot_w; ++x) {
@@ -1107,7 +1118,7 @@ static const uint8_t* prepare_texture_rgba32_for_upload(const uint8_t* src,
         for (uint32_t y = 0; y < pot_h; ++y) {
             const uint8_t* src_row = dst + (size_t)(pot_h - 1 - y) * dst_row_bytes;
             uint8_t* dst_row = dst + (size_t)(pot_h + y) * dst_row_bytes;
-            memcpy(dst_row, src_row, dst_row_bytes);
+            gfx_copy_fixed(dst_row, src_row, dst_row_bytes);
         }
     }
 
@@ -1731,16 +1742,68 @@ static void gfx_transposed_matrix_mul(float res[3], const float a[3], const floa
     res[2] = a[0] * b[2][0] + a[1] * b[2][1] + a[2] * b[2][2];
 }
 
-static void calculate_normal_dir(const Light_t* light, float coeffs[3]) {
-    const float light_dir[3] = { light->dir[0] / 127.f, light->dir[1] / 127.f, light->dir[2] / 127.f };
-    gfx_transposed_matrix_mul(coeffs, light_dir, rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1]);
+static void calculate_normal_dir_components(int32_t dir_x, int32_t dir_y, int32_t dir_z, float coeffs[3]) {
+#if defined(__PSP__)
+    const float (*matrix)[4] = rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1];
+    union { float value; uint32_t bits; } inv_dir_scale = { 1.0f / 127.0f };
+    union { float value; uint32_t bits; } dot;
+
+    __asm__ volatile(
+        ".set push\n"
+        ".set noreorder\n"
+        "mtv %[dir_x], S100\n"
+        "mtv %[dir_y], S101\n"
+        "mtv %[dir_z], S102\n"
+        "vi2f.s S100, S100, 0\n"
+        "vi2f.s S101, S101, 0\n"
+        "vi2f.s S102, S102, 0\n"
+        "mtv %[inv_scale], S110\n"
+        "vscl.t C100, C100, S110\n"
+        "lv.q C000, 0(%[matrix])\n"
+        "lv.q C010, 16(%[matrix])\n"
+        "lv.q C020, 32(%[matrix])\n"
+        "vdot.t S200, C000, C100\n"
+        "vdot.t S201, C010, C100\n"
+        "vdot.t S202, C020, C100\n"
+        "vdot.t S210, C200, C200\n"
+        "sv.s S200, 0(%[coeffs])\n"
+        "sv.s S201, 4(%[coeffs])\n"
+        "sv.s S202, 8(%[coeffs])\n"
+        "mfv %[dot], S210\n"
+        ".set pop\n"
+        : [dot] "=r"(dot.bits)
+        : [dir_x] "r"(dir_x), [dir_y] "r"(dir_y), [dir_z] "r"(dir_z),
+          [inv_scale] "r"(inv_dir_scale.bits), [matrix] "r"(matrix), [coeffs] "r"(coeffs)
+        : "memory");
+
+    if (dot.value > 0.00001f) {
+        union { float value; uint32_t bits; } scale = { 1.0f / pspFpuSqrt(dot.value) };
+
+        __asm__ volatile(
+            "lv.s S200, 0(%[coeffs])\n"
+            "lv.s S201, 4(%[coeffs])\n"
+            "lv.s S202, 8(%[coeffs])\n"
+            "mtv %[scale], S210\n"
+            "vscl.t C200, C200, S210\n"
+            "sv.s S200, 0(%[coeffs])\n"
+            "sv.s S201, 4(%[coeffs])\n"
+            "sv.s S202, 8(%[coeffs])\n"
+            : : [coeffs] "r"(coeffs), [scale] "r"(scale.bits) : "memory");
+    }
+#else
+    const float light_dir[3] = { dir_x / 127.f, dir_y / 127.f, dir_z / 127.f };
+    gfx_transposed_matrix_mul(coeffs, light_dir,
+                              rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1]);
     gfx_normalize_vector(coeffs);
+#endif
+}
+
+static void calculate_normal_dir(const Light_t* light, float coeffs[3]) {
+    calculate_normal_dir_components(light->dir[0], light->dir[1], light->dir[2], coeffs);
 }
 
 static void calculate_normal_dir(const struct NormalColor *vcn, float coeffs[3]) {
-    const float light_dir[3] = { vcn->x / 127.f, vcn->y / 127.f, vcn->z / 127.f };
-    gfx_transposed_matrix_mul(coeffs, light_dir, rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1]);
-    gfx_normalize_vector(coeffs);
+    calculate_normal_dir_components(vcn->x, vcn->y, vcn->z, coeffs);
 }
 
 #if defined(__PSP__)
@@ -2188,6 +2251,8 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* verti
     const TransformSnapshot &transform_snapshot = s_transform_snapshots[transform_id];
     const float (*MP)[4] = transform_snapshot.MP;
     const bool z_is_from_0_to_1 = gfx_cached_clip_parameters.z_is_from_0_to_1;
+    gfx_transform_vertices_vfpu_pd(&rsp.loaded_vertices[dest_index], vertices,
+                                   static_cast<uint32_t>(n_vertices), MP);
 #else
     const uint16_t transform_id = 0;
 #endif
@@ -2280,19 +2345,15 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* verti
         d->u = U;
         d->v = V;
 
-        // Store object-space position; GL fixed pipeline will transform
+#if !defined(__PSP__)
+        // The PSP batch transform has already stored these four values.
         d->x = x;
         d->y = y;
         d->z = z;
         d->w = w;
+#endif
 
 #if defined(__PSP__)
-        alignas(16) float clip[4];
-        psp_vfpu_transform_clip_rowvec(clip, MP, x, y, z, w);
-        d->clip_x = clip[0];
-        d->clip_y = clip[1];
-        d->clip_z = clip[2];
-        d->clip_w = clip[3];
         d->clip_rej = gfx_make_clip_reject_mask(d->clip_x, d->clip_y, d->clip_z, d->clip_w, z_is_from_0_to_1);
 #else
         d->clip_rej = 0;
