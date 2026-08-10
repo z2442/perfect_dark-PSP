@@ -171,17 +171,22 @@ struct LoadedVertex {
     uint16_t transform_id;
 #if defined(__PSP__)
     float clip_x, clip_y, clip_z, clip_w;
+    float eye_x, eye_y, eye_z, eye_w;
 #endif
 };
 
 #if defined(__PSP__)
 static_assert(sizeof(Vtx) == 12, "VFPU vertex transform expects a 12-byte PD Vtx");
-static_assert(sizeof(LoadedVertex) == 48, "VFPU vertex transform expects a 48-byte LoadedVertex");
+static_assert(sizeof(LoadedVertex) == 64, "VFPU vertex transform expects a 64-byte LoadedVertex");
 static_assert(__builtin_offsetof(LoadedVertex, clip_x) == 32,
               "VFPU vertex transform expects clip coordinates at offset 32");
+static_assert(__builtin_offsetof(LoadedVertex, eye_x) == 48,
+              "VFPU vertex transform expects eye coordinates at offset 48");
 
+struct TransformSnapshot;
 extern "C" void gfx_transform_vertices_vfpu_pd(LoadedVertex *dest, const Vtx *source,
-                                                uint32_t count, const float mp[4][4]);
+                                                uint32_t count, const TransformSnapshot *transform,
+                                                uint32_t clip_config);
 #endif
 
 struct TransformSnapshot {
@@ -199,22 +204,7 @@ enum ClipRejectBits : uint8_t {
     CLIP_REJECT_NEAR   = 1u << 4,
     CLIP_REJECT_FAR    = 1u << 5,
 };
-
-static inline uint8_t gfx_make_clip_reject_mask(float clip_x, float clip_y, float clip_z, float clip_w,
-                                                bool z_is_from_0_to_1) {
-    uint8_t mask = 0;
-    if (clip_w + clip_x < 0.0f) mask |= CLIP_REJECT_LEFT;
-    if (clip_w - clip_x < 0.0f) mask |= CLIP_REJECT_RIGHT;
-    if (clip_w + clip_y < 0.0f) mask |= CLIP_REJECT_BOTTOM;
-    if (clip_w - clip_y < 0.0f) mask |= CLIP_REJECT_TOP;
-    if (z_is_from_0_to_1) {
-        if (clip_z < 0.0f) mask |= CLIP_REJECT_NEAR;
-    } else {
-        if (clip_w + clip_z < 0.0f) mask |= CLIP_REJECT_NEAR;
-    }
-    if (clip_w - clip_z < 0.0f) mask |= CLIP_REJECT_FAR;
-    return mask;
-}
+static constexpr float kPspClipPlaneEpsilon = 1e-5f;
 
 static inline uint8_t gfx_get_active_clip_reject_mask(void) {
     uint8_t mask = CLIP_REJECT_LEFT | CLIP_REJECT_RIGHT | CLIP_REJECT_BOTTOM | CLIP_REJECT_TOP;
@@ -223,6 +213,7 @@ static inline uint8_t gfx_get_active_clip_reject_mask(void) {
     }
     return mask;
 }
+
 #endif
 
 static struct {
@@ -400,13 +391,24 @@ static uint8_t s_psp_model_mtx_fix = 0;
 static uint8_t s_psp_model_mtx_fix_stack[11] = { 0 };
 static bool s_rsp_mp_matrix_dirty = true;
 static TransformSnapshot s_transform_snapshots[MAX_TRANSFORM_SNAPSHOTS];
+static uint8_t s_transform_snapshot_is_model[MAX_TRANSFORM_SNAPSHOTS];
+static uint16_t s_transform_snapshot_projection_epoch[MAX_TRANSFORM_SNAPSHOTS];
 static uint16_t s_transform_snapshot_count = 1;
 static uint16_t s_current_transform_snapshot = 0;
+static uint16_t s_model_projection_epoch = 1;
 static bool s_transform_snapshot_dirty = true;
 static constexpr uint16_t kPretransformedTransformId = 0xfffeu;
+static constexpr uint16_t kModelviewPretransformedTransformId = 0xfffdu;
 static constexpr uint16_t kInvalidTransformId = 0xffffu;
 static uint16_t s_active_transform_snapshot = kInvalidTransformId;
-static bool s_active_transform_pretransformed = false;
+static uint16_t s_active_eye_projection_epoch = 0;
+static uint8_t s_active_eye_projection_style = 0;
+enum PspTransformMode : uint8_t {
+    PSP_TRANSFORM_OBJECT = 0,
+    PSP_TRANSFORM_CLIP = 1,
+    PSP_TRANSFORM_MODELVIEW = 2,
+};
+static uint8_t s_active_transform_mode = PSP_TRANSFORM_OBJECT;
 #endif
 extern "C" volatile uint8_t g_es1_cull_mode; // 0=disable, 1=cull back, 2=cull front
 volatile uint8_t g_es1_cull_mode = 1;
@@ -516,6 +518,7 @@ struct GfxFlushStats {
     uint32_t tiny = 0;
     uint32_t small = 0;
     uint32_t max_tris = 0;
+    uint32_t matrix_joins = 0;
     uint64_t total_tris = 0;
     uint32_t by_reason[GFX_FLUSH_REASON_COUNT] = { 0 };
     uint64_t tris_by_reason[GFX_FLUSH_REASON_COUNT] = { 0 };
@@ -601,13 +604,14 @@ static void gfx_flush_stats_end_frame(void) {
         }
 
         sysLogPrintf(LOG_NOTE,
-                     "F3D PSP flush f=%u total=%u tiny=%u small=%u avg=%.1f max=%u top=%s",
+                     "F3D PSP flush f=%u total=%u tiny=%u small=%u avg=%.1f max=%u matrixjoins=%u top=%s",
                      s_flush_frame_index,
                      s_flush_stats.total,
                      s_flush_stats.tiny,
                      s_flush_stats.small,
                      avg_tris,
                      s_flush_stats.max_tris,
+                     s_flush_stats.matrix_joins,
                      top_buf[0] ? top_buf : "none");
     }
 #endif
@@ -2050,6 +2054,8 @@ static uint16_t gfx_capture_current_transform_snapshot(void) {
             snap.MP[i][2] *= g_es1_depth_clamp_scale;
         }
     }
+    s_transform_snapshot_is_model[s_transform_snapshot_count] = s_psp_model_mtx_fix;
+    s_transform_snapshot_projection_epoch[s_transform_snapshot_count] = s_model_projection_epoch;
 
     s_current_transform_snapshot = s_transform_snapshot_count++;
     s_transform_snapshot_dirty = false;
@@ -2057,20 +2063,31 @@ static uint16_t gfx_capture_current_transform_snapshot(void) {
     return s_current_transform_snapshot;
 }
 
-static void gfx_bind_transform_snapshot(uint16_t transform_id, bool pretransformed) {
-    if (pretransformed) {
+static void gfx_bind_transform_snapshot(uint16_t transform_id, uint16_t active_transform_id,
+                                        PspTransformMode mode) {
+    if (mode == PSP_TRANSFORM_CLIP) {
         gfx_matrix_identity(g_es1_P);
         gfx_matrix_identity(g_es1_M);
     } else {
         const TransformSnapshot &snap = s_transform_snapshots[transform_id];
         gfx_copy_fixed(g_es1_P, snap.P, sizeof(g_es1_P));
-        gfx_copy_fixed(g_es1_M, snap.M, sizeof(g_es1_M));
+        if (mode == PSP_TRANSFORM_MODELVIEW) {
+            gfx_matrix_identity(g_es1_M);
+        } else {
+            gfx_copy_fixed(g_es1_M, snap.M, sizeof(g_es1_M));
+        }
     }
 
     g_es1_matrix_dirty = 1;
-    g_es1_pretransformed = pretransformed ? 1 : 0;
-    s_active_transform_snapshot = transform_id;
-    s_active_transform_pretransformed = pretransformed;
+    g_es1_pretransformed = mode;
+    s_active_transform_snapshot = active_transform_id;
+    s_active_transform_mode = mode;
+    s_active_eye_projection_epoch = (mode == PSP_TRANSFORM_MODELVIEW)
+        ? s_transform_snapshot_projection_epoch[transform_id]
+        : 0;
+    s_active_eye_projection_style = (mode == PSP_TRANSFORM_MODELVIEW)
+        ? s_transform_snapshot_is_model[transform_id]
+        : 0;
 }
 #endif
 
@@ -2090,9 +2107,14 @@ static void gfx_apply_aspect_to_mp(float mp[4][4]) {
 
 static void gfx_publish_es1_matrices(void) {
     if (s_psp_model_mtx_fix) {
-        gfx_copy_fixed(g_es1_P, gfx_get_rsp_mp_matrix(), sizeof(g_es1_P));
+        /* PD model segments use an aspect-adjusted shared projection. Vertices
+         * are transformed into eye space by VFPU at load time, allowing matrix
+         * changes to remain in one batch without losing perspective correction. */
+        gfx_copy_fixed(g_es1_P, rsp.P_matrix, sizeof(g_es1_P));
         gfx_apply_aspect_to_mp(g_es1_P);
-        gfx_matrix_identity(g_es1_M);
+        gfx_copy_fixed(g_es1_M,
+                       rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1],
+                       sizeof(g_es1_M));
     } else {
         gfx_copy_fixed(g_es1_P, rsp.P_matrix, sizeof(rsp.P_matrix));
         gfx_copy_fixed(g_es1_M, rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], sizeof(rsp.P_matrix));
@@ -2136,9 +2158,28 @@ static void gfx_sp_matrix(uint8_t parameters, const int32_t* addr) {
 
     gfx_end_rect_batch();
 
+#if defined(__PSP__)
+    const bool modelview_matrix = (parameters & G_MTX_PROJECTION) == 0;
+    const bool can_keep_eye_batch = modelview_matrix &&
+        (buf_vbo_len == 0 ||
+         (s_active_transform_mode == PSP_TRANSFORM_MODELVIEW &&
+          s_active_eye_projection_style == s_psp_model_mtx_fix));
+    if (!can_keep_eye_batch) {
+        gfx_flush_with_reason(GFX_FLUSH_MATRIX);
+    } else if (buf_vbo_len > 0) {
+        ++s_flush_stats.matrix_joins;
+    }
+#else
     gfx_flush_with_reason(GFX_FLUSH_MATRIX);
+#endif
 
     if (parameters & G_MTX_PROJECTION) {
+#if defined(__PSP__)
+        ++s_model_projection_epoch;
+        if (s_model_projection_epoch == 0) {
+            s_model_projection_epoch = 1;
+        }
+#endif
         if (parameters & G_MTX_LOAD) {
             gfx_copy_fixed(rsp.P_matrix, matrix, sizeof(matrix_buf));
         } else {
@@ -2193,7 +2234,24 @@ static void gfx_sp_matrix(uint8_t parameters, const int32_t* addr) {
 static void gfx_sp_pop_matrix(uint32_t count) {
     gfx_end_rect_batch();
 
+#if defined(__PSP__)
+    const uint32_t target_stack_size = count >= rsp.modelview_matrix_stack_size
+        ? 0
+        : rsp.modelview_matrix_stack_size - count;
+    const uint8_t target_projection_style = target_stack_size > 0
+        ? s_psp_model_mtx_fix_stack[target_stack_size - 1]
+        : 0;
+    const bool can_keep_eye_batch = buf_vbo_len == 0 ||
+        (s_active_transform_mode == PSP_TRANSFORM_MODELVIEW &&
+         s_active_eye_projection_style == target_projection_style);
+    if (!can_keep_eye_batch) {
+        gfx_flush_with_reason(GFX_FLUSH_POP_MATRIX);
+    } else if (buf_vbo_len > 0) {
+        ++s_flush_stats.matrix_joins;
+    }
+#else
     gfx_flush_with_reason(GFX_FLUSH_POP_MATRIX);
+#endif
     while (count--) {
         if (rsp.modelview_matrix_stack_size > 0) {
             --rsp.modelview_matrix_stack_size;
@@ -2249,10 +2307,12 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* verti
 #if defined(__PSP__)
     const uint16_t transform_id = gfx_capture_current_transform_snapshot();
     const TransformSnapshot &transform_snapshot = s_transform_snapshots[transform_id];
-    const float (*MP)[4] = transform_snapshot.MP;
     const bool z_is_from_0_to_1 = gfx_cached_clip_parameters.z_is_from_0_to_1;
+    const uint32_t clip_config = gfx_get_active_clip_reject_mask() |
+        (z_is_from_0_to_1 ? 0x100u : 0u);
     gfx_transform_vertices_vfpu_pd(&rsp.loaded_vertices[dest_index], vertices,
-                                   static_cast<uint32_t>(n_vertices), MP);
+                                   static_cast<uint32_t>(n_vertices), &transform_snapshot,
+                                   clip_config);
 #else
     const uint16_t transform_id = 0;
 #endif
@@ -2353,9 +2413,7 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* verti
         d->w = w;
 #endif
 
-#if defined(__PSP__)
-        d->clip_rej = gfx_make_clip_reject_mask(d->clip_x, d->clip_y, d->clip_z, d->clip_w, z_is_from_0_to_1);
-#else
+#if !defined(__PSP__)
         d->clip_rej = 0;
 #endif
 
@@ -2399,18 +2457,7 @@ static inline int gfx_lod_tile_offset(const int i) {
     return (rdp.tex_lod ? rdp.tex_detail : i);
 }
 
-static void gfx_prepare_tri_pipeline_state(void) {
-    if (!s_tri_pipeline_dirty) {
-        if (!s_batch_has_cc) {
-            s_batch_has_cc = true;
-            s_batch_cc_mode = s_prepared_tri_pipeline_state.batch_cc_mode;
-            s_batch_cc_opts = s_prepared_tri_pipeline_state.batch_cc_opts;
-            s_batch_uses_prim_color = s_prepared_tri_pipeline_state.batch_uses_prim_color;
-            s_batch_uses_env_color = s_prepared_tri_pipeline_state.batch_uses_env_color;
-        }
-        return;
-    }
-
+static __attribute__((noinline)) void gfx_prepare_tri_pipeline_state_slow(void) {
     uint8_t new_cull = 1; // default: cull back
     const bool want_cull_back  = (rsp.geometry_mode & G_CULL_BACK)  != 0;
     const bool want_cull_front = (rsp.geometry_mode & G_CULL_FRONT) != 0;
@@ -2850,6 +2897,21 @@ static void gfx_prepare_tri_pipeline_state(void) {
     s_tri_pipeline_dirty = false;
 }
 
+static inline void gfx_prepare_tri_pipeline_state(void) {
+    if (!s_tri_pipeline_dirty) {
+        if (!s_batch_has_cc) {
+            s_batch_has_cc = true;
+            s_batch_cc_mode = s_prepared_tri_pipeline_state.batch_cc_mode;
+            s_batch_cc_opts = s_prepared_tri_pipeline_state.batch_cc_opts;
+            s_batch_uses_prim_color = s_prepared_tri_pipeline_state.batch_uses_prim_color;
+            s_batch_uses_env_color = s_prepared_tri_pipeline_state.batch_uses_env_color;
+        }
+        return;
+    }
+
+    gfx_prepare_tri_pipeline_state_slow();
+}
+
 
 struct TempV {
     float x,y,z,w;
@@ -2936,7 +2998,9 @@ _ClipToHyperPlane64_GE:
     nop
 
     lv.q        R000, 0($a2)              # plane vec4
-    lv.s        S020, 16($a2)             # epsilon
+    lv.s        S700, 16($a2)             # epsilon
+    vzero.s     S712                       # exact clamp lower bound
+    vone.s      S713                       # exact clamp upper bound
 
     or          $t2, $a1, $0              # source_base
     sll         $t1, $a3, 6               # source bytes = count * 64
@@ -2949,8 +3013,8 @@ _ClipToHyperPlane64_GE:
     lv.q        R303, 48($a1)             # prev b/a/pad/pad
     addiu       $a1, $a1, 64
 
-    vdot.q      S013, R301, R000          # prev_dot raw
-    vadd.s      S012, S013, S020          # prev_dot + epsilon
+    vdot.q      S702, R301, R000          # prev_dot raw
+    vadd.s      S710, S702, S700          # prev_dot + epsilon
 
     or          $v0, $0, $0               # out_count = 0
 
@@ -2965,39 +3029,41 @@ _ClipToHyperPlane64_GE:
     lv.q        R202, 32($a1)             # curr u/v/r/g
     lv.q        R203, 48($a1)             # curr b/a/pad/pad
 
-    vdot.q      S003, R201, R000          # curr_dot raw
-    vadd.s      S002, S003, S020          # curr_dot + epsilon
+    vdot.q      S701, R201, R000          # curr_dot raw
+    vadd.s      S711, S701, S700          # curr_dot + epsilon
 
     # curr outside if curr_dot + epsilon < 0
-    vcmp.s      LT, S002, S002[0]
+    vcmp.s      LT, S711, S711[0]
     bvt         0, 5f                     # curr outside
     nop
 
 3:  # curr_is_inside
     # prev outside if prev_dot + epsilon < 0
-    vcmp.s      LT, S012, S012[0]
+    vcmp.s      LT, S710, S710[0]
     bvf         0, 7f                     # prev inside: copy curr only
     nop
 
 4:  # emit_intersection_then_copy
-    vsub.s      S001, S013, S003          # denom = prev_dot - curr_dot
-    vrcp.s      S001, S001
-    vmul.s      S001, S013, S001          # t = prev_dot / denom
+    vsub.s      S703, S702, S701          # denom = prev_dot - curr_dot
+    vrcp.s      S703, S703
+    vmul.s      S703, S702, S703          # t = prev_dot / denom
+    vmax.s      S703, S703, S712
+    vmin.s      S703, S703, S713
 
     vsub.q      R100, R200, R300          # curr.draw - prev.draw
-    vscl.q      R100, R100, S001
+    vscl.q      R100, R100, S703
     vadd.q      R100, R300, R100
 
     vsub.q      R101, R201, R301          # curr.clip - prev.clip
-    vscl.q      R101, R101, S001
+    vscl.q      R101, R101, S703
     vadd.q      R101, R301, R101
 
     vsub.q      R102, R202, R302          # curr.uvrg - prev.uvrg
-    vscl.q      R102, R102, S001
+    vscl.q      R102, R102, S703
     vadd.q      R102, R302, R102
 
     vsub.q      R103, R203, R303          # curr.ba - prev.ba
-    vscl.q      R103, R103, S001
+    vscl.q      R103, R103, S703
     vadd.q      R103, R303, R103
 
     sv.q        R100, 0($a0)
@@ -3011,29 +3077,31 @@ _ClipToHyperPlane64_GE:
 
 5:  # curr_is_outside
     # If prev was outside too, emit nothing.
-    vcmp.s      LT, S012, S012[0]
+    vcmp.s      LT, S710, S710[0]
     bvt         0, 8f                     # prev outside too
     nop
 
 6:  # emit_intersection_only
-    vsub.s      S001, S013, S003          # denom = prev_dot - curr_dot
-    vrcp.s      S001, S001
-    vmul.s      S001, S013, S001          # t = prev_dot / denom
+    vsub.s      S703, S702, S701          # denom = prev_dot - curr_dot
+    vrcp.s      S703, S703
+    vmul.s      S703, S702, S703          # t = prev_dot / denom
+    vmax.s      S703, S703, S712
+    vmin.s      S703, S703, S713
 
     vsub.q      R100, R200, R300          # curr.draw - prev.draw
-    vscl.q      R100, R100, S001
+    vscl.q      R100, R100, S703
     vadd.q      R100, R300, R100
 
     vsub.q      R101, R201, R301          # curr.clip - prev.clip
-    vscl.q      R101, R101, S001
+    vscl.q      R101, R101, S703
     vadd.q      R101, R301, R101
 
     vsub.q      R102, R202, R302          # curr.uvrg - prev.uvrg
-    vscl.q      R102, R102, S001
+    vscl.q      R102, R102, S703
     vadd.q      R102, R302, R102
 
     vsub.q      R103, R203, R303          # curr.ba - prev.ba
-    vscl.q      R103, R103, S001
+    vscl.q      R103, R103, S703
     vadd.q      R103, R303, R103
 
     sv.q        R100, 0($a0)
@@ -3058,8 +3126,8 @@ _ClipToHyperPlane64_GE:
     vmov.q      R301, R201
     vmov.q      R302, R202
     vmov.q      R303, R203
-    vmov.s      S013, S003                # prev_dot raw = curr_dot raw
-    vmov.s      S012, S002                # prev_dot biased = curr_dot biased
+    vmov.s      S702, S701                # prev_dot raw = curr_dot raw
+    vmov.s      S710, S711                # prev_dot biased = curr_dot biased
 
     addiu       $a3, $a3, -1
     bne         $a3, $0, 1b
@@ -3073,13 +3141,13 @@ _ClipToHyperPlane64_GE:
     .set pop
 )ASM");
 
-static const PspClipPlane64 s_psp_clip_plane_left     = { {  1.0f,  0.0f,  0.0f, 1.0f }, 1e-5f, { 0.0f, 0.0f, 0.0f } };
-static const PspClipPlane64 s_psp_clip_plane_right    = { { -1.0f,  0.0f,  0.0f, 1.0f }, 1e-5f, { 0.0f, 0.0f, 0.0f } };
-static const PspClipPlane64 s_psp_clip_plane_bottom   = { {  0.0f,  1.0f,  0.0f, 1.0f }, 1e-5f, { 0.0f, 0.0f, 0.0f } };
-static const PspClipPlane64 s_psp_clip_plane_top      = { {  0.0f, -1.0f,  0.0f, 1.0f }, 1e-5f, { 0.0f, 0.0f, 0.0f } };
-static const PspClipPlane64 s_psp_clip_plane_near_z01 = { {  0.0f,  0.0f,  1.0f, 0.0f }, 1e-5f, { 0.0f, 0.0f, 0.0f } };
-static const PspClipPlane64 s_psp_clip_plane_near_zw  = { {  0.0f,  0.0f,  1.0f, 1.0f }, 1e-5f, { 0.0f, 0.0f, 0.0f } };
-static const PspClipPlane64 s_psp_clip_plane_far      = { {  0.0f,  0.0f, -1.0f, 1.0f }, 1e-5f, { 0.0f, 0.0f, 0.0f } };
+static const PspClipPlane64 s_psp_clip_plane_left     = { {  1.0f,  0.0f,  0.0f, 1.0f }, kPspClipPlaneEpsilon, { 0.0f, 0.0f, 0.0f } };
+static const PspClipPlane64 s_psp_clip_plane_right    = { { -1.0f,  0.0f,  0.0f, 1.0f }, kPspClipPlaneEpsilon, { 0.0f, 0.0f, 0.0f } };
+static const PspClipPlane64 s_psp_clip_plane_bottom   = { {  0.0f,  1.0f,  0.0f, 1.0f }, kPspClipPlaneEpsilon, { 0.0f, 0.0f, 0.0f } };
+static const PspClipPlane64 s_psp_clip_plane_top      = { {  0.0f, -1.0f,  0.0f, 1.0f }, kPspClipPlaneEpsilon, { 0.0f, 0.0f, 0.0f } };
+static const PspClipPlane64 s_psp_clip_plane_near_z01 = { {  0.0f,  0.0f,  1.0f, 0.0f }, kPspClipPlaneEpsilon, { 0.0f, 0.0f, 0.0f } };
+static const PspClipPlane64 s_psp_clip_plane_near_zw  = { {  0.0f,  0.0f,  1.0f, 1.0f }, kPspClipPlaneEpsilon, { 0.0f, 0.0f, 0.0f } };
+static const PspClipPlane64 s_psp_clip_plane_far      = { {  0.0f,  0.0f, -1.0f, 1.0f }, kPspClipPlaneEpsilon, { 0.0f, 0.0f, 0.0f } };
 
 static inline PspClipV64 tempv_to_clip64(const TempV& v) {
     PspClipV64 o;
@@ -3105,33 +3173,14 @@ static inline PspClipV64 tempv_to_clip64(const TempV& v) {
     return o;
 }
 
-static inline TempV clip64_to_tempv(const PspClipV64& v) {
-    TempV o;
-    o.x = v.x;
-    o.y = v.y;
-    o.z = v.z;
-    o.w = v.w;
+constexpr int kPspMaxClipVerts = 12;
+alignas(16) static PspClipV64 s_psp_clip_src[kPspMaxClipVerts];
+alignas(16) static PspClipV64 s_psp_clip_dst[kPspMaxClipVerts];
 
-    o.u = v.u;
-    o.v = v.v;
-
-    o.r = v.r;
-    o.g = v.g;
-    o.b = v.b;
-    o.a = v.a;
-
-    o.clip_x = v.clip_x;
-    o.clip_y = v.clip_y;
-    o.clip_z = v.clip_z;
-    o.clip_w = v.clip_w;
-    return o;
-}
-
-static int psp_clip_triangle_vfpu64(const TempV in_tri[3], TempV out_poly[12], bool z_is_from_0_to_1) {
-    constexpr int kMaxClipVerts = 12;
-
-    alignas(16) PspClipV64 src[kMaxClipVerts];
-    alignas(16) PspClipV64 dst[kMaxClipVerts];
+static __attribute__((noinline)) int psp_clip_triangle_vfpu64(
+    const TempV in_tri[3], const PspClipV64** out_poly, uint8_t clip_mask, bool z_is_from_0_to_1) {
+    PspClipV64* src = s_psp_clip_src;
+    PspClipV64* dst = s_psp_clip_dst;
 
     src[0] = tempv_to_clip64(in_tri[0]);
     src[1] = tempv_to_clip64(in_tri[1]);
@@ -3153,25 +3202,208 @@ static int psp_clip_triangle_vfpu64(const TempV in_tri[3], TempV out_poly[12], b
         write = tmp;
     };
 
-    run_plane(&s_psp_clip_plane_left);
-    run_plane(&s_psp_clip_plane_right);
-    run_plane(&s_psp_clip_plane_bottom);
-    run_plane(&s_psp_clip_plane_top);
-
-    if (!g_es1_depth_clamp_active) {
+    /* A convex polygon that is inside a plane stays inside it while another
+     * plane is clipped. Visit only planes rejected by the input triangle. */
+    if (clip_mask & CLIP_REJECT_LEFT)   run_plane(&s_psp_clip_plane_left);
+    if (clip_mask & CLIP_REJECT_RIGHT)  run_plane(&s_psp_clip_plane_right);
+    if (clip_mask & CLIP_REJECT_BOTTOM) run_plane(&s_psp_clip_plane_bottom);
+    if (clip_mask & CLIP_REJECT_TOP)    run_plane(&s_psp_clip_plane_top);
+    if (clip_mask & CLIP_REJECT_NEAR) {
         run_plane(z_is_from_0_to_1 ? &s_psp_clip_plane_near_z01 : &s_psp_clip_plane_near_zw);
-        run_plane(&s_psp_clip_plane_far);
+    }
+    if (clip_mask & CLIP_REJECT_FAR) run_plane(&s_psp_clip_plane_far);
+
+    if (count > kPspMaxClipVerts) {
+        count = kPspMaxClipVerts;
     }
 
-    if (count > kMaxClipVerts) {
-        count = kMaxClipVerts;
-    }
-
-    for (int i = 0; i < count; ++i) {
-        out_poly[i] = clip64_to_tempv(read[i]);
-    }
-
+    *out_poly = read;
     return count;
+}
+
+/* PD's microcode-facing triangle path keeps the established UV, color, culling,
+ * and winding rules. Clip classification and polygon/plane math stay on VFPU. */
+static __attribute__((noinline)) void gfx_sp_tri1_psp_accurate(
+    LoadedVertex* const v_arr[3], bool bypass_transform_snapshots,
+    const float (*bypass_MP)[4], PspTransformMode emit_transform_mode,
+    uint8_t triangle_clip_mask, bool z_is_from_0_to_1, bool is_rect) {
+    TempV TV[3];
+    const RGBA* baked_primary_color = nullptr;
+    if (s_prepared_tri_pipeline_state.bake_primary_constant_color) {
+        baked_primary_color = (s_prepared_tri_pipeline_state.base_mode == 2)
+            ? &rdp.prim_color : &rdp.env_color;
+    }
+
+    for (int i = 0; i < 3; ++i) {
+        const LoadedVertex* vtx = v_arr[i];
+        TempV& tv = TV[i];
+        const float alpha = vtx->color.a / 255.0f;
+
+        if (emit_transform_mode == PSP_TRANSFORM_MODELVIEW) {
+            tv.x = vtx->eye_x;
+            tv.y = vtx->eye_y;
+            tv.z = vtx->eye_z;
+            tv.w = fabsf(vtx->eye_w) < 0.001f ? 0.001f : vtx->eye_w;
+        } else {
+            tv.x = vtx->x;
+            tv.y = vtx->y;
+            tv.z = vtx->z;
+            tv.w = fabsf(vtx->w) < 0.001f ? 0.001f : vtx->w;
+        }
+
+        const short uls = rdp.texture_tile[rdp.first_tile_index].uls;
+        const short ult = rdp.texture_tile[rdp.first_tile_index].ult;
+        const uint32_t orig_w = s_prepared_tri_pipeline_state.tex_width2[0]
+            ? s_prepared_tri_pipeline_state.tex_width2[0]
+            : s_prepared_tri_pipeline_state.pot_w;
+        const uint32_t orig_h = s_prepared_tri_pipeline_state.tex_height2[0]
+            ? s_prepared_tri_pipeline_state.tex_height2[0]
+            : s_prepared_tri_pipeline_state.pot_h;
+        tv.u = ((vtx->u - uls) / 32.0f) / static_cast<float>(orig_w);
+        tv.u *= static_cast<float>(orig_w) /
+                static_cast<float>(s_prepared_tri_pipeline_state.pot_w);
+        tv.v = ((vtx->v - ult) / 32.0f) / static_cast<float>(orig_h);
+        tv.v *= static_cast<float>(orig_h) /
+                static_cast<float>(s_prepared_tri_pipeline_state.pot_h);
+
+        if (bypass_transform_snapshots) {
+            tv.clip_x = tv.x * bypass_MP[0][0] + tv.y * bypass_MP[1][0] +
+                        tv.z * bypass_MP[2][0] + tv.w * bypass_MP[3][0];
+            tv.clip_y = tv.x * bypass_MP[0][1] + tv.y * bypass_MP[1][1] +
+                        tv.z * bypass_MP[2][1] + tv.w * bypass_MP[3][1];
+            tv.clip_z = tv.x * bypass_MP[0][2] + tv.y * bypass_MP[1][2] +
+                        tv.z * bypass_MP[2][2] + tv.w * bypass_MP[3][2];
+            tv.clip_w = tv.x * bypass_MP[0][3] + tv.y * bypass_MP[1][3] +
+                        tv.z * bypass_MP[2][3] + tv.w * bypass_MP[3][3];
+        } else {
+            tv.clip_x = vtx->clip_x;
+            tv.clip_y = vtx->clip_y;
+            tv.clip_z = vtx->clip_z;
+            tv.clip_w = vtx->clip_w;
+        }
+
+        if (baked_primary_color != nullptr) {
+            const float const_alpha = baked_primary_color->a / 255.0f;
+            tv.a = const_alpha;
+            if (s_prepared_tri_pipeline_state.bake_textured_constant) {
+                tv.r = baked_primary_color->r / 255.0f;
+                tv.g = baked_primary_color->g / 255.0f;
+                tv.b = baked_primary_color->b / 255.0f;
+            } else {
+                tv.r = (baked_primary_color->r / 255.0f) * const_alpha;
+                tv.g = (baked_primary_color->g / 255.0f) * const_alpha;
+                tv.b = (baked_primary_color->b / 255.0f) * const_alpha;
+            }
+        } else {
+            tv.a = alpha;
+            tv.r = (vtx->color.r / 255.0f) * alpha;
+            tv.g = (vtx->color.g / 255.0f) * alpha;
+            tv.b = (vtx->color.b / 255.0f) * alpha;
+        }
+    }
+
+    if (rsp.geometry_mode & G_CULL_BOTH) {
+        const float w1 = (fabsf(TV[0].clip_w) < 1e-5f) ? 1e-5f : TV[0].clip_w;
+        const float w2 = (fabsf(TV[1].clip_w) < 1e-5f) ? 1e-5f : TV[1].clip_w;
+        const float w3 = (fabsf(TV[2].clip_w) < 1e-5f) ? 1e-5f : TV[2].clip_w;
+        const float x1 = TV[0].clip_x / w1;
+        const float y1 = TV[0].clip_y / w1;
+        const float x2 = TV[1].clip_x / w2;
+        const float y2 = TV[1].clip_y / w2;
+        const float x3 = TV[2].clip_x / w3;
+        const float y3 = TV[2].clip_y / w3;
+        float cross = (x1 - x2) * (y3 - y2) - (y1 - y2) * (x3 - x2);
+
+        if ((TV[0].clip_w < 0.0f) ^ (TV[1].clip_w < 0.0f) ^ (TV[2].clip_w < 0.0f)) {
+            cross = -cross;
+        }
+        if (rsp.extra_geometry_mode & G_INVERT_CULLING_EXT) {
+            cross = -cross;
+        }
+
+        const uint32_t cull_mode = rsp.geometry_mode & G_CULL_BOTH;
+        if (cull_mode == G_CULL_BOTH ||
+                (cull_mode == G_CULL_FRONT && cross <= 0.0f) ||
+                (cull_mode == G_CULL_BACK && cross >= 0.0f)) {
+            return;
+        }
+    }
+
+    auto push_temp9 = [&](const TempV& V) {
+        float x = V.x;
+        float y = V.y;
+        float z = V.z;
+        if (emit_transform_mode == PSP_TRANSFORM_CLIP) {
+            const float clip_w = (fabsf(V.clip_w) < 1e-5f) ? 1e-5f : V.clip_w;
+            x = V.clip_x / clip_w;
+            y = V.clip_y / clip_w;
+            z = V.clip_z / clip_w;
+        }
+        buf_vbo[buf_vbo_len++] = x;
+        buf_vbo[buf_vbo_len++] = y;
+        buf_vbo[buf_vbo_len++] = z;
+        buf_vbo[buf_vbo_len++] = V.u;
+        buf_vbo[buf_vbo_len++] = V.v;
+        buf_vbo[buf_vbo_len++] = V.r;
+        buf_vbo[buf_vbo_len++] = V.g;
+        buf_vbo[buf_vbo_len++] = V.b;
+        buf_vbo[buf_vbo_len++] = V.a;
+    };
+
+    auto emit_temp_tri = [&](const TempV& A, const TempV& B, const TempV& C) {
+        push_temp9(A);
+        push_temp9(B);
+        push_temp9(C);
+        if (++buf_vbo_num_tris == MAX_BUFFERED) {
+            gfx_flush_with_reason(GFX_FLUSH_BUFFER_FULL);
+        }
+    };
+
+    if (g_es1_force_2d || is_rect || g_force_two_pass || triangle_clip_mask == 0) {
+        emit_temp_tri(TV[0], TV[1], TV[2]);
+        return;
+    }
+
+    const PspClipV64* poly;
+    const int poly_count = psp_clip_triangle_vfpu64(
+        TV, &poly, triangle_clip_mask, z_is_from_0_to_1);
+    if (poly_count < 3) {
+        return;
+    }
+
+    auto push_clip9 = [&](const PspClipV64& V) {
+        float x = V.x;
+        float y = V.y;
+        float z = V.z;
+        if (emit_transform_mode == PSP_TRANSFORM_CLIP) {
+            const float clip_w = (fabsf(V.clip_w) < 1e-5f) ? 1e-5f : V.clip_w;
+            x = V.clip_x / clip_w;
+            y = V.clip_y / clip_w;
+            z = V.clip_z / clip_w;
+        }
+        buf_vbo[buf_vbo_len++] = x;
+        buf_vbo[buf_vbo_len++] = y;
+        buf_vbo[buf_vbo_len++] = z;
+        buf_vbo[buf_vbo_len++] = V.u;
+        buf_vbo[buf_vbo_len++] = V.v;
+        buf_vbo[buf_vbo_len++] = V.r;
+        buf_vbo[buf_vbo_len++] = V.g;
+        buf_vbo[buf_vbo_len++] = V.b;
+        buf_vbo[buf_vbo_len++] = V.a;
+    };
+
+    auto emit_clipped_tri = [&](const PspClipV64& A, const PspClipV64& B, const PspClipV64& C) {
+        push_clip9(A);
+        push_clip9(B);
+        push_clip9(C);
+        if (++buf_vbo_num_tris == MAX_BUFFERED) {
+            gfx_flush_with_reason(GFX_FLUSH_BUFFER_FULL);
+        }
+    };
+
+    for (int i = 1; i < poly_count - 1; ++i) {
+        emit_clipped_tri(poly[0], poly[i], poly[i + 1]);
+    }
 }
 
 #endif
@@ -3191,10 +3423,29 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
     const uint16_t tri_transform_id = bypass_transform_snapshots ? 0 : v1->transform_id;
     const bool mixed_transform = !bypass_transform_snapshots &&
         ((v2->transform_id != tri_transform_id) || (v3->transform_id != tri_transform_id));
-    const bool emit_pretransformed = mixed_transform;
-    const uint16_t active_transform_id = emit_pretransformed ? kPretransformedTransformId : tri_transform_id;
+    const uint8_t eye_projection_style = bypass_transform_snapshots
+        ? 0
+        : s_transform_snapshot_is_model[v1->transform_id];
+    const bool eye_pretransformed = !bypass_transform_snapshots &&
+        s_transform_snapshot_is_model[v2->transform_id] == eye_projection_style &&
+        s_transform_snapshot_is_model[v3->transform_id] == eye_projection_style &&
+        s_transform_snapshot_projection_epoch[v1->transform_id] ==
+            s_transform_snapshot_projection_epoch[v2->transform_id] &&
+        s_transform_snapshot_projection_epoch[v1->transform_id] ==
+            s_transform_snapshot_projection_epoch[v3->transform_id];
+    const uint16_t eye_projection_epoch = eye_pretransformed
+        ? s_transform_snapshot_projection_epoch[v1->transform_id]
+        : 0;
+    const PspTransformMode emit_transform_mode = eye_pretransformed
+        ? PSP_TRANSFORM_MODELVIEW
+        : (mixed_transform ? PSP_TRANSFORM_CLIP : PSP_TRANSFORM_OBJECT);
+    const uint16_t active_transform_id = eye_pretransformed
+        ? kModelviewPretransformedTransformId
+        : (mixed_transform ? kPretransformedTransformId : tri_transform_id);
     const bool z_is_from_0_to_1 = gfx_cached_clip_parameters.z_is_from_0_to_1;
     const uint8_t active_clip_reject_mask = gfx_get_active_clip_reject_mask();
+    const uint8_t triangle_clip_mask =
+        (v1->clip_rej | v2->clip_rej | v3->clip_rej) & active_clip_reject_mask;
     const float (*bypass_MP)[4] = bypass_transform_snapshots ? gfx_get_rsp_mp_matrix() : nullptr;
 
     if (!bypass_transform_snapshots &&
@@ -3203,12 +3454,16 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
     }
 
     if (!bypass_transform_snapshots &&
-            (s_active_transform_pretransformed != emit_pretransformed ||
-             s_active_transform_snapshot != active_transform_id)) {
+            (s_active_transform_mode != emit_transform_mode ||
+             s_active_transform_snapshot != active_transform_id ||
+             (eye_pretransformed &&
+              (s_active_eye_projection_epoch != eye_projection_epoch ||
+               s_active_eye_projection_style != eye_projection_style)))) {
         if (buf_vbo_len > 0) {
             gfx_flush_with_reason(GFX_FLUSH_MATRIX);
         }
-        gfx_bind_transform_snapshot(active_transform_id, emit_pretransformed);
+        gfx_bind_transform_snapshot(tri_transform_id, active_transform_id,
+                                    emit_transform_mode);
     }
 #else
     const bool emit_pretransformed = false;
@@ -3218,8 +3473,11 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
     gfx_prepare_tri_pipeline_state();
 
 #if defined(__PSP__)
-    bool emit_now_pretransformed = emit_pretransformed;
-#endif
+    gfx_sp_tri1_psp_accurate(v_arr, bypass_transform_snapshots, bypass_MP,
+                             emit_transform_mode, triangle_clip_mask,
+                             z_is_from_0_to_1, is_rect);
+    return;
+#else
 
     // --- build TempV array --------------------------------------------------
     TempV TV[3];
@@ -3233,9 +3491,9 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
         const auto *vtx = v_arr[i];
         float w = fabsf(vtx->w) < 0.001f ? 0.001f : vtx->w;
 
+#if !defined(__PSP__)
         short uls = rdp.texture_tile[rdp.first_tile_index].uls;
         short ult = rdp.texture_tile[rdp.first_tile_index].ult;
-
         uint32_t orig_w = s_prepared_tri_pipeline_state.tex_width2[0] ? s_prepared_tri_pipeline_state.tex_width2[0]
                                                                       : s_prepared_tri_pipeline_state.pot_w;
         uint32_t orig_h = s_prepared_tri_pipeline_state.tex_height2[0] ? s_prepared_tri_pipeline_state.tex_height2[0]
@@ -3247,6 +3505,12 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
 
         float v = ((float)(vtx->v - ult) / 32.0f) / (float)orig_h;
         v *= (float)orig_h / (float)s_prepared_tri_pipeline_state.pot_h;
+#else
+        const float u = vtx->u * s_prepared_tri_pipeline_state.emit_u_scale +
+                        s_prepared_tri_pipeline_state.emit_u_bias;
+        const float v = vtx->v * s_prepared_tri_pipeline_state.emit_v_scale +
+                        s_prepared_tri_pipeline_state.emit_v_bias;
+#endif
 
         const float alpha = vtx->color.a / 255.0f;
         TempV &tv = TV[i];
@@ -3300,7 +3564,7 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
 
 #if defined(__PSP__)
     // CPU-side culling in clip space, matching original GL3 path.
-    if (rsp.geometry_mode & G_CULL_BOTH) {
+    if (bypass_transform_snapshots && (rsp.geometry_mode & G_CULL_BOTH)) {
         const float w1 = (fabsf(TV[0].clip_w) < 1e-5f) ? 1e-5f : TV[0].clip_w;
         const float w2 = (fabsf(TV[1].clip_w) < 1e-5f) ? 1e-5f : TV[1].clip_w;
         const float w3 = (fabsf(TV[2].clip_w) < 1e-5f) ? 1e-5f : TV[2].clip_w;
@@ -3383,6 +3647,61 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
         return;
     }
 
+#if defined(__PSP__)
+    if (triangle_clip_mask == 0) {
+        if (swap_winding) {
+            emit_tri(TV[0], TV[2], TV[1]);
+        } else {
+            emit_tri(TV[0], TV[1], TV[2]);
+        }
+        return;
+    }
+
+    const PspClipV64* poly;
+    int poly_count = psp_clip_triangle_vfpu64(TV, &poly, triangle_clip_mask, z_is_from_0_to_1);
+
+    if (poly_count < 3) {
+        return;
+    }
+
+    auto push_clip9 = [&](const PspClipV64& V) {
+        float x = V.x;
+        float y = V.y;
+        float z = V.z;
+        if (emit_now_pretransformed) {
+            const float clip_w = (fabsf(V.clip_w) < 1e-5f) ? 1e-5f : V.clip_w;
+            x = V.clip_x / clip_w;
+            y = V.clip_y / clip_w;
+            z = V.clip_z / clip_w;
+        }
+        buf_vbo[buf_vbo_len++] = x;
+        buf_vbo[buf_vbo_len++] = y;
+        buf_vbo[buf_vbo_len++] = z;
+        buf_vbo[buf_vbo_len++] = V.u;
+        buf_vbo[buf_vbo_len++] = V.v;
+        buf_vbo[buf_vbo_len++] = V.r;
+        buf_vbo[buf_vbo_len++] = V.g;
+        buf_vbo[buf_vbo_len++] = V.b;
+        buf_vbo[buf_vbo_len++] = V.a;
+    };
+
+    auto emit_clipped_tri = [&](const PspClipV64& A, const PspClipV64& B, const PspClipV64& C) {
+        push_clip9(A);
+        push_clip9(B);
+        push_clip9(C);
+        if (++buf_vbo_num_tris == MAX_BUFFERED) {
+            gfx_flush_with_reason(GFX_FLUSH_BUFFER_FULL);
+        }
+    };
+
+    for (int i = 1; i < poly_count - 1; ++i) {
+        if (swap_winding) {
+            emit_clipped_tri(poly[0], poly[i + 1], poly[i]);
+        } else {
+            emit_clipped_tri(poly[0], poly[i], poly[i + 1]);
+        }
+    }
+#else
     auto lerp_tempv = [](const TempV& A, const TempV& B, float t) {
         TempV R;
         R.x = A.x + (B.x - A.x) * t;
@@ -3426,11 +3745,6 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
 
     bool all_inside = false;
     bool culled = false;
-#if defined(__PSP__)
-    if (!bypass_transform_snapshots) {
-        all_inside = (((v1->clip_rej | v2->clip_rej | v3->clip_rej) & active_clip_reject_mask) == 0);
-    }
-#endif
 
     if (!all_inside) {
         auto test_plane = [&](auto plane_eval) {
@@ -3475,17 +3789,6 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
         return;
     }
 
-#if defined(__PSP__)
-    TempV poly[kMaxClipVerts];
-    int poly_count = psp_clip_triangle_vfpu64(TV, poly, z_is_from_0_to_1);
-
-    if (poly_count < 3) {
-        return;
-    }
-
-    // Keep the existing transform snapshot path. The 64-byte VFPU clipper
-    // preserves x/y/z/w, UV, color, and clip_xyzw in one pass.
-#else
     TempV poly[kMaxClipVerts];
     for (int i = 0; i < 3; ++i) {
         poly[i] = TV[i];
@@ -3553,7 +3856,6 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
     if (poly_count < 3) {
         return;
     }
-#endif
 
     for (int i = 1; i < poly_count - 1; ++i) {
         if (swap_winding) {
@@ -3562,7 +3864,9 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
             emit_tri(poly[0], poly[i], poly[i + 1]);
         }
     }
+#endif
 
+#endif
 }
 
 static inline void gfx_sp_tri4(Gfx *cmd) {
@@ -4509,6 +4813,9 @@ op_vtx:
         const uintptr_t seg = (cmd->words.w1 & 0x0f000000) >> 24;
         const uint8_t want_model_fix = (seg == kModelVtxSeg) ? 1 : 0;
         if (want_model_fix != s_psp_model_mtx_fix) {
+            /* Preserve the matrix state of any pending batch before changing
+             * between regular object vertices and eye-space model vertices. */
+            gfx_flush_with_reason(GFX_FLUSH_MATRIX);
             s_psp_model_mtx_fix = want_model_fix;
             gfx_publish_es1_matrices();
         }
@@ -4840,9 +5147,12 @@ static void gfx_sp_reset() {
     s_rsp_mp_matrix_dirty = true;
     s_transform_snapshot_count = 1;
     s_current_transform_snapshot = 0;
+    s_model_projection_epoch = 1;
     s_transform_snapshot_dirty = true;
     s_active_transform_snapshot = kInvalidTransformId;
-    s_active_transform_pretransformed = false;
+    s_active_eye_projection_epoch = 0;
+    s_active_eye_projection_style = 0;
+    s_active_transform_mode = PSP_TRANSFORM_OBJECT;
     g_es1_pretransformed = 0;
 #endif
     rsp.current_num_lights = 2;

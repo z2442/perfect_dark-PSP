@@ -650,22 +650,94 @@ s32 chraiGetListIdByList(u8 *ailist, bool *is_global)
 	return -1;
 }
 
+static inline u32 chraiGetCommandLengthAt(const u8 *cmd)
+{
+	u32 type = (cmd[0] << 8) | cmd[1];
+
+	if (type == CMD_PRINT) {
+		u32 length = 2;
+
+		while (cmd[length] != 0) {
+			length++;
+		}
+
+		return length + 1;
+	}
+
+	if (type < ARRAYCOUNT(g_CommandLengths)) {
+		return g_CommandLengths[type];
+	}
+
+	return 1;
+}
+
+#if defined(__PSP__)
+/*
+ * AI branch destinations never change while a stage is loaded.  Most guards
+ * execute the same handful of branches every tick, so rescanning the bytecode
+ * is wasted work.  Keep this cache small and direct-mapped so a hit costs only
+ * a few integer operations and does not put pressure on the PSP data cache.
+ */
+#define CHRAI_LABEL_CACHE_SIZE 256
+
+struct chrai_label_cache_entry {
+	const u8 *ailist;
+	const struct ailist *stageailists;
+	u32 aioffset;
+	u32 result;
+	s32 stagenum;
+	u8 label;
+};
+
+static struct chrai_label_cache_entry g_ChraiLabelCache[CHRAI_LABEL_CACHE_SIZE];
+#endif
+
 u32 chraiGoToLabel(u8 *ailist, u32 aioffset, u8 label)
 {
+#if defined(__PSP__)
+	u32 hash = (u32)((uintptr_t)ailist >> 2);
+	struct chrai_label_cache_entry *entry;
+	u32 startoffset = aioffset;
+
+	hash ^= aioffset * 33u;
+	hash ^= (u32)label * 0x9e3779b1u;
+	entry = &g_ChraiLabelCache[hash & (CHRAI_LABEL_CACHE_SIZE - 1)];
+
+	if (entry->ailist == ailist
+			&& entry->stageailists == g_StageSetup.ailists
+			&& entry->aioffset == aioffset
+			&& entry->stagenum == g_Vars.stagenum
+			&& entry->label == label) {
+		return entry->result;
+	}
+#endif
+
 	do {
 		u8 *cmd = aioffset + ailist;
 		u32 type = (cmd[0] << 8) + cmd[1];
 
 		if (type == CMD_LABEL) {
 			if (label == cmd[2]) {
-				return aioffset;
+				break;
 			}
 		} else if (type == CMD_END) {
-			return 0;
+			aioffset = 0;
+			break;
 		}
 
-		aioffset += chraiGetCommandLength(ailist, aioffset);
+		aioffset += chraiGetCommandLengthAt(cmd);
 	} while (true);
+
+#if defined(__PSP__)
+	entry->ailist = ailist;
+	entry->stageailists = g_StageSetup.ailists;
+	entry->aioffset = startoffset;
+	entry->result = aioffset;
+	entry->stagenum = g_Vars.stagenum;
+	entry->label = label;
+#endif
+
+	return aioffset;
 }
 
 void chraiExecute(void *entity, s32 proptype)
@@ -795,24 +867,7 @@ void chraiExecute(void *entity, s32 proptype)
 
 u32 chraiGetCommandLength(u8 *ailist, u32 aioffset)
 {
-	u8 *cmd = aioffset + ailist;
-	s32 type = (cmd[0] << 8) + cmd[1];
-
-	if (type == CMD_PRINT) {
-		u32 prop = aioffset + 2;
-
-		while (ailist[prop] != 0) {
-			++prop;
-		}
-
-		return (prop - aioffset) + 1;
-	}
-
-	if (type >= 0 && type < ARRAYCOUNT(g_CommandLengths)) {
-		return g_CommandLengths[type];
-	}
-
-	return 1;
+	return chraiGetCommandLengthAt(ailist + aioffset);
 }
 
 // used by ext_setup

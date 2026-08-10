@@ -13,7 +13,7 @@ static GLuint s_last_bound_tex = 0;           // tracks most recent texture boun
 static bool s_last_use_alpha = true;           // last requested blend enable from set_use_alpha
 static bool s_last_modulate  = false;          // last requested modulate flag from set_use_alpha
 static GLenum s_current_depth_func = GL_LEQUAL; // tracked from set_depth_mode
-static bool s_blend_enabled = true;            // shadow of GL_BLEND enable state
+static bool s_blend_enabled = false;           // applied GL_BLEND enable state
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -314,7 +314,13 @@ static inline bool psp_vfpu_can_vt4444(void) {
 #endif
 
 
-static inline void pdMatrixMode(GLenum mode) { glMatrixMode(mode); }
+static GLenum s_matrix_mode = GL_MODELVIEW;
+
+static inline void pdMatrixMode(GLenum mode) {
+    if (s_matrix_mode == mode) return;
+    glMatrixMode(mode);
+    s_matrix_mode = mode;
+}
 static inline void pdPushMatrix(void) { glPushMatrix(); }
 static inline void pdPopMatrix(void) { glPopMatrix(); }
 static inline void pdLoadIdentity(void) { glLoadIdentity(); }
@@ -322,10 +328,6 @@ static inline void pdLoadMatrixf(const float *m) { glLoadMatrixf(m); }
 static inline void pdOrthof(GLfloat left, GLfloat right, GLfloat bottom, GLfloat top, GLfloat znear, GLfloat zfar) {
     glOrthof(left, right, bottom, top, znear, zfar);
 }
-static inline void pdScalef(GLfloat x, GLfloat y, GLfloat z) { glScalef(x, y, z); }
-static inline void pdTranslatef(GLfloat x, GLfloat y, GLfloat z) { glTranslatef(x, y, z); }
-
-
 // ---- CPU-side texture copies & compositor for two-cycle emulation ----
 struct CpuTex {
     int w = 0, h = 0;
@@ -855,6 +857,15 @@ struct GLESFramebuffer {
 
 static std::vector<GLESFramebuffer> s_fbs;
 
+static inline void gl_set_texture_2d_enabled(bool enable);
+static inline void gl_set_alpha_test_enabled(bool enable);
+static inline void gl_set_blend_enabled(bool enable);
+static inline void gl_set_depth_test_enabled(bool enable);
+static inline void gl_set_blend_func(GLenum src, GLenum dst);
+static inline void gl_set_alpha_func(GLenum func, GLfloat ref);
+static inline void gl_set_depth_mask(bool enable);
+static inline void gl_set_depth_func(GLenum func);
+
 static void begin_2d_batch() {
     g_es1_depth_clamp_active = 0;
     pdMatrixMode(GL_PROJECTION);
@@ -864,8 +875,8 @@ static void begin_2d_batch() {
     pdMatrixMode(GL_MODELVIEW);
     pdPushMatrix();
     pdLoadIdentity();
-    if (es_depth_test) glDisable(GL_DEPTH_TEST);
-    glDepthMask(GL_FALSE);
+    gl_set_depth_test_enabled(false);
+    gl_set_depth_mask(false);
 }
 
 static void end_2d_batch() {
@@ -873,8 +884,8 @@ static void end_2d_batch() {
     pdPopMatrix();
     pdMatrixMode(GL_PROJECTION);
     pdPopMatrix();
-    if (es_depth_test) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
-    glDepthMask(es_depth_write ? GL_TRUE : GL_FALSE);
+    gl_set_depth_test_enabled(es_depth_test);
+    gl_set_depth_mask(es_depth_write);
     pdMatrixMode(GL_MODELVIEW);
 }
 
@@ -989,6 +1000,15 @@ static GLenum s_front_face_mode = static_cast<GLenum>(-1);
 static bool s_vertex_array_enabled = false;
 static bool s_texcoord_array_enabled = false;
 static bool s_color_array_enabled = false;
+static bool s_texture_2d_enabled = false;
+static bool s_alpha_test_enabled = false;
+static bool s_depth_test_gl_enabled = false;
+static bool s_depth_mask_gl_enabled = true;
+static GLenum s_depth_func_gl = GL_LESS;
+static GLenum s_blend_src_gl = GL_ONE;
+static GLenum s_blend_dst_gl = GL_ZERO;
+static GLenum s_alpha_func_gl = GL_ALWAYS;
+static GLfloat s_alpha_ref_gl = 0.0f;
 static const void* s_vertex_pointer = nullptr;
 static GLsizei s_vertex_pointer_stride = -1;
 static const void* s_texcoord_pointer = nullptr;
@@ -996,8 +1016,65 @@ static GLsizei s_texcoord_pointer_stride = -1;
 static const void* s_color_pointer = nullptr;
 static GLsizei s_color_pointer_stride = -1;
 
-enum TexEnvModeES1 { TEXENV_UNKNOWN=-1, TEXENV_MODULATE=0, TEXENV_REPLACE=1, TEXENV_FONT_COMBINE=2, TEXENV_MODULATE_CONST=3 };
+enum TexEnvModeES1 {
+    TEXENV_UNKNOWN = -1,
+    TEXENV_MODULATE = 0,
+    TEXENV_REPLACE = 1,
+    TEXENV_FONT_COMBINE = 2,
+    TEXENV_MODULATE_CONST_PRIMARY_ALPHA = 3,
+    TEXENV_MODULATE_CONST_TEXTURE_ALPHA = 4,
+};
 static int s_texenv_mode = TEXENV_UNKNOWN;
+
+static inline void gl_set_texture_2d_enabled(bool enable) {
+    if (s_texture_2d_enabled == enable) return;
+    if (enable) glEnable(GL_TEXTURE_2D); else glDisable(GL_TEXTURE_2D);
+    s_texture_2d_enabled = enable;
+}
+
+static inline void gl_set_alpha_test_enabled(bool enable) {
+    if (s_alpha_test_enabled == enable) return;
+    if (enable) glEnable(GL_ALPHA_TEST); else glDisable(GL_ALPHA_TEST);
+    s_alpha_test_enabled = enable;
+}
+
+static inline void gl_set_blend_enabled(bool enable) {
+    if (s_blend_enabled == enable) return;
+    if (enable) glEnable(GL_BLEND); else glDisable(GL_BLEND);
+    s_blend_enabled = enable;
+}
+
+static inline void gl_set_depth_test_enabled(bool enable) {
+    if (s_depth_test_gl_enabled == enable) return;
+    if (enable) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
+    s_depth_test_gl_enabled = enable;
+}
+
+static inline void gl_set_blend_func(GLenum src, GLenum dst) {
+    if (s_blend_src_gl == src && s_blend_dst_gl == dst) return;
+    glBlendFunc(src, dst);
+    s_blend_src_gl = src;
+    s_blend_dst_gl = dst;
+}
+
+static inline void gl_set_alpha_func(GLenum func, GLfloat ref) {
+    if (s_alpha_func_gl == func && s_alpha_ref_gl == ref) return;
+    glAlphaFunc(func, ref);
+    s_alpha_func_gl = func;
+    s_alpha_ref_gl = ref;
+}
+
+static inline void gl_set_depth_mask(bool enable) {
+    if (s_depth_mask_gl_enabled == enable) return;
+    glDepthMask(enable ? GL_TRUE : GL_FALSE);
+    s_depth_mask_gl_enabled = enable;
+}
+
+static inline void gl_set_depth_func(GLenum func) {
+    if (s_depth_func_gl == func) return;
+    glDepthFunc(func);
+    s_depth_func_gl = func;
+}
 
 static inline void gl_set_client_state(GLenum array, bool enable, bool& shadow) {
     if (shadow == enable) {
@@ -1111,6 +1188,10 @@ static inline void set_texenv_font_combine() {
 
 static inline void set_texenv_texture_modulate_with_constant(bool alpha_from_primary) {
     if (s_has_texenv_combine) {
+        const int wanted_mode = alpha_from_primary
+            ? TEXENV_MODULATE_CONST_PRIMARY_ALPHA
+            : TEXENV_MODULATE_CONST_TEXTURE_ALPHA;
+        if (s_texenv_mode == wanted_mode) return;
         glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_COMBINE);
         glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_RGB, GL_MODULATE);
         glTexEnvi(GL_TEXTURE_ENV, GL_SRC0_RGB, GL_TEXTURE);
@@ -1125,7 +1206,7 @@ static inline void set_texenv_texture_modulate_with_constant(bool alpha_from_pri
             glTexEnvi(GL_TEXTURE_ENV, GL_SRC0_ALPHA, GL_TEXTURE);
             glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND0_ALPHA, GL_SRC_ALPHA);
         }
-        s_texenv_mode = TEXENV_MODULATE_CONST;
+        s_texenv_mode = wanted_mode;
     } else {
         if (s_texenv_mode != TEXENV_MODULATE) {
             glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
@@ -1496,34 +1577,34 @@ static void gfx_opengl_set_depth_mode(bool depth_test, bool depth_update, bool d
     es_depth_test  = depth_test;
     es_depth_write = depth_update;
     if (depth_test) {
-        glEnable(GL_DEPTH_TEST);
-        glDepthMask(depth_update ? GL_TRUE : GL_FALSE);
+        gl_set_depth_test_enabled(true);
+        gl_set_depth_mask(depth_update);
         current_depth_mask = depth_update;
         if (depth_compare) {
             switch (zmode) {
                 case ZMODE_INTER:
-                    glDepthFunc(GL_LEQUAL); s_current_depth_func = GL_LEQUAL;
+                    gl_set_depth_func(GL_LEQUAL); s_current_depth_func = GL_LEQUAL;
                     if (current_poly_offset) { glDisable(GL_POLYGON_OFFSET_FILL); current_poly_offset = false; }
                     break;
                 case ZMODE_OPA:
                 case ZMODE_XLU:
-                    if (depth_source_prim) { glDepthFunc(GL_LEQUAL); s_current_depth_func = GL_LEQUAL; }
-                    else                   { glDepthFunc(GL_LESS);   s_current_depth_func = GL_LESS;   }
+                    if (depth_source_prim) { gl_set_depth_func(GL_LEQUAL); s_current_depth_func = GL_LEQUAL; }
+                    else                   { gl_set_depth_func(GL_LESS);   s_current_depth_func = GL_LESS;   }
                     if (current_poly_offset) { glDisable(GL_POLYGON_OFFSET_FILL); current_poly_offset = false; }
                     break;
                 case ZMODE_DEC:
-                    glDepthFunc(GL_LEQUAL); s_current_depth_func = GL_LEQUAL;
+                    gl_set_depth_func(GL_LEQUAL); s_current_depth_func = GL_LEQUAL;
                     glEnable(GL_POLYGON_OFFSET_FILL);
                     glPolygonOffset(-1.0f, -1.0f);
                     current_poly_offset = true;
                     break;
             }
         } else {
-            glDepthFunc(GL_ALWAYS); s_current_depth_func = GL_ALWAYS;
+            gl_set_depth_func(GL_ALWAYS); s_current_depth_func = GL_ALWAYS;
             if (current_poly_offset) { glDisable(GL_POLYGON_OFFSET_FILL); current_poly_offset = false; }
         }
     } else {
-        glDisable(GL_DEPTH_TEST);
+        gl_set_depth_test_enabled(false);
         if (current_poly_offset) { glDisable(GL_POLYGON_OFFSET_FILL); current_poly_offset = false; }
     }
 }
@@ -1544,20 +1625,11 @@ static void gfx_opengl_set_scissor(int x, int y, int width, int height) {
 }
 
 static void gfx_opengl_set_use_alpha(bool use_alpha, bool modulate) {
-    if (use_alpha) glEnable(GL_BLEND); else glDisable(GL_BLEND);
-    if (modulate) glBlendFunc(GL_DST_COLOR, GL_ZERO);
-    else          glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     s_last_use_alpha = use_alpha;
     s_last_modulate  = modulate;
-    s_blend_enabled  = use_alpha;
-}
-
-static inline void es11_apply_tex_transform(int tile) {
-    pdMatrixMode(GL_TEXTURE);
-    pdLoadIdentity();
-    pdScalef(g_tex_s_scale[tile], g_tex_t_scale[tile], 1.0f);
-    pdTranslatef(g_tex_s_offset[tile], g_tex_t_offset[tile], 0.0f);
-    pdMatrixMode(GL_MODELVIEW);
+    gl_set_blend_enabled(use_alpha);
+    if (modulate) gl_set_blend_func(GL_DST_COLOR, GL_ZERO);
+    else          gl_set_blend_func(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 }
 
 
@@ -1576,19 +1648,19 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
         pdMatrixMode(GL_MODELVIEW);
         pdPushMatrix();
         pdLoadIdentity();
-        if (prevDepthTestLocal) glDisable(GL_DEPTH_TEST);
-        glDepthMask(GL_FALSE);
+        gl_set_depth_test_enabled(false);
+        gl_set_depth_mask(false);
         gl_set_cull_face_enabled(false);
     } else {
         if (g_es1_matrix_dirty) {
             pdMatrixMode(GL_PROJECTION);
-            if (g_es1_pretransformed) {
+            if (g_es1_pretransformed == 1) {
                 pdLoadIdentity();
             } else {
                 load_projection_matrix_with_depth_clamp(g_es1_P);
             }
             pdMatrixMode(GL_MODELVIEW);
-            if (g_es1_pretransformed) {
+            if (g_es1_pretransformed != 0) {
                 pdLoadIdentity();
             } else {
                 glLoadRowMajorMatrixf(g_es1_M);
@@ -1615,9 +1687,9 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
     gl_set_vertex_pointer(buf_vbo, stride_bytes);
     gl_set_texcoord_pointer(buf_vbo + 3, stride_bytes);
 
-    if (g_es1_use_tex0) glEnable(GL_TEXTURE_2D); else glDisable(GL_TEXTURE_2D);
+    gl_set_texture_2d_enabled(g_es1_use_tex0 != 0);
 
-    const bool   prevBlend     = s_blend_enabled;
+    const bool   prevBlend     = s_last_use_alpha;
     const bool   prevDepthMask = current_depth_mask;
     const GLenum prevDepthFunc = s_current_depth_func;
 
@@ -1699,13 +1771,15 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
         composite_tex = get_or_build_composite(s_tex_id[0], s_tex_id[1], (uint8_t)g_two_pass_mode);
         if (composite_tex != 0) {
             glBindTexture(GL_TEXTURE_2D, composite_tex);
+            s_last_bound_tex = composite_tex;
             s_tex_id[0] = composite_tex;
             using_two_pass = false;
         }
     }
 
     if (using_two_pass) {
-        glDisable(GL_BLEND);
+        gl_set_alpha_test_enabled(false);
+        gl_set_blend_enabled(false);
     } else {
         bool want_blend = prevBlend;
         if (g_es1_highp_alpha && g_es1_alpha_test_enable) {
@@ -1716,24 +1790,22 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
             else if (!prevBlend)    want_blend = false;
         }
         if (want_blend) {
-            glEnable(GL_BLEND);
-            if (s_last_modulate) glBlendFunc(GL_DST_COLOR, GL_ZERO);
-            else                 glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+            gl_set_blend_enabled(true);
+            if (s_last_modulate) gl_set_blend_func(GL_DST_COLOR, GL_ZERO);
+            else                 gl_set_blend_func(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
         } else {
-            glDisable(GL_BLEND);
+            gl_set_blend_enabled(false);
         }
 
         const bool want_alpha_test = g_es1_alpha_test_enable || (want_blend && !s_last_modulate);
         float alpha_ref = g_es1_alpha_test_enable ? g_es1_alpha_test_ref : 0.0f;
         if (alpha_ref > 0.0f && alpha_ref < 1.0f) alpha_ref = fmaxf(0.0f, alpha_ref - 0.03f);
-        if (want_alpha_test) {
-            glEnable(GL_ALPHA_TEST);
-            glAlphaFunc(GL_GEQUAL, alpha_ref);
-        }
+        gl_set_alpha_test_enabled(want_alpha_test);
+        if (want_alpha_test) gl_set_alpha_func(GL_GEQUAL, alpha_ref);
     }
 
-    glDepthMask(prevDepthMask ? GL_TRUE : GL_FALSE);
-    glDepthFunc(prevDepthFunc);
+    gl_set_depth_mask(prevDepthMask);
+    gl_set_depth_func(prevDepthFunc);
 
     const bool do_text_outline =
         (g_es1_text_outline != 0) && !using_two_pass &&
@@ -1756,8 +1828,6 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
         glDrawArrays(GL_TRIANGLES, 0, buf_vbo_num_tris * 3);
     }
 
-    if (!using_two_pass) glDisable(GL_ALPHA_TEST);
-
     // --- Optional Pass 2: raw two-pass overlay (fallback if composite build failed) ---
     if (using_two_pass) {
         if (s_last_bound_tex != s_tex_id[1]) {
@@ -1765,39 +1835,37 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
             s_last_bound_tex = s_tex_id[1];
         }
         set_texenv_replace();
-        glDepthMask(GL_FALSE);
-        glDepthFunc(GL_EQUAL);
-        glEnable(GL_BLEND);
+        gl_set_depth_mask(false);
+        gl_set_depth_func(GL_EQUAL);
+        gl_set_blend_enabled(true);
         float alphaThreshold = 0.01f;
         switch (g_two_pass_mode) {
             default:
-            case 1: glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA); alphaThreshold = 0.25f; break;
-            case 2: glBlendFunc(GL_DST_COLOR, GL_ZERO);          alphaThreshold = 0.0f;  break;
-            case 3: glBlendFunc(GL_ONE, GL_ONE);                  alphaThreshold = 0.0f;  break;
-            case 4: glBlendFunc(GL_ONE, GL_ONE);                  alphaThreshold = 0.0f;  break;
-            case 5: glDisable(GL_BLEND); s_blend_enabled = false; alphaThreshold = 0.0f;  break;
+            case 1: gl_set_blend_func(GL_ONE, GL_ONE_MINUS_SRC_ALPHA); alphaThreshold = 0.25f; break;
+            case 2: gl_set_blend_func(GL_DST_COLOR, GL_ZERO);          alphaThreshold = 0.0f;  break;
+            case 3: gl_set_blend_func(GL_ONE, GL_ONE);                  alphaThreshold = 0.0f;  break;
+            case 4: gl_set_blend_func(GL_ONE, GL_ONE);                  alphaThreshold = 0.0f;  break;
+            case 5: gl_set_blend_enabled(false);                        alphaThreshold = 0.0f;  break;
         }
-        s_blend_enabled = (g_two_pass_mode != 5);
         if (g_es1_alpha_test_enable && g_es1_alpha_test_ref > alphaThreshold)
             alphaThreshold = g_es1_alpha_test_ref;
         if (alphaThreshold > 0.0f && alphaThreshold < 1.0f)
             alphaThreshold = fmaxf(0.0f, alphaThreshold - 0.03f);
-        if (alphaThreshold > 0.0f) { glEnable(GL_ALPHA_TEST); glAlphaFunc(GL_GEQUAL, alphaThreshold); }
-        else                         glDisable(GL_ALPHA_TEST);
+        gl_set_alpha_test_enabled(alphaThreshold > 0.0f);
+        if (alphaThreshold > 0.0f) gl_set_alpha_func(GL_GEQUAL, alphaThreshold);
 
         glDrawArrays(GL_TRIANGLES, 0, buf_vbo_num_tris * 3);
 
-        if (alphaThreshold > 0.0f) glDisable(GL_ALPHA_TEST);
-        glDepthMask(prevDepthMask ? GL_TRUE : GL_FALSE);
-        glDepthFunc(prevDepthFunc);
+        gl_set_alpha_test_enabled(false);
+        gl_set_depth_mask(prevDepthMask);
+        gl_set_depth_func(prevDepthFunc);
         if (prevBlend) {
-            glEnable(GL_BLEND);
-            if (s_last_modulate) glBlendFunc(GL_DST_COLOR, GL_ZERO);
-            else                 glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+            gl_set_blend_enabled(true);
+            if (s_last_modulate) gl_set_blend_func(GL_DST_COLOR, GL_ZERO);
+            else                 gl_set_blend_func(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
         } else {
-            glDisable(GL_BLEND);
+            gl_set_blend_enabled(false);
         }
-        s_blend_enabled = prevBlend;
         if (s_tex_id[0] != 0 && s_last_bound_tex != s_tex_id[0]) {
             glBindTexture(GL_TEXTURE_2D, s_tex_id[0]);
             s_last_bound_tex = s_tex_id[0];
@@ -1807,19 +1875,14 @@ static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_
         else set_texenv_replace();
     }
 
-    pdMatrixMode(GL_TEXTURE);
-    pdLoadIdentity();
-    pdMatrixMode(GL_MODELVIEW);
-    glDisable(GL_TEXTURE_2D);
-    glDisable(GL_ALPHA_TEST);
     if (forced2D) {
         pdMatrixMode(GL_MODELVIEW);
         pdPopMatrix();
         pdMatrixMode(GL_PROJECTION);
         pdPopMatrix();
         pdMatrixMode(GL_MODELVIEW);
-        if (prevDepthTestLocal) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
-        glDepthMask(prevDepthMaskLocal ? GL_TRUE : GL_FALSE);
+        gl_set_depth_test_enabled(prevDepthTestLocal);
+        gl_set_depth_mask(prevDepthMaskLocal);
     }
 }
 
@@ -2238,16 +2301,15 @@ static void home_draw_vertices(void) {
     glViewport(0, 0, HOME_WIDTH, HOME_HEIGHT);
     glDisable(GL_SCISSOR_TEST);
     es_scissor_test = false;
-    glDisable(GL_TEXTURE_2D);
-    glDisable(GL_DEPTH_TEST);
+    gl_set_texture_2d_enabled(false);
+    gl_set_depth_test_enabled(false);
     es_depth_test = false;
-    glDepthMask(GL_FALSE);
+    gl_set_depth_mask(false);
     current_depth_mask = false;
-    glDisable(GL_ALPHA_TEST);
+    gl_set_alpha_test_enabled(false);
     gl_set_cull_face_enabled(false);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    s_blend_enabled = true;
+    gl_set_blend_enabled(true);
+    gl_set_blend_func(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     s_last_use_alpha = true;
     s_last_modulate = false;
     s_texenv_mode = TEXENV_UNKNOWN;
@@ -2270,7 +2332,7 @@ static void home_draw_vertices(void) {
 
     if (!s_home_font_vertices.empty() && s_home_font_texture != 0) {
         const HomeFontVertex *vertices = s_home_font_vertices.data();
-        glEnable(GL_TEXTURE_2D);
+        gl_set_texture_2d_enabled(true);
         glBindTexture(GL_TEXTURE_2D, s_home_font_texture);
         s_last_bound_tex = s_home_font_texture;
         set_texenv_modulate();
@@ -2282,12 +2344,12 @@ static void home_draw_vertices(void) {
         gl_set_color_pointer(&vertices[0].r, sizeof(HomeFontVertex));
         glDrawArrays(GL_TRIANGLES, 0, (GLsizei)s_home_font_vertices.size());
         gl_set_texcoord_array_enabled(false);
-        glDisable(GL_TEXTURE_2D);
+        gl_set_texture_2d_enabled(false);
         s_texenv_mode = TEXENV_UNKNOWN;
     }
 
     /* The game backend uses premultiplied blending and must reload its 3D matrices. */
-    glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    gl_set_blend_func(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     g_es1_matrix_dirty = 1;
     glFinish();
     eglSwapBuffers(dpy, surface);
@@ -2364,10 +2426,10 @@ static void gfx_opengl_init(void) {
 
     glViewport(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
     glScissor(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
-    glEnable(GL_TEXTURE_2D);
-    glEnable(GL_DEPTH_TEST);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    gl_set_texture_2d_enabled(true);
+    gl_set_depth_test_enabled(true);
+    gl_set_blend_enabled(true);
+    gl_set_blend_func(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
     gl_set_cull_face_enabled(true);
@@ -2410,6 +2472,7 @@ static void gfx_opengl_init(void) {
     s_last_use_alpha = true;
     s_last_modulate  = false;
     s_current_depth_func = GL_LEQUAL;
+    gl_set_depth_func(GL_LEQUAL);
     s_texenv_mode = TEXENV_UNKNOWN;
 #if defined(__PSP__)
     /* Load the firmware font before game assets consume the remaining heap. */
@@ -2587,15 +2650,19 @@ static void fb_copy_window_into_texture(GLESFramebuffer &dst, int src_x0, int sr
 
 static void fb_draw_textured_quad(GLuint tex, float x, float y, float w, float h, bool invert_v, bool opaque_replace) {
     begin_2d_batch();
-    glEnable(GL_TEXTURE_2D);
+    gl_set_texture_2d_enabled(true);
     gl_set_cull_face_enabled(false);
-    glDisable(GL_ALPHA_TEST);
-    glDisable(GL_DEPTH_TEST);
-    glDepthMask(GL_FALSE);
-    if (opaque_replace) glDisable(GL_BLEND);
-    else { glEnable(GL_BLEND); glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA); }
+    gl_set_alpha_test_enabled(false);
+    gl_set_depth_test_enabled(false);
+    gl_set_depth_mask(false);
+    if (opaque_replace) gl_set_blend_enabled(false);
+    else {
+        gl_set_blend_enabled(true);
+        gl_set_blend_func(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    }
 
     glBindTexture(GL_TEXTURE_2D, tex);
+    s_last_bound_tex = tex;
 
     const GLfloat x0=(GLfloat)x, y0=(GLfloat)y, x1=(GLfloat)(x+w), y1=(GLfloat)(y+h);
     const GLfloat verts[4*3] = { x0,y0,0, x1,y0,0, x0,y1,0, x1,y1,0 };
@@ -2619,7 +2686,7 @@ static void fb_draw_textured_quad(GLuint tex, float x, float y, float w, float h
     gl_set_vertex_pointer(verts, 0);
     gl_set_texcoord_pointer(uvs, 0);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    glDisable(GL_TEXTURE_2D);
+    gl_set_texture_2d_enabled(false);
     end_2d_batch();
 }
 
@@ -2634,12 +2701,12 @@ void* gfx_opengl_get_framebuffer_texture_id(int fb_id) {
 void gfx_opengl_clear_framebuffer(bool c, bool d) {
     GLbitfield mask = 0;
     if (c) mask |= GL_COLOR_BUFFER_BIT;
-    if (d) { glDepthMask(GL_TRUE); mask |= GL_DEPTH_BUFFER_BIT; }
+    if (d) { gl_set_depth_mask(true); mask |= GL_DEPTH_BUFFER_BIT; }
     const bool restore_scissor = es_scissor_test;
     if (restore_scissor) glDisable(GL_SCISSOR_TEST);
     if (mask) glClear(mask);
     if (restore_scissor) { glEnable(GL_SCISSOR_TEST); glScissor(es_scissor_x,es_scissor_y,es_scissor_w,es_scissor_h); }
-    glDepthMask(current_depth_mask ? GL_TRUE : GL_FALSE);
+    gl_set_depth_mask(current_depth_mask);
 }
 
 void gfx_opengl_copy_framebuffer(int fb_dst, int fb_src, int l, int t, bool flip_y, bool use_back) {

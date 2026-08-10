@@ -161,20 +161,23 @@ void starsReset(void)
 
 				tmp1 = g_StarGridSize * g_StarGridSize;
 
-				if (spc8.f[0] == 1 || spc8.f[0] == -1) {
-					spb0 = spc8.f[0] == -1 ? 0 : 1;
+				/* Dividing the dominant component by f0 is mathematically +/-1,
+				 * but PSP floating-point rounding is not required to produce that
+				 * exact bit pattern. Exact equality could leave spb0/spc0/spbc
+				 * uninitialized and pass a wild index to starInsert. Select the
+				 * cube face from the dominant source axis instead. */
+				if (ABS2(spd4.f[0]) >= ABS2(spd4.f[1]) && ABS2(spd4.f[0]) >= ABS2(spd4.f[2])) {
+					spb0 = spd4.f[0] < 0 ? 0 : 1;
 					spc0 = spc8.f[1];
 					spbc = spc8.f[2];
-				} else if (spc8.f[1] == 1 || spc8.f[1] == -1) {
-					spb0 = spc8.f[1] == -1 ? 2 : 3;
+				} else if (ABS2(spd4.f[1]) >= ABS2(spd4.f[2])) {
+					spb0 = spd4.f[1] < 0 ? 2 : 3;
 					spc0 = spc8.f[2];
 					spbc = spc8.f[0];
-				} else if (spc8.f[2] == 1 || spc8.f[2] == -1) {
-					spb0 = spc8.f[2] == -1 ? 4 : 5;
+				} else {
+					spb0 = spd4.f[2] < 0 ? 4 : 5;
 					spc0 = spc8.f[0];
 					spbc = spc8.f[1];
-				} else {
-					// empty
 				}
 
 				v0 = (spc0 + 1) / 2 * g_StarGridSize;
