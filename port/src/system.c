@@ -214,9 +214,15 @@ s32 sysArgGetInt(const char *arg, s32 defval)
 
 u64 sysGetMicroseconds(void)
 {
+#ifdef __PSP__
+	/* Elapsed time needs the monotonic kernel clock, not RTC/calendar conversion.
+	 * Keep all 64 bits so long sessions do not wrap at roughly 71 minutes. */
+	return (u64)sceKernelGetSystemTimeWide() - startTick;
+#else
 	struct timeval tv;
 	gettimeofday(&tv, NULL);
 	return ((u64)tv.tv_sec * USEC_IN_SEC + (u64)tv.tv_usec) - startTick;
+#endif
 }
 
 s32 sysLogIsOpen(void)

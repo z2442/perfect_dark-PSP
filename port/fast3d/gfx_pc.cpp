@@ -437,6 +437,8 @@ static struct PreparedTriPipelineState {
     uint32_t tex_height2[2] = { 0, 0 };
     uint32_t pot_w = 1;
     uint32_t pot_h = 1;
+    float psp_u_scale = 1.0f / 32.0f;
+    float psp_v_scale = 1.0f / 32.0f;
 } s_prepared_tri_pipeline_state;
 static bool s_tri_pipeline_dirty = true;
 static bool s_rect_batch_active = false;
@@ -2888,6 +2890,10 @@ static __attribute__((noinline)) void gfx_prepare_tri_pipeline_state_slow(void) 
     s_prepared_tri_pipeline_state.tex_height2[1] = tex_height2[1];
     s_prepared_tri_pipeline_state.pot_w = pot_w;
     s_prepared_tri_pipeline_state.pot_h = pot_h;
+    // Tile-size factors cancel: (u / 32 / original_width) * (original_width / pot_width).
+    // Compute these only when the pipeline changes, rather than for every vertex.
+    s_prepared_tri_pipeline_state.psp_u_scale = 1.0f / (32.0f * static_cast<float>(pot_w));
+    s_prepared_tri_pipeline_state.psp_v_scale = 1.0f / (32.0f * static_cast<float>(pot_h));
 
     s_batch_has_cc = true;
     s_batch_cc_mode = next_batch_cc_mode;
@@ -3221,6 +3227,35 @@ static __attribute__((noinline)) int psp_clip_triangle_vfpu64(
     return count;
 }
 
+// Cull ordinary geometry before matrix binding, texture setup and vertex emission.
+// Rectangles/forced 2D compute fresh clip coordinates and use this test later.
+template <typename Vertex>
+static inline bool gfx_psp_triangle_culled(const Vertex& v1, const Vertex& v2, const Vertex& v3) {
+    const uint32_t cull_mode = rsp.geometry_mode & G_CULL_BOTH;
+    if (cull_mode == 0) return false;
+    if (cull_mode == G_CULL_BOTH) return true;
+    const float w1 = (fabsf(v1.clip_w) < 1e-5f) ? 1e-5f : v1.clip_w;
+    const float w2 = (fabsf(v2.clip_w) < 1e-5f) ? 1e-5f : v2.clip_w;
+    const float w3 = (fabsf(v3.clip_w) < 1e-5f) ? 1e-5f : v3.clip_w;
+    const float x1 = v1.clip_x / w1;
+    const float y1 = v1.clip_y / w1;
+    const float x2 = v2.clip_x / w2;
+    const float y2 = v2.clip_y / w2;
+    const float x3 = v3.clip_x / w3;
+    const float y3 = v3.clip_y / w3;
+    float cross = (x1 - x2) * (y3 - y2) - (y1 - y2) * (x3 - x2);
+
+    if ((v1.clip_w < 0.0f) ^ (v2.clip_w < 0.0f) ^ (v3.clip_w < 0.0f)) {
+        cross = -cross;
+    }
+    if (rsp.extra_geometry_mode & G_INVERT_CULLING_EXT) {
+        cross = -cross;
+    }
+
+    return (cull_mode == G_CULL_FRONT && cross <= 0.0f) ||
+           (cull_mode == G_CULL_BACK && cross >= 0.0f);
+}
+
 /* PD's microcode-facing triangle path keeps the established UV, color, culling,
  * and winding rules. Clip classification and polygon/plane math stay on VFPU. */
 static __attribute__((noinline)) void gfx_sp_tri1_psp_accurate(
@@ -3253,18 +3288,8 @@ static __attribute__((noinline)) void gfx_sp_tri1_psp_accurate(
 
         const short uls = rdp.texture_tile[rdp.first_tile_index].uls;
         const short ult = rdp.texture_tile[rdp.first_tile_index].ult;
-        const uint32_t orig_w = s_prepared_tri_pipeline_state.tex_width2[0]
-            ? s_prepared_tri_pipeline_state.tex_width2[0]
-            : s_prepared_tri_pipeline_state.pot_w;
-        const uint32_t orig_h = s_prepared_tri_pipeline_state.tex_height2[0]
-            ? s_prepared_tri_pipeline_state.tex_height2[0]
-            : s_prepared_tri_pipeline_state.pot_h;
-        tv.u = ((vtx->u - uls) / 32.0f) / static_cast<float>(orig_w);
-        tv.u *= static_cast<float>(orig_w) /
-                static_cast<float>(s_prepared_tri_pipeline_state.pot_w);
-        tv.v = ((vtx->v - ult) / 32.0f) / static_cast<float>(orig_h);
-        tv.v *= static_cast<float>(orig_h) /
-                static_cast<float>(s_prepared_tri_pipeline_state.pot_h);
+        tv.u = (vtx->u - uls) * s_prepared_tri_pipeline_state.psp_u_scale;
+        tv.v = (vtx->v - ult) * s_prepared_tri_pipeline_state.psp_v_scale;
 
         if (bypass_transform_snapshots) {
             tv.clip_x = tv.x * bypass_MP[0][0] + tv.y * bypass_MP[1][0] +
@@ -3302,31 +3327,8 @@ static __attribute__((noinline)) void gfx_sp_tri1_psp_accurate(
         }
     }
 
-    if (rsp.geometry_mode & G_CULL_BOTH) {
-        const float w1 = (fabsf(TV[0].clip_w) < 1e-5f) ? 1e-5f : TV[0].clip_w;
-        const float w2 = (fabsf(TV[1].clip_w) < 1e-5f) ? 1e-5f : TV[1].clip_w;
-        const float w3 = (fabsf(TV[2].clip_w) < 1e-5f) ? 1e-5f : TV[2].clip_w;
-        const float x1 = TV[0].clip_x / w1;
-        const float y1 = TV[0].clip_y / w1;
-        const float x2 = TV[1].clip_x / w2;
-        const float y2 = TV[1].clip_y / w2;
-        const float x3 = TV[2].clip_x / w3;
-        const float y3 = TV[2].clip_y / w3;
-        float cross = (x1 - x2) * (y3 - y2) - (y1 - y2) * (x3 - x2);
-
-        if ((TV[0].clip_w < 0.0f) ^ (TV[1].clip_w < 0.0f) ^ (TV[2].clip_w < 0.0f)) {
-            cross = -cross;
-        }
-        if (rsp.extra_geometry_mode & G_INVERT_CULLING_EXT) {
-            cross = -cross;
-        }
-
-        const uint32_t cull_mode = rsp.geometry_mode & G_CULL_BOTH;
-        if (cull_mode == G_CULL_BOTH ||
-                (cull_mode == G_CULL_FRONT && cross <= 0.0f) ||
-                (cull_mode == G_CULL_BACK && cross >= 0.0f)) {
-            return;
-        }
+    if (bypass_transform_snapshots && gfx_psp_triangle_culled(TV[0], TV[1], TV[2])) {
+        return;
     }
 
     auto push_temp9 = [&](const TempV& V) {
@@ -3420,6 +3422,14 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
 
 #if defined(__PSP__)
     const bool bypass_transform_snapshots = g_es1_force_2d || is_rect;
+    const uint8_t active_clip_reject_mask = gfx_get_active_clip_reject_mask();
+    if (!bypass_transform_snapshots &&
+            (((v1->clip_rej & v2->clip_rej & v3->clip_rej) & active_clip_reject_mask) != 0)) {
+        return;
+    }
+    if (!bypass_transform_snapshots && gfx_psp_triangle_culled(*v1, *v2, *v3)) {
+        return;
+    }
     const uint16_t tri_transform_id = bypass_transform_snapshots ? 0 : v1->transform_id;
     const bool mixed_transform = !bypass_transform_snapshots &&
         ((v2->transform_id != tri_transform_id) || (v3->transform_id != tri_transform_id));
@@ -3443,15 +3453,9 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
         ? kModelviewPretransformedTransformId
         : (mixed_transform ? kPretransformedTransformId : tri_transform_id);
     const bool z_is_from_0_to_1 = gfx_cached_clip_parameters.z_is_from_0_to_1;
-    const uint8_t active_clip_reject_mask = gfx_get_active_clip_reject_mask();
     const uint8_t triangle_clip_mask =
         (v1->clip_rej | v2->clip_rej | v3->clip_rej) & active_clip_reject_mask;
     const float (*bypass_MP)[4] = bypass_transform_snapshots ? gfx_get_rsp_mp_matrix() : nullptr;
-
-    if (!bypass_transform_snapshots &&
-            (((v1->clip_rej & v2->clip_rej & v3->clip_rej) & active_clip_reject_mask) != 0)) {
-        return;
-    }
 
     if (!bypass_transform_snapshots &&
             (s_active_transform_mode != emit_transform_mode ||
