@@ -15,6 +15,7 @@
 #ifdef PD_PSP_AUDIO_ME
 #include "mixer_cmd.h"
 #include "mixer_me.h"
+#include "mixer_mp3.h"
 #endif
 
 u32 var80091560;
@@ -475,6 +476,7 @@ void amgrFrame(void)
 
 	#ifdef PD_PSP_AUDIO_ME
 	mixerCmdListBegin(datastart, auxstart);
+	mixerMp3BeginList(g_AmgrNextCmdIndex);
 	#endif
 	Acmd *cmd = n_alAudioFrame(datastart, &var800918e8, outbuffer, info->frameSamples);
 	#ifdef PD_PSP_AUDIO_ME
@@ -490,7 +492,7 @@ void amgrFrame(void)
 		mixerMeSubmit(datastart, auxstart, cmdcount);
 		amgrPushPendingMeBuffer(info);
 	} else {
-		/* Keep sound working if ME startup fails; MP3 already runs on Allegrex. */
+		/* Execute the same ordered mixer/MP3 commands if ME startup fails. */
 		mixerExecCommandList(datastart, auxstart, cmdcount);
 		osAiSetNextBuffer(info->data, info->frameSamples * 4);
 	}

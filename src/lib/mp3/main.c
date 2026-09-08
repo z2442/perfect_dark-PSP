@@ -1,6 +1,9 @@
 #include <ultra64.h>
 #include "internal.h"
 #include "mp3.h"
+#ifdef PD_PSP_AUDIO_ME
+#include "mixer_mp3.h"
+#endif
 
 #define LAYER_3 1
 #define LAYER_2 2
@@ -220,7 +223,11 @@ s32 mp3main0004453c(struct asistream *streamptr, struct mp3thing **arg1, s32 *ar
 	if (!result) {
 		// empty
 	} else {
+#ifdef PD_PSP_AUDIO_ME
+		*arg1 = mixerMp3OutputBuffer(stream->unk3ba0);
+#else
 		*arg1 = &stream->unk2070[stream->unk3ba0];
+#endif
 		*arg2 = stream->numchannels;
 	}
 

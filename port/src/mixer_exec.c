@@ -3,6 +3,7 @@
 
 #include "mixer.h"
 #include "mixer_cmd.h"
+#include "mixer_mp3.h"
 
 static Acmd *g_MixerCmdBase = NULL;
 static uintptr_t *g_MixerCmdAux = NULL;
@@ -35,6 +36,11 @@ void mixerExecCommandList(const Acmd *cmdList, const uintptr_t *auxData, s32 cmd
 		const uintptr_t aux = auxData ? auxData[i] : 0;
 
 		switch (w0 >> 24) {
+#ifdef PD_PSP_AUDIO_ME
+		case MIXER_CMD_MP3:
+			mixerMp3Exec((const void *)aux, (void *)(uintptr_t)w1);
+			break;
+#endif
 		case A_SPNOOP:
 			aDisableImpl((uint16_t)(w0 & 0xffff), w1 >> 16, w1 & 0xffff);
 			break;

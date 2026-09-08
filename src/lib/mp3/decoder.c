@@ -2929,8 +2929,8 @@ bool mp3decDecodeFrame(struct asistream *stream)
 #ifndef PLATFORM_N64
 	/*
 	 * Non-N64 mixers decode the original MP3 stream with minimp3 and replace
-	 * this block in aPlayMP3Impl.  The legacy synthesis helpers are empty C
-	 * stubs in this port, so running the N64 path would convert uninitialized
+	 * this block in aPlayMP3Impl or the queued ME decoder. The legacy synthesis
+	 * helpers are empty C stubs, so running the N64 path would convert uninitialized
 	 * stack floats to integers.  Keep its stream-position bookkeeping, provide
 	 * a deterministic destination block, and let the mixer fill it with PCM.
 	 */
@@ -2941,7 +2941,10 @@ bool mp3decDecodeFrame(struct asistream *stream)
 	}
 
 	stream->unk2020 = (frameoffset - stream->main_data_begin) * 8;
+	/* In ME builds the parser never writes the separate aligned PCM blocks. */
+#ifndef PD_PSP_AUDIO_ME
 	bzero(&stream->unk2070[stream->unk3ba0], sizeof(struct mp3thing));
+#endif
 	return true;
 #else
 	s32 sp954;
