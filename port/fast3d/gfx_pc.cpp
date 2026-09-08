@@ -284,6 +284,15 @@ static struct RSP {
     const struct NormalColor *vertex_colors; //[MAX_VERTEX_COLORS];
 } rsp;
 
+#if defined(__PSP__)
+// Separate from LoadedVertex: the VFPU transform depends on its 64-byte layout.
+// Only vertices used by a culled triangle need the perspective divide.
+static struct PspProjectedVertex {
+    float x, y;
+    bool valid;
+} s_psp_projected_vertices[MAX_VERTICES + 4];
+#endif
+
 struct RawTexMetadata {
     uint16_t width, height;
     float h_byte_scale = 1, v_pixel_scale = 1;
@@ -2323,6 +2332,10 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* verti
         const Vtx* v = &vertices[i];
         struct LoadedVertex* d = &rsp.loaded_vertices[dest_index];
 
+#if defined(__PSP__)
+        s_psp_projected_vertices[dest_index].valid = false;
+#endif
+
         const float x = (float)v->v[0];
         const float y = (float)v->v[1];
         const float z = (float)v->v[2];
@@ -3256,6 +3269,101 @@ static inline bool gfx_psp_triangle_culled(const Vertex& v1, const Vertex& v2, c
            (cull_mode == G_CULL_BACK && cross >= 0.0f);
 }
 
+static inline const PspProjectedVertex& gfx_psp_project_vertex(uint8_t index) {
+    PspProjectedVertex& projected = s_psp_projected_vertices[index];
+    if (!projected.valid) {
+        const LoadedVertex& v = rsp.loaded_vertices[index];
+        const float w = (fabsf(v.clip_w) < 1e-5f) ? 1e-5f : v.clip_w;
+        projected.x = v.clip_x / w;
+        projected.y = v.clip_y / w;
+        projected.valid = true;
+    }
+    return projected;
+}
+
+static inline bool gfx_psp_loaded_triangle_culled(uint8_t i1, uint8_t i2, uint8_t i3) {
+    const uint32_t cull_mode = rsp.geometry_mode & G_CULL_BOTH;
+    if (cull_mode == 0) return false;
+    if (cull_mode == G_CULL_BOTH) return true;
+    const PspProjectedVertex& v1 = gfx_psp_project_vertex(i1);
+    const PspProjectedVertex& v2 = gfx_psp_project_vertex(i2);
+    const PspProjectedVertex& v3 = gfx_psp_project_vertex(i3);
+    const float cross_a = (v1.x - v2.x) * (v3.y - v2.y);
+    const float cross_b = (v1.y - v2.y) * (v3.x - v2.x);
+    float cross = cross_a - cross_b;
+    // Cached rounding can matter when large projected edges nearly cancel,
+    // especially across the eye plane. Preserve the original decision there.
+    if (fabsf(cross) <= (fabsf(cross_a) + fabsf(cross_b)) * 1e-6f) {
+        return gfx_psp_triangle_culled(rsp.loaded_vertices[i1], rsp.loaded_vertices[i2],
+                                       rsp.loaded_vertices[i3]);
+    }
+    if ((rsp.loaded_vertices[i1].clip_w < 0.0f) ^
+        (rsp.loaded_vertices[i2].clip_w < 0.0f) ^
+        (rsp.loaded_vertices[i3].clip_w < 0.0f)) {
+        cross = -cross;
+    }
+    if (rsp.extra_geometry_mode & G_INVERT_CULLING_EXT) {
+        cross = -cross;
+    }
+    return (cull_mode == G_CULL_FRONT && cross <= 0.0f) ||
+           (cull_mode == G_CULL_BACK && cross >= 0.0f);
+}
+
+// Already-culled, fully visible geometry needs no TempV or clipping payload.
+// Mixed-transform and 2D triangles continue through the accurate path below.
+static __attribute__((noinline)) void gfx_sp_tri1_psp_unclipped(
+    LoadedVertex* const v_arr[3], PspTransformMode emit_transform_mode) {
+    const short uls = rdp.texture_tile[rdp.first_tile_index].uls;
+    const short ult = rdp.texture_tile[rdp.first_tile_index].ult;
+    const float u_scale = s_prepared_tri_pipeline_state.psp_u_scale;
+    const float v_scale = s_prepared_tri_pipeline_state.psp_v_scale;
+    const bool bake_color = s_prepared_tri_pipeline_state.bake_primary_constant_color;
+    float r = 0.0f, g = 0.0f, b = 0.0f, a = 0.0f;
+    if (bake_color) {
+        const RGBA& color = (s_prepared_tri_pipeline_state.base_mode == 2)
+            ? rdp.prim_color : rdp.env_color;
+        a = color.a / 255.0f;
+        r = color.r / 255.0f;
+        g = color.g / 255.0f;
+        b = color.b / 255.0f;
+        if (!s_prepared_tri_pipeline_state.bake_textured_constant) {
+            r *= a;
+            g *= a;
+            b *= a;
+        }
+    }
+
+    float* out = &buf_vbo[buf_vbo_len];
+    for (int i = 0; i < 3; ++i, out += 9) {
+        const LoadedVertex& v = *v_arr[i];
+        if (emit_transform_mode == PSP_TRANSFORM_MODELVIEW) {
+            out[0] = v.eye_x;
+            out[1] = v.eye_y;
+            out[2] = v.eye_z;
+        } else {
+            out[0] = v.x;
+            out[1] = v.y;
+            out[2] = v.z;
+        }
+        out[3] = (v.u - uls) * u_scale;
+        out[4] = (v.v - ult) * v_scale;
+        if (!bake_color) {
+            a = v.color.a / 255.0f;
+            r = (v.color.r / 255.0f) * a;
+            g = (v.color.g / 255.0f) * a;
+            b = (v.color.b / 255.0f) * a;
+        }
+        out[5] = r;
+        out[6] = g;
+        out[7] = b;
+        out[8] = a;
+    }
+    buf_vbo_len += 27;
+    if (++buf_vbo_num_tris == MAX_BUFFERED) {
+        gfx_flush_with_reason(GFX_FLUSH_BUFFER_FULL);
+    }
+}
+
 /* PD's microcode-facing triangle path keeps the established UV, color, culling,
  * and winding rules. Clip classification and polygon/plane math stay on VFPU. */
 static __attribute__((noinline)) void gfx_sp_tri1_psp_accurate(
@@ -3427,7 +3535,7 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
             (((v1->clip_rej & v2->clip_rej & v3->clip_rej) & active_clip_reject_mask) != 0)) {
         return;
     }
-    if (!bypass_transform_snapshots && gfx_psp_triangle_culled(*v1, *v2, *v3)) {
+    if (!bypass_transform_snapshots && gfx_psp_loaded_triangle_culled(vtx1_idx, vtx2_idx, vtx3_idx)) {
         return;
     }
     const uint16_t tri_transform_id = bypass_transform_snapshots ? 0 : v1->transform_id;
@@ -3477,6 +3585,11 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
     gfx_prepare_tri_pipeline_state();
 
 #if defined(__PSP__)
+    if (!bypass_transform_snapshots && triangle_clip_mask == 0 &&
+            emit_transform_mode != PSP_TRANSFORM_CLIP) {
+        gfx_sp_tri1_psp_unclipped(v_arr, emit_transform_mode);
+        return;
+    }
     gfx_sp_tri1_psp_accurate(v_arr, bypass_transform_snapshots, bypass_MP,
                              emit_transform_mode, triangle_clip_mask,
                              z_is_from_0_to_1, is_rect);
