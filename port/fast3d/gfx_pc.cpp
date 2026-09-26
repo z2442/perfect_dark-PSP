@@ -1,4 +1,9 @@
 #include <cstdint>
+#if defined(__PSP__)
+#include "gfx_psp_glare.h"
+extern "C" volatile uint8_t g_psp_light_glare;
+extern "C" volatile uint8_t g_psp_sprite_alpha_mode;
+#endif
 #include <cstdint>
 extern "C" volatile uint8_t g_force_two_pass; // controlled per-combiner
 extern "C" volatile uint8_t g_two_pass_mode; // 0=off, 1=decal, 2=modulate, 3=additive, 4=additive-alpha, 5=replace
@@ -2699,9 +2704,16 @@ static __attribute__((noinline)) void gfx_prepare_tri_pipeline_state_slow(void) 
     bool bake_textured_constant = false;
 
 #if defined(__PSP__)
+    const uint8_t sprite_alpha_mode = want_alpha_test ? (uint8_t)PSP_SPRITE_ALPHA_NONE :
+        gfxPspSpriteAlphaMode(rdp.combine_mode,
+            (rdp.other_mode_h & (3u << G_MDSFT_CYCLETYPE)) == G_CYC_1CYCLE,
+            (rdp.other_mode_l & ~7u) == (G_RM_XLU_SURF | G_RM_XLU_SURF2),
+            (rdp.other_mode_l & ~7u) == (G_RM_AA_XLU_SURF | G_RM_AA_XLU_SURF2));
     if (want_text_outline == 0 && !want_backend_tex1 && (base_mode == 2 || base_mode == 3)) {
         bake_primary_constant_color = true;
-        bake_textured_constant = want_use_tex0;
+        // The sun disc's texture is premultiplied at upload, so its constant
+        // tint must also be premultiplied by light opacity in every vertex path.
+        bake_textured_constant = want_use_tex0 && sprite_alpha_mode != PSP_SPRITE_ALPHA_MODULATE;
         const uint8_t baked_primary_alpha = (base_mode == 2) ? rdp.prim_color.a : rdp.env_color.a;
         const bool opaque_textured_constant = bake_textured_constant && !use_alpha && !want_alpha_test;
         const bool opaque_font_like_constant = bake_textured_constant && want_font_combine && baked_primary_alpha == 255;
@@ -2714,6 +2726,11 @@ static __attribute__((noinline)) void gfx_prepare_tri_pipeline_state_slow(void) 
     uint32_t next_batch_cc_opts = 0;
 
 #if defined(__PSP__)
+    const bool want_light_glare = !want_alpha_test &&
+        gfxPspIsLightGlare(rdp.combine_mode,
+            (rdp.other_mode_h & (3u << G_MDSFT_CYCLETYPE)) == G_CYC_1CYCLE,
+            (rdp.other_mode_l & ~7u) == (G_RM_CLD_SURF | G_RM_CLD_SURF2));
+
     next_batch_cc_mode = gfx_make_psp_batch_signature(
         want_use_tex0,
         want_backend_tex1,
@@ -2722,6 +2739,9 @@ static __attribute__((noinline)) void gfx_prepare_tri_pipeline_state_slow(void) 
         want_highp_alpha,
         effective_base_mode,
         want_text_outline != 0);
+    // Flush on entry AND exit before publishing the flare hint to the backend.
+    next_batch_cc_mode |= (uint64_t)(want_light_glare ? 1u : 0u) << 8;
+    next_batch_cc_mode |= (uint64_t)sprite_alpha_mode << 9;
 
     if (!s_batch_has_cc || s_batch_cc_mode != next_batch_cc_mode) {
         if (buf_vbo_len > 0) {
@@ -2749,6 +2769,10 @@ static __attribute__((noinline)) void gfx_prepare_tri_pipeline_state_slow(void) 
     }
 #endif
 
+#if defined(__PSP__)
+    g_psp_light_glare = want_light_glare ? 1 : 0;
+    g_psp_sprite_alpha_mode = sprite_alpha_mode;
+#endif
     g_es1_alpha_test_enable = want_alpha_test ? 1 : 0;
     g_es1_alpha_test_ref = want_alpha_test ? 0.5f : 0.0f;
     g_es1_highp_alpha = want_highp_alpha;

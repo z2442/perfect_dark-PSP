@@ -317,7 +317,12 @@ set(SRC
 )
 
 if(PSP)
+  list(REMOVE_ITEM SRC
+    "${CMAKE_SOURCE_DIR}/port/fast3d/gfx_opengl.cpp"
+    "${CMAKE_SOURCE_DIR}/port/fast3d/glad/glad.c")
   list(APPEND SRC "${CMAKE_SOURCE_DIR}/port/fast3d/gfx_transform_vfpu.S")
+else()
+  list(REMOVE_ITEM SRC "${CMAKE_SOURCE_DIR}/port/fast3d/gfx_psp.cpp")
 endif()
 
 # --- Asset Header Generation (Host Tool) ---
@@ -336,7 +341,9 @@ add_custom_target(pd_headers ALL DEPENDS ${JSON_HEADERS})
 set(BIN_NAME_ELF "pd${BIN_REGION}.${TARGET_ARCH}elf") # Intermediate ELF name
 set(PD_TARGET_NAME "pd_elf") # Internal CMake target name for the ELF
 
-list(APPEND LIBS intrafont glut GLU GL pspge pspgu pspgum m pspmath pspfpu pspvfpu psppower pspdebug pspctrl pspdisplay pspaudiolib pspaudio )
+if(PSP)
+  list(APPEND LIBS intrafont pspgu pspge m pspmath pspfpu pspvfpu psppower pspdebug pspctrl pspdisplay pspaudiolib pspaudio)
+endif()
 
 # Use the combined SRC list directly
 add_executable(pd ${SRC})

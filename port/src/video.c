@@ -10,7 +10,11 @@
 #include "video.h"
 #include "../fast3d/gfx_api.h"
 #include "../fast3d/gfx_sdl.h"
+#ifdef __PSP__
+#include "../fast3d/gfx_psp.h"
+#else
 #include "../fast3d/gfx_opengl.h"
+#endif
 
 
 #ifdef PLATFORM_NSWITCH
@@ -72,7 +76,11 @@ static s32 videoInitDisplayModes(void);
 s32 videoInit(void)
 {
     wmAPI = &gfx_sdl;
+#ifdef __PSP__
+    renderingAPI = &gfx_psp_api;
+#else
     renderingAPI = &gfx_opengl_api;
+#endif
 
     // ... (setting gfx_current_native_viewport, etc.) ...
     gfx_current_native_viewport.width = 320;

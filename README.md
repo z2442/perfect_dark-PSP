@@ -11,9 +11,10 @@ Perfect Dark port for PSP based on the PC port. Currently **playable** from star
 Copy to the GAME directory on PSP and enjoy!
 
 ## Current Status
-- Running on PSP GL ES 1.1
+- PSP builds use native GE command lists through PSPSDK `sceGu`; PSPGL/EGL are no longer linked.
 - Runs on PSP Phats (32MB), Slims (64MB) and Vita EPSP (64MB)
-- Framerate could be improved but rendering is completed under GL and started with PSP GU native. 
+- The native renderer is an initial migration and needs visual and performance validation on PSP/PPSSPP.
+- Renderer details and validation steps: [Native PSP renderer](docs/psp-ge-renderer.md).
 
 Video (OUTDATED):
 https://youtu.be/tW5jyqPiTaI?si=Pu8vZp1W-zcNEr6i
