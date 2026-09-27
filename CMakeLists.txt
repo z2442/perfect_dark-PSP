@@ -342,7 +342,11 @@ set(BIN_NAME_ELF "pd${BIN_REGION}.${TARGET_ARCH}elf") # Intermediate ELF name
 set(PD_TARGET_NAME "pd_elf") # Internal CMake target name for the ELF
 
 if(PSP)
-  list(APPEND LIBS intrafont pspgu pspge m pspmath pspfpu pspvfpu psppower pspdebug pspctrl pspdisplay pspaudiolib pspaudio)
+  list(APPEND LIBS intrafont pspgu pspge m pspmath pspfpu pspvfpu psppower pspdebug pspctrl pspdisplay pspaudiolib pspaudio
+    pspnet_adhocctl pspnet_adhoc pspnet pspwlan)
+  # The PSP compiler specs link psputility and pspnet_inet after libcglue.
+  # Linking them here splits sceUtility's import stubs when libcglue adds its
+  # own system-parameter calls, producing an invalid PRX import table.
 endif()
 
 # Use the combined SRC list directly

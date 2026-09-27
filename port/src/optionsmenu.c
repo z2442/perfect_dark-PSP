@@ -685,6 +685,7 @@ struct menudialogdef g_ExtendedControllerMenuDialog = {
 	NULL,
 };
 
+#ifndef __PSP__
 static MenuItemHandlerResult menuhandlerFullScreen(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	switch (operation) {
@@ -734,8 +735,26 @@ static MenuItemHandlerResult menuhandlerCenterWindow(s32 operation, struct menui
 	return 0;
 }
 
+#endif
+
 static MenuItemHandlerResult menuhandlerVsync(s32 operation, struct menuitem *item, union handlerdata *data)
 {
+#ifdef __PSP__
+	static const char *opts[] = { "Off", "On" };
+	switch (operation) {
+	case MENUOP_GETOPTIONCOUNT:
+		data->dropdown.value = ARRAYCOUNT(opts);
+		break;
+	case MENUOP_GETOPTIONTEXT:
+		return (intptr_t)opts[data->dropdown.value];
+	case MENUOP_SET:
+		videoSetVsync(data->dropdown.value);
+		break;
+	case MENUOP_GETSELECTEDINDEX:
+		data->dropdown.value = videoGetVsync();
+		break;
+	}
+#else
 	static const s32 numOpts = 10;
 	static const char *constOpts[] = {
 		"Adaptive",
@@ -761,6 +780,8 @@ static MenuItemHandlerResult menuhandlerVsync(s32 operation, struct menuitem *it
 		data->dropdown.value = videoGetVsync() + 1;
 	}
 
+#endif
+
 	return 0;
 }
 
@@ -785,6 +806,7 @@ static MenuItemHandlerResult menuhandlerFramerateLimit(s32 operation, struct men
 	return 0;
 }
 
+#ifndef __PSP__
 static MenuItemHandlerResult menuhandlerMSAA(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	s32 msaa;
@@ -856,12 +878,16 @@ static MenuItemHandlerResult menuhandlerResolution(s32 operation, struct menuite
 	return 0;
 }
 
+#endif
+
 static MenuItemHandlerResult menuhandlerTexFilter(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	static const char *opts[] = {
 		"Nearest",
 		"Bilinear",
+#ifndef __PSP__
 		"Three Point"
+#endif
 	};
 
 	switch (operation) {
@@ -932,26 +958,21 @@ static MenuItemHandlerResult menuhandlerGeMuzzleFlashes(s32 operation, struct me
 	return 0;
 }
 
+#ifndef __PSP__
 static MenuItemHandlerResult menuhandlerUncapTickrate(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	switch (operation) {
 	case MENUOP_GET:
-#ifdef __PSP__
-		return false;
-#else
 		return (g_TickRateDiv == 0);
-#endif
 	case MENUOP_SET:
-#ifdef __PSP__
-		g_TickRateDiv = 1;
-#else
 		g_TickRateDiv = !data->checkbox.value;
-#endif
 		break;
 	}
 
 	return 0;
 }
+
+#endif
 
 static MenuItemHandlerResult menuhandlerCenterHUD(s32 operation, struct menuitem *item, union handlerdata *data)
 {
@@ -1002,6 +1023,7 @@ static MenuItemHandlerResult menuhandlerScreenShake(s32 operation, struct menuit
 }
 
 struct menuitem g_ExtendedVideoMenuItems[] = {
+#ifndef __PSP__
 	{
 		MENUITEMTYPE_CHECKBOX,
 		0,
@@ -1050,6 +1072,7 @@ struct menuitem g_ExtendedVideoMenuItems[] = {
 		0,
 		NULL,
 	},
+#endif
 	{
 		MENUITEMTYPE_DROPDOWN,
 		0,
@@ -1066,6 +1089,7 @@ struct menuitem g_ExtendedVideoMenuItems[] = {
 		VIDEO_MAX_FPS,
 		menuhandlerFramerateLimit,
 	},
+#ifndef __PSP__
 	{
 		MENUITEMTYPE_CHECKBOX,
 		0,
@@ -1074,6 +1098,7 @@ struct menuitem g_ExtendedVideoMenuItems[] = {
 		0,
 		menuhandlerUncapTickrate,
 	},
+#endif
 	{
 		MENUITEMTYPE_CHECKBOX,
 		0,
@@ -1165,11 +1190,19 @@ struct menuitem g_ExtendedVideoMenuItems[] = {
 	{ MENUITEMTYPE_END },
 };
 
+static MenuDialogHandlerResult menudialogExtendedVideo(s32 operation, struct menudialogdef *dialogdef, union handlerdata *data)
+{
+	if (operation == MENUOP_CLOSE) {
+		configSave(CONFIG_PATH);
+	}
+	return 0;
+}
+
 struct menudialogdef g_ExtendedVideoMenuDialog = {
 	MENUDIALOGTYPE_DEFAULT,
 	(uintptr_t)"Extended Video Options",
 	g_ExtendedVideoMenuItems,
-	NULL,
+	menudialogExtendedVideo,
 	MENUDIALOGFLAG_LITERAL_TEXT,
 	NULL,
 };

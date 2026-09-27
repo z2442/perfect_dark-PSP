@@ -86,7 +86,7 @@ static SceUID g_RomIoSema = -1;
 
 static u8 *romDataSeg;
 static u32 romDataSegSize;
-static const char *romName = ROMDATA_ROM_NAME;
+const char *g_RomName = ROMDATA_ROM_NAME;
 
 static char *g_RomFileNameBlockBuffer = NULL;
 static u32 g_RomFileNameBlockSize = 0;
@@ -551,10 +551,10 @@ static s32 romdataOpenExistingAssetCache(void)
 static inline void romdataLoadRom(void)
 {
     #ifdef PDDEBUG
-	sysLogPrintf(LOG_NOTE, "ROM file: %s", romName);
+	sysLogPrintf(LOG_NOTE, "ROM file: %s", g_RomName);
     #endif
     
-    strncpy(g_RomPath, fsFullPath(romName), sizeof(g_RomPath) - 1);
+    strncpy(g_RomPath, fsFullPath(g_RomName), sizeof(g_RomPath) - 1);
     g_RomPath[sizeof(g_RomPath) - 1] = '\0';
     g_AssetCacheActive = 0;
     g_RomReopenRequested = 0;
@@ -562,9 +562,9 @@ static inline void romdataLoadRom(void)
     (void)romdataOpenExistingAssetCache();
 #endif
     if (!g_AssetCacheActive) {
-        s32 rom_size_check = fsFileSize(romName);
+        s32 rom_size_check = fsFileSize(g_RomName);
         if (rom_size_check < 0) {
-            sysFatalError("Could not find either the asset cache or ROM file %s.\nEnsure that the ROM is in the %s directory for first-boot extraction.", romName, fsFullPath(""));
+            sysFatalError("Could not find either the asset cache or ROM file %s.\nEnsure that the ROM is in the %s directory for first-boot extraction.", g_RomName, fsFullPath(""));
         }
         g_RomFileSize = (u32)rom_size_check;
         strncpy(g_RomBackendPath, g_RomPath, sizeof(g_RomBackendPath) - 1);
@@ -573,7 +573,7 @@ static inline void romdataLoadRom(void)
         g_RomFp = fopen(g_RomPath, "rb");
         if (g_RomFp) setvbuf(g_RomFp, NULL, _IOFBF, 256 * 1024);
 		if (!g_RomFp) {
-			sysFatalError("Could not open ROM file %s.\nEnsure that it is in the %s directory.", romName, fsFullPath(""));
+			sysFatalError("Could not open ROM file %s.\nEnsure that it is in the %s directory.", g_RomName, fsFullPath(""));
 		}
     }
 
@@ -1168,7 +1168,7 @@ s32 romdataInit(void)
 {
 	const char *altRomName = sysArgGetString("--rom-file");
 	if (altRomName) {
-		romName = altRomName;
+		g_RomName = altRomName;
 	}
 
 #ifdef __PSP__

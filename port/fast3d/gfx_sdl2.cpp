@@ -1,10 +1,17 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <time.h>
-#include "platform.h"
-#include "system.h"
+#ifdef __PSP__
+#include <pspkernel.h>
+#endif
+
 #include "gfx_window_manager_api.h"
 #include "gfx_screen_config.h"
+
+static int32_t target_fps = 0;
+static int swap_interval = 1;
+static double last_frame_time = 0.0;
+static double gfx_sdl_get_time(void);
 
 static int32_t gfx_sdl_get_maximized_state(void) { return 0; }
 static int32_t gfx_sdl_get_fullscreen_state(void) { return 0; }
@@ -39,6 +46,20 @@ static void gfx_sdl_get_dimensions(uint32_t* width, uint32_t* height, int32_t* p
 static void gfx_sdl_handle_events(void) { }
 
 static bool gfx_sdl_start_frame(void) {
+    double now = gfx_sdl_get_time();
+    if (target_fps > 0 && last_frame_time > 0.0) {
+        const double deadline = last_frame_time + 1.0 / target_fps;
+        while (now < deadline) {
+            const unsigned int delay = (unsigned int)((deadline - now) * 1000000.0) + 1;
+#ifdef __PSP__
+            sceKernelDelayThread(delay);
+#else
+            usleep(delay);
+#endif
+            now = gfx_sdl_get_time();
+        }
+    }
+    last_frame_time = now;
     return true;
 }
 static void gfx_sdl_swap_buffers_begin(void) { }
@@ -46,23 +67,34 @@ static void gfx_sdl_swap_buffers_end(void) {
 
 }
 static double gfx_sdl_get_time(void) {
-    return (double)clock() / CLOCKS_PER_SEC;
+#ifdef __PSP__
+    return (double)sceKernelGetSystemTimeWide() / 1000000.0;
+#else
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return now.tv_sec + now.tv_nsec / 1000000000.0;
+#endif
 }
 static int32_t gfx_sdl_get_target_fps(void) {
-    return 60;
+    return target_fps;
 }
-static void gfx_sdl_set_target_fps(int fps) { }
+static void gfx_sdl_set_target_fps(int fps) {
+    target_fps = fps > 0 ? fps : 0;
+    last_frame_time = 0.0;
+}
 static bool gfx_sdl_can_disable_vsync(void) {
-    return false;
+    return true;
 }
 static void *gfx_sdl_get_window_handle(void) {
     return NULL;
 }
 static void gfx_sdl_set_window_title(const char *title) { }
 static int gfx_sdl_get_swap_interval(void) {
-    return 1;
+    return swap_interval;
 }
 static bool gfx_sdl_set_swap_interval(int interval) {
+    // The PSP supports immediate presentation or one vblank per frame.
+    swap_interval = interval == 0 ? 0 : 1;
     return true;
 }
 

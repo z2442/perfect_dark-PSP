@@ -246,12 +246,12 @@ void sysLogPrintf(s32 level, const char *fmt, ...)
 	// Always write to ms0:/pd_log.txt on the PSP memory stick
 	FILE *f = fopen("ms0:/pd_log.txt", "ab");
 	if (f) {
-		fprintf(f, "%s%s\n", prefix[level], logmsg);
+		fprintf(f, "%s%s\n", prefix[level & 0x0f], logmsg);
 		fclose(f);
 	}
 
-	FILE *fout = (level == LOG_NOTE) ? stdout : stderr;
-	fprintf(fout, "%s%s\n", prefix[level], logmsg);
+	FILE *fout = ((level & 0x0f) == LOG_NOTE) ? stdout : stderr;
+	fprintf(fout, "%s%s\n", prefix[level & 0x0f], logmsg);
 }
 
 void sysFatalError(const char *fmt, ...)
@@ -365,3 +365,5 @@ void sysCpuRelax(void)
 {
 	DO_YIELD();
 }
+
+f32 sysGetSeconds(void) { return (f32)sysGetMicroseconds() / 1000000.f; }

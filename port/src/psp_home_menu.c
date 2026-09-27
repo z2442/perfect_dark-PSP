@@ -1,4 +1,6 @@
 #include "psp_home_menu.h"
+#include "psp_adhoc.h"
+#include "net/net.h"
 
 #include <PR/os_thread.h>
 #include "game/menu.h"
@@ -212,11 +214,12 @@ void pdPspHomeMenuInit(void)
 
 void pdPspHomeMenuPoll(void)
 {
+	pdAdhocPoll();
 	u32 buttons = pdPspHomeReadButtons();
 	u32 pressed = buttons & ~g_HomeLastPolledButtons;
 	g_HomeLastPolledButtons = buttons;
 
-	if ((pressed & PSP_CTRL_HOME) && !g_HomeActive) {
+	if ((pressed & PSP_CTRL_HOME) && !g_HomeActive && !g_NetMode) {
 		pdPspHomeOpen();
 	}
 }

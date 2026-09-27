@@ -1,5 +1,6 @@
 #include <cstdint>
 #include "gfx_psp_ge.h"
+#include "gfx_sdl.h"
 #include "gfx_psp_glare.h"
 
 extern "C" { volatile uint8_t g_psp_light_glare = 0; }
@@ -2149,7 +2150,7 @@ static void gfx_psp_end_frame(void) {
             s_composite_last_drain_frame = s_composite_frame_counter;
         }
     }
-    gePresent();
+    gePresent(gfx_sdl.get_swap_interval());
 }
 
 extern "C" { volatile uint8_t g_force_two_pass = 0; }

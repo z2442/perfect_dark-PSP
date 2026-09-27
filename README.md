@@ -16,6 +16,20 @@ Copy to the GAME directory on PSP and enjoy!
 - The native renderer is an initial migration and needs visual and performance validation on PSP/PPSSPP.
 - Renderer details and validation steps: [Native PSP renderer](docs/psp-ge-renderer.md).
 
+## PSP ad hoc multiplayer
+
+The in-game **Ad Hoc Multiplayer** menu hosts or finds nearby two-player Combat
+Simulator games. Gameplay synchronization is adapted from the PC netplay branch
+and carried over PSP ad hoc packets. No internet relay or IP entry is used.
+This is experimental and still needs a two-device gameplay test. See
+[setup and current limitations](docs/psp-adhoc.md).
+
+## Extended Video Options
+
+The PSP extended Video menu applies Vsync, the framerate limit, nearest/bilinear texture filtering, GUI filtering, detail textures, FPS display, HUD centering, muzzle flashes, and explosion shake. Settings save when the Video menu closes. The framerate limit is an upper bound; it cannot increase rendering performance. With Vsync off, an otherwise unlimited framerate retains the engine's safety cap.
+
+Desktop window controls, MSAA, three-point filtering, and uncapped tickrate are not offered on PSP.
+
 Video (OUTDATED):
 https://youtu.be/tW5jyqPiTaI?si=Pu8vZp1W-zcNEr6i
 

@@ -73,9 +73,9 @@ static void geReserve(size_t bytes) {
 }
 static void *geBackBuffer() { return reinterpret_cast<void *>(0x44000000u + ge_back); }
 static void *geFrontBuffer() { return reinterpret_cast<void *>(0x44000000u + ge_front); }
-static void gePresent() {
+static void gePresent(int swap_interval = 1) {
     geFinish();
-    sceDisplayWaitVblankStart();
+    if (swap_interval) sceDisplayWaitVblankStart();
     // Own both buffers explicitly; composite passes cannot change swap bookkeeping.
     std::swap(ge_front, ge_back);
     sceDisplaySetFrameBuf(reinterpret_cast<void *>(0x04000000u + ge_front),

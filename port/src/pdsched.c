@@ -24,6 +24,8 @@
 #include "video.h"
 #include "audio.h"
 #include "input.h"
+#include "console.h"
+#include "net/net.h"
 #include "mixer.h"
 #include "psp_timing.h"
 
@@ -241,6 +243,12 @@ void schedSubmitTask(OSSched *sc, OSScTask *t)
 void schedStartFrame(OSSched *sc)
 {
 	videoStartFrame();
+	if (g_Vars.diffframe60) {
+		if (g_NetMode) {
+
+			netStartFrame();
+		}
+	}
 }
 
 void schedAudioFrame(OSSched *sc)
@@ -270,6 +278,8 @@ void schedAudioFrame(OSSched *sc)
  */
 void schedEndFrame(OSSched *sc)
 {
+	static bool netDebugKey = false;
+
 	sc->frameCount++;
 
 #if PAL
@@ -289,10 +299,21 @@ void schedEndFrame(OSSched *sc)
 	}
 
 	inputUpdate();
+	conTick();
+
+	const bool newKey = inputKeyPressed(VK_F9);
+	if (!netDebugKey && newKey) {
+		g_NetDebugDraw = !g_NetDebugDraw;
+	}
+	netDebugKey = newKey;
 
 	joyStartReadData(&g_PiMesgQueue);
 	joyReadData();
 	joy00014238();
+
+	if (g_Vars.diffframe60) {
+		netEndFrame();
+	}
 
 	sndHandleRetrace();
 	schedAudioFrame(sc);

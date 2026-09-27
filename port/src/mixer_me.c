@@ -10,6 +10,7 @@
 
 #include <me-core-mapper/me-core.h>
 #include <pspintrman.h>
+#include <pspiofilemgr.h>
 #include <pspkernel.h>
 #include <psptypes.h>
 #include <stdbool.h>
@@ -201,8 +202,21 @@ void meLibOnProcess(void)
 
 int mixerMeBoot(void)
 {
+	u32 isEmulator = 0;
+
 	if (g_MixerMeBootStarted) {
 		return g_MixerMeBootResult >= 0;
+	}
+
+	/* PPSSPP cannot run the custom ME kernel module. Its missing kernel
+	 * imports return error codes that kcall treats as pointers during kinit.
+	 * Detect it before touching ME state or loading kcall.prx, and retain the
+	 * normal main-CPU audio fallback for every later initialization attempt.
+	 * Real firmware has no emulator: device and returns an error here. */
+	if (sceIoDevctl("emulator:", 3, NULL, 0, &isEmulator, sizeof(isEmulator)) == 0 && isEmulator) {
+		g_MixerMeBootStarted = true;
+		g_MixerMeBootResult = -1;
+		return 0;
 	}
 
 	MIXER_ME_SHARED->submitSeq = 0;

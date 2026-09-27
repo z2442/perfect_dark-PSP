@@ -4,6 +4,7 @@
 #include <PR/ultratypes.h>
 
 extern u32 g_RomFileSize;
+extern const char *g_RomName;
 
 s32 romdataInit(void);
 void romdataShutdown(void);

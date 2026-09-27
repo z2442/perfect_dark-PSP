@@ -118,14 +118,12 @@ s32 videoInit(void)
     videoSetVsync(vidVsync);
     videoSetFramerateLimit(vidFramerateLimit);
 
-    /*// Set initial texture filter using the rendering API pointer
-    if (renderingAPI && renderingAPI->set_texture_filter) {
-         renderingAPI->set_texture_filter((FilteringMode)texFilter);
-    } else {
-        sysLogPrintf(LOG_ERROR, "Rendering API not initialized, cannot set texture filter.");
-        // Potentially return an error code here
-        // return -1;
-    }*/
+    // Apply the saved filter after the renderer has been initialized.
+#ifdef __PSP__
+    if (texFilter > FILTER_LINEAR) texFilter = FILTER_LINEAR;
+#endif
+    gfx_set_texture_filter((enum FilteringMode)texFilter);
+    endTime = fpsTime = wmAPI->get_time();
 
     initDone = true;
     return 0;
@@ -456,10 +454,14 @@ void videoSetCenterWindow(s32 center)
 
 void videoSetTextureFilter(u32 filter)
 {
+#ifdef __PSP__
+	if (filter > FILTER_LINEAR) filter = FILTER_LINEAR;
+#else
 	if (filter > FILTER_THREE_POINT) filter = FILTER_THREE_POINT;
+#endif
 	if (texFilter == filter) return;
 	texFilter = filter;
-	//gfx_set_texture_filter(filter);
+	if (initDone) gfx_set_texture_filter((enum FilteringMode)filter);
 }
 
 void videoSetTextureFilter2D(s32 filter)
@@ -486,7 +488,8 @@ void videoSetMSAA(const s32 msaa)
 
 void videoSetVsync(const s32 vsync)
 {
-	vidVsync = wmAPI->set_swap_interval(vsync) ? vsync : 0;
+	wmAPI->set_swap_interval(vsync);
+	vidVsync = wmAPI->get_swap_interval();
 
 	if (vidVsync == 0 && vidFramerateLimit == 0) {
 		// cap FPS if there's no vsync to prevent the game from exploding

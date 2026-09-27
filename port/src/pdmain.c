@@ -77,6 +77,9 @@
 #include "data.h"
 #include "types.h"
 #include "system.h"
+#include "console.h"
+#include "net/net.h"
+#include "net/netmsg.h"
 
 extern u8 *g_MempHeap;
 extern u32 g_MempHeapSize;
@@ -425,6 +428,9 @@ void mainLoop(void)
 
 		if (argFindByPrefix(1, "-ma")) {
 			g_MainMemaHeapSize = strtol(argFindByPrefix(1, "-ma"), NULL, 0) * 1024;
+			if (g_NetMode && g_NetMaxClients > MAX_LOCAL_PLAYERS) {
+				g_MainMemaHeapSize *= MAX_PLAYERS / MAX_LOCAL_PLAYERS;
+			}
 		}
 
 		memaReset(mempAlloc(g_MainMemaHeapSize, MEMPOOL_STAGE), g_MainMemaHeapSize);
@@ -466,7 +472,15 @@ void mainLoop(void)
 		}
 
 		if (g_Vars.coopplayernum >= 0 || g_Vars.antiplayernum >= 0) {
+#ifdef PLATFORM_N64
 			g_MpSetup.chrslots = 0x03;
+#else
+			if (g_Vars.antiplayernum < 0) {
+				// Counter-Operative now uses a different approach which allows more than 2 players.
+				// Co-Operative, on the other hand, is currently limited to 2 players.
+				g_MpSetup.chrslots = 0x03;
+			}
+#endif
 			mpReset();
 		} else if (g_Vars.perfectbuddynum) {
 			mpReset();
@@ -474,16 +488,8 @@ void mainLoop(void)
 				&& (numplayers >= 2 || g_Vars.lvmpbotlevel || argFindByPrefix(1, "-play"))) {
 			g_MpSetup.chrslots = 1;
 
-			if (numplayers >= 2) {
-				g_MpSetup.chrslots |= 1 << 1;
-			}
-
-			if (numplayers >= 3) {
-				g_MpSetup.chrslots |= 1 << 2;
-			}
-
-			if (numplayers >= 4) {
-				g_MpSetup.chrslots |= 1 << 3;
+			for (s32 i = 1; i < numplayers; ++i) {
+				g_MpSetup.chrslots |= 1 << i;
 			}
 
 			g_MpSetup.stagenum = g_StageNum;
@@ -590,6 +596,9 @@ void mainTick(void)
 				gdl = profileRender(gdl);
 			}
 
+			gdl = conRender(gdl);
+			gdl = netDebugRender(gdl);
+
 			gDPFullSync(gdl++);
 			gSPEndDisplayList(gdl++);
 		}
@@ -617,7 +626,7 @@ void mainEndStage(void)
 			s32 prevplayernum = g_Vars.currentplayernum;
 			s32 i;
 
-			for (i = 0; i < PLAYERCOUNT(); i++) {
+			for (i = 0; i < LOCALPLAYERCOUNT(); i++) {
 				setCurrentPlayerNum(i);
 				endscreenPushCoop();
 			}
@@ -628,7 +637,7 @@ void mainEndStage(void)
 			s32 prevplayernum = g_Vars.currentplayernum;
 			s32 i;
 
-			for (i = 0; i < PLAYERCOUNT(); i++) {
+			for (i = 0; i < LOCALPLAYERCOUNT(); i++) {
 				setCurrentPlayerNum(i);
 				endscreenPushAnti();
 			}
@@ -641,6 +650,8 @@ void mainEndStage(void)
 			endscreenPrepare();
 			musicStartMenu();
 		}
+
+		netServerStageEnd();
 	}
 
 	g_MainIsEndscreen = true;

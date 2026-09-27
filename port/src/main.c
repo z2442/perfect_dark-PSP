@@ -41,6 +41,8 @@
 #include "psp_exit.h"
 #include "psp_home_menu.h"
 #include "psp_timing.h"
+#include "psp_adhoc.h"
+#include "net/net.h"
 
 #ifdef PD_PSP_GPROF
 #include <pspprof.h>
@@ -123,6 +125,7 @@ static int pdPspPowerCallback(int arg1, int powerInfo, void *common) {
 		/* Firmware may restore its default clocks after suspend. */
 		(void)scePowerSetClockFrequency(333, 333, 166);
 		romdataNotifyResume();
+		pdAdhocNotifyResume();
 	}
 
 	return 0;
@@ -227,6 +230,8 @@ static void cleanup(void)
 	cleaned = true;
 	profilerStop(1);
 	sysLogPrintf(LOG_NOTE, "shutdown");
+	netDisconnect();
+	pdAdhocShutdown();
 	audioShutdown();
 	mixerMeShutdown();
 	inputSaveBinds();
@@ -347,6 +352,7 @@ int main(int argc, const char **argv)
 		sysLogPrintf(LOG_NOTE, "player profile set to %d", g_FileAutoSelect);
 	}
 
+	netInit();
 	profilerStart();
 	mainProc();
 	profilerStop(1);
