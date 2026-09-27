@@ -5057,11 +5057,9 @@ struct menuitem g_MainMenuMenuItems[] = {
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,
-#ifdef PLATFORM_N64
+
 		MENUITEMFLAG_SELECTABLE_CLOSESDIALOG | MENUITEMFLAG_BIGFONT,
-#else
-		MENUITEMFLAG_SELECTABLE_CLOSESDIALOG | MENUITEMFLAG_BIGFONT | MENUITEMFLAG_ALWAYSDISABLED,
-#endif
+
 		L_MISC_446, // "Carrington Institute"
 		0x00000001,
 		NULL,
@@ -5069,11 +5067,9 @@ struct menuitem g_MainMenuMenuItems[] = {
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,
-#ifdef PLATFORM_N64
+
 		MENUITEMFLAG_BIGFONT,
-#else
-		MENUITEMFLAG_BIGFONT | MENUITEMFLAG_ALWAYSDISABLED,
-#endif
+
 		(uintptr_t)&mainMenuTextLabel,
 		0x00000002,
 		menuhandlerMainMenuSoloMissions,
@@ -5081,11 +5077,9 @@ struct menuitem g_MainMenuMenuItems[] = {
 	{
 		MENUITEMTYPE_SELECTABLE,
 		1,
-#ifdef PLATFORM_N64
+
 		MENUITEMFLAG_BIGFONT,
-#else
-		MENUITEMFLAG_BIGFONT | MENUITEMFLAG_ALWAYSDISABLED,
-#endif
+
 		(uintptr_t)&mainMenuTextLabel,
 		0x00000003,
 		menuhandlerMainMenuCombatSimulator,
