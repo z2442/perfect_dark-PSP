@@ -2133,6 +2133,11 @@ static void gfx_publish_es1_matrices(void) {
                        sizeof(g_es1_M));
     } else {
         gfx_copy_fixed(g_es1_P, rsp.P_matrix, sizeof(rsp.P_matrix));
+        // HUD borders use projected triangles, while their backgrounds use
+        // rectangles. Apply the same explicit alignment to both paths.
+        if (rsp.aspect_mode != 0) {
+            gfx_apply_aspect_to_mp(g_es1_P);
+        }
         gfx_copy_fixed(g_es1_M, rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], sizeof(rsp.P_matrix));
     }
     g_es1_matrix_dirty = 1;
@@ -4079,9 +4084,25 @@ static void gfx_sp_extra_geometry_mode(uint32_t clear, uint32_t set) {
     gfx_end_rect_batch();
     const uint32_t new_mode = (rsp.extra_geometry_mode & ~clear) | set;
     if (new_mode != rsp.extra_geometry_mode) {
+#if defined(__PSP__)
+        const bool aspect_changed = (new_mode & G_ASPECT_MODE_EXT) != rsp.aspect_mode;
+        if (aspect_changed) {
+            gfx_flush_with_reason(GFX_FLUSH_MATRIX);
+        }
+#endif
         rsp.extra_geometry_mode = new_mode;
         rsp.aspect_mode = (rsp.extra_geometry_mode & G_ASPECT_MODE_EXT);
         gfx_update_aspect_mode();
+#if defined(__PSP__)
+        if (aspect_changed) {
+            // Alignment changes the effective projection even without a new
+            // matrix command. Keep vertex snapshots and eye-space batches apart.
+            if (++s_model_projection_epoch == 0) {
+                s_model_projection_epoch = 1;
+            }
+            gfx_publish_es1_matrices();
+        }
+#endif
         gfx_mark_tri_pipeline_dirty();
     }
 }
