@@ -362,7 +362,6 @@ static void gu_emit_composite_item(const CompositeBatchItem &item) {
     sceGuClear(GU_COLOR_BUFFER_BIT);
     sceGuDisable(GU_DEPTH_TEST);
     sceGuEnable(GU_TEXTURE_2D);
-    sceGuTexMode(GU_PSM_4444, 0, 0, 0);
     sceGuTexFilter(GU_NEAREST, GU_NEAREST);
     sceGuTexWrap(GU_CLAMP, GU_CLAMP);
     sceGuTexScale(1.0f, 1.0f);
@@ -371,7 +370,7 @@ static void gu_emit_composite_item(const CompositeBatchItem &item) {
 
     // Pass 1: base texture
     sceGuDisable(GU_BLEND);
-    sceGuTexMode(item.src_a.psm, 0, 0, 0);
+    sceGuTexMode(item.src_a.psm, 0, 0, 1);
     sceGuTexImage(0, item.src_a.w, item.src_a.h, item.src_a.stride, item.src_a.pixels);
     sceGuTexFlush();
     sceGuDrawArray(GU_SPRITES,
@@ -396,7 +395,7 @@ static void gu_emit_composite_item(const CompositeBatchItem &item) {
             sceGuDisable(GU_BLEND);
             break;
     }
-    sceGuTexMode(item.src_b.psm, 0, 0, 0);
+    sceGuTexMode(item.src_b.psm, 0, 0, 1);
     sceGuTexImage(0, item.src_b.w, item.src_b.h, item.src_b.stride, item.src_b.pixels);
     sceGuTexFlush();
     sceGuDrawArray(GU_SPRITES,

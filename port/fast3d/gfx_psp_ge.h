@@ -87,6 +87,7 @@ static GeMatrix geIdentity() {
     m[0] = m[5] = m[10] = m[15] = 1;
     return m;
 }
+// All owned texture pixels (including alpha-only variants) use GE swizzled layout.
 struct GeTexture {
     void *pixels = nullptr;
     void *alpha_pixels = nullptr;
@@ -232,18 +233,41 @@ static void geConvertPixels(void *dst, const void *src, size_t count, int type) 
             : ((p&15)<<12)|((p&0xf0)<<4)|((p&0xf00)>>4)|(p>>12);
     }
 }
+// GE swizzle tiles are 16 bytes wide and 8 rows tall. Pad storage, not the
+// logical texture dimensions, so even a 1x1 texture has a complete tile.
+static size_t geTextureStorageSize(int stride, int height, int bpp) {
+    return static_cast<size_t>(stride) * bpp * ((height + 7) & ~7);
+}
+static size_t geSwizzledOffset(int byte_x, int y, int row_bytes) {
+    return static_cast<size_t>(y / 8) * row_bytes * 8 +
+           static_cast<size_t>(byte_x / 16) * 128 + (y % 8) * 16 + byte_x % 16;
+}
+static void geWriteSwizzled(void *pixels, int stride, int bpp,
+                            int x, int y, int w, int h, int type, const void *source) {
+    const auto *src = static_cast<const uint8_t *>(source);
+    auto *dst = static_cast<uint8_t *>(pixels);
+    for (int row = 0; row < h; ++row) {
+        for (int column = 0; column < w;) {
+            const int byte_x = (x + column) * bpp;
+            const int count = std::min(w - column, (16 - byte_x % 16) / bpp);
+            geConvertPixels(dst + geSwizzledOffset(byte_x, y + row, stride * bpp),
+                src ? src + (static_cast<size_t>(row) * w + column) * bpp : nullptr,
+                count, type);
+            column += count;
+        }
+    }
+}
 static void geTexImage2D(int, int, int, int w, int h, int, int, int type, const void *src) {
     auto it=ge_textures.find(ge_bound_texture);
     if (it==ge_textures.end() || w<1 || h<1 || w>512 || h>512) { ge_error=GE_INVALID_VALUE; return; }
     GeTexture &t=it->second;
     int pw=gePot(w),ph=gePot(h),psm=type==GE_UNSIGNED_BYTE?GU_PSM_8888:type==GE_UNSIGNED_SHORT_5_6_5?GU_PSM_5650:GU_PSM_4444;
     int bpp=gePixelBytes(psm), stride=std::max(pw,16/bpp);
-    size_t size=static_cast<size_t>(stride)*ph*bpp;
+    size_t size=geTextureStorageSize(stride,ph,bpp);
     void *pixels=memalign(64,size);
     if (!pixels) { ge_error=GE_OUT_OF_MEMORY; return; }
     memset(pixels,0,size);
-    for(int y=0;y<h;++y) geConvertPixels(static_cast<uint8_t *>(pixels)+y*stride*bpp,
-        src?static_cast<const uint8_t *>(src)+y*w*bpp:nullptr,w,type);
+    geWriteSwizzled(pixels,stride,bpp,0,0,w,h,type,src);
     sceKernelDcacheWritebackRange(pixels,size);
     geRetire(t.pixels); geRetire(t.alpha_pixels);
     t.pixels=pixels; t.alpha_pixels=nullptr; t.w=pw; t.h=ph; t.stride=stride; t.psm=psm;
@@ -254,12 +278,11 @@ static void geTexSubImage2D(int, int, int x, int y, int w, int h, int, int type,
     GeTexture &t=it->second;
     int psm=type==GE_UNSIGNED_BYTE?GU_PSM_8888:type==GE_UNSIGNED_SHORT_5_6_5?GU_PSM_5650:GU_PSM_4444;
     if (!t.pixels || !src || x<0 || y<0 || w<0 || h<0 || x+w>t.w || y+h>t.h || psm!=t.psm) { ge_error=GE_INVALID_VALUE; return; }
-    int bpp=gePixelBytes(t.psm); size_t size=static_cast<size_t>(t.stride)*t.h*bpp;
+    int bpp=gePixelBytes(t.psm); size_t size=geTextureStorageSize(t.stride,t.h,bpp);
     void *pixels=memalign(64,size);
     if (!pixels) { ge_error=GE_OUT_OF_MEMORY; return; }
     memcpy(pixels,t.pixels,size);
-    for(int row=0;row<h;++row) geConvertPixels(static_cast<uint8_t *>(pixels)+((y+row)*t.stride+x)*bpp,
-        static_cast<const uint8_t *>(src)+row*w*bpp,w,type);
+    geWriteSwizzled(pixels,t.stride,bpp,x,y,w,h,type,src);
     sceKernelDcacheWritebackRange(pixels,size);
     geRetire(t.pixels); geRetire(t.alpha_pixels); t.pixels=pixels; t.alpha_pixels=nullptr;
 }
@@ -347,7 +370,8 @@ static void geDrawArrays(int primitive, int first, int count) {
             GeTexture &t=it->second;
             void *pixels=t.pixels;
             if(alpha_only && !t.alpha_pixels) {
-                size_t size=static_cast<size_t>(t.stride)*t.h*gePixelBytes(t.psm);
+                // A per-pixel channel operation preserves the swizzled ordering.
+                size_t size=geTextureStorageSize(t.stride,t.h,gePixelBytes(t.psm));
                 t.alpha_pixels=memalign(64,size);
                 if(t.alpha_pixels) {
                     if(t.psm==GU_PSM_8888) { auto *dst=static_cast<uint32_t *>(t.alpha_pixels); auto *src=static_cast<const uint32_t *>(t.pixels); for(size_t j=0;j<size/4;++j) dst[j]=src[j]|0xffffff; }
@@ -356,7 +380,7 @@ static void geDrawArrays(int primitive, int first, int count) {
                 }
             }
             if(alpha_only && t.alpha_pixels) pixels=t.alpha_pixels;
-            sceGuTexMode(t.psm,0,0,0); sceGuTexImage(0,t.w,t.h,t.stride,pixels);
+            sceGuTexMode(t.psm,0,0,1); sceGuTexImage(0,t.w,t.h,t.stride,pixels);
             sceGuTexMapMode(GU_TEXTURE_COORDS,0,0); sceGuTexScale(1,1); sceGuTexOffset(0,0);
             sceGuTexFilter(t.min_filter,t.mag_filter); sceGuTexWrap(t.wrap_s,t.wrap_t);
             int tcc=combine && ge_state.env_alpha==GE_REPLACE && ge_state.env_src_alpha==GE_PRIMARY_COLOR?GU_TCC_RGB:GU_TCC_RGBA;
